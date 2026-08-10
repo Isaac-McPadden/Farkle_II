@@ -1027,7 +1027,9 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
     if 2 in sources:
         assert mirror_root is not None
         mirror_guard = ProcessTreeMemoryGuard(
-            cfg.resources.rss_abort_mb, cfg.resources.rss_sample_interval_seconds
+            cfg.resources.hard_memory_limit_mb,
+            rss_warning_mb=cfg.resources.target_memory_mb,
+            sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
         )
         mirror_stage = run_partitioned_stage(
             root=mirror_root,

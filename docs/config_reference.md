@@ -125,9 +125,10 @@ sequential and each root receives the resolved section budget. When it is true,
 each section's own resolved budget is divided across concurrent roots. The
 authenticated run context records requested, resolved, and effective counts.
 
-`resources.max_memory_mb` is locked to 1024 MiB for the whole process tree.
-The default target is 768 MiB and scheduling fails closed when sampled RSS
-reaches 950 MiB. `logical_cpu_workers` (`0` means detected logical CPUs) and
+`resources.target_memory_mb` is the normal process-tree scheduling target.
+Crossing it logs a warning; the default `resources.memory_safety_factor: 3.0`
+sets the aggregate OS boundary and cooperative RSS stop at 2304 MiB.
+`logical_cpu_workers` (`0` means detected logical CPUs) and
 `native_threads_per_worker` jointly cap processes; per-stage worker estimates
 also cap processes to `(target_memory_mb - parent_reserve_mb) /
 estimated_worker_memory_mb`. Concurrent roots share both envelopes. Native

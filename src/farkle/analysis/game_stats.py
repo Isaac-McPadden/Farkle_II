@@ -549,8 +549,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     )
     apply_native_thread_limits(policy)
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     roll_artifacts = build_exact_roll_enumeration(cfg, force=force)

@@ -998,7 +998,9 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
     upstream_inputs = _ingest_upstream_inputs(cfg.results_root)
     identity = _ingest_partition_identity(cfg, blocks)
     guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb, cfg.resources.rss_sample_interval_seconds
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     publisher = _IngestUnitPublisher(cfg)
     units = tuple(
@@ -1153,8 +1155,9 @@ def run(cfg: AppConfig) -> None:
 
     total_rows = 0
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     if stage_policy.process_workers <= 1:

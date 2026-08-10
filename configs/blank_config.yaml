@@ -92,9 +92,8 @@ orchestration:
   parallel_seeds:  # bool: run two root workflows concurrently
 
 resources:
-  max_memory_mb:  # int: aggregate OS-enforced hard ceiling (maximum 1024 MiB)
   target_memory_mb:  # int: normal process-tree scheduling target
-  rss_abort_mb:  # int: cooperative sticky abort threshold
+  memory_safety_factor:  # float: hard-stop multiplier applied to target_memory_mb (default 3.0)
   os_memory_limit_enabled:  # bool: establish an OS memory boundary
   os_memory_limit_required:  # bool: fail closed if the boundary is unavailable
   allow_unenforced_memory_fallback:  # bool: development-only fallback

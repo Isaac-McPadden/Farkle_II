@@ -956,8 +956,9 @@ def build_screening_diagnostics(
     )
     apply_native_thread_limits(policy)
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     max_batch_bytes = cfg.resources.stage_batch_bytes["trueskill"]

@@ -117,9 +117,8 @@ def _write_canary_config(workspace: Path) -> Path:
         },
         "orchestration": {"parallel_seeds": True},
         "resources": {
-            "max_memory_mb": 1024,
             "target_memory_mb": 768,
-            "rss_abort_mb": 950,
+            "memory_safety_factor": 3.0,
             "parent_reserve_mb": 192,
             "logical_cpu_workers": 4,
             "native_threads_per_worker": 1,

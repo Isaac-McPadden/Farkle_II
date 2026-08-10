@@ -592,8 +592,9 @@ def build_all_player_batch_metrics(
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     max_batch_bytes, max_batch_rows = _execution_batch_limits(cfg, source, k)

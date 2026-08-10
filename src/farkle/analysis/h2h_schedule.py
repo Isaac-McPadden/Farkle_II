@@ -1665,8 +1665,9 @@ def execute_h2h_schedule(
     apply_native_thread_limits(policy)
     worker_count = policy.process_workers
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:

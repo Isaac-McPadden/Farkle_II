@@ -104,8 +104,10 @@ changing code or accepting a statistical conclusion.
   the complete range manifest validates; execution worker and chunk controls
   remain outside statistical freshness under explicit invariance tests. Step
   5.5 adds a lightweight public launcher and an aggregate OS-enforced allocation
-  boundary: a Windows Job Object or delegated cgroup-v2 `memory.max`. Strict
-  official execution fails before analysis when setup is unavailable; an
+  boundary: a Windows Job Object or delegated cgroup-v2 `memory.max`, derived
+  from the configured target and safety factor. Crossing the target logs a
+  warning; the default 3.0x threshold is the cooperative and OS hard stop.
+  Strict official execution fails before analysis when setup is unavailable; an
   explicit development fallback is labelled unenforced. Backend/effective-limit
   provenance lives in run contexts and manifests, not statistical freshness.
   The two-root health marker becomes `running` before work, and process-tree

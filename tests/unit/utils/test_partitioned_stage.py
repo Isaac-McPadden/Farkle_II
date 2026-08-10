@@ -36,7 +36,6 @@ def _identity() -> PartitionedStageIdentity:
 def _resources() -> ResourcesConfig:
     return ResourcesConfig(
         target_memory_mb=768,
-        rss_abort_mb=950,
         parent_reserve_mb=192,
         logical_cpu_workers=4,
         native_threads_per_worker=1,

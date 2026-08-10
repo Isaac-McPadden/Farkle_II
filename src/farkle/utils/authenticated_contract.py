@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -34,6 +35,8 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.stage_completion import CompletionState
 from farkle.utils.writer import atomic_path
+
+LOGGER = logging.getLogger(__name__)
 
 ARTIFACT_CONTRACT_VERSION: Final = 3
 LIFECYCLE_CONTRACT_VERSION: Final = 1
@@ -380,8 +383,6 @@ class CodeIdentity:
         if self.state == "clean" and self.dirty_fingerprint_sha256 is not None:
             raise ValueError("clean code identity cannot have a dirty fingerprint")
         if self.state == "development_dirty":
-            if self.policy != CodeIdentityPolicy.DEVELOPMENT_DIRTY.value:
-                raise ValueError("dirty code identity requires explicit development policy")
             if self.dirty_fingerprint_sha256 is None:
                 raise ValueError("dirty code identity requires a deterministic fingerprint")
             _require_sha256(self.dirty_fingerprint_sha256, label="dirty_fingerprint_sha256")
@@ -407,7 +408,7 @@ def resolve_code_identity(
     policy: CodeIdentityPolicy,
     untracked_inventory: Sequence[Path | str] = ("src", "tests", "configs", "pyproject.toml"),
 ) -> CodeIdentity:
-    """Resolve a release-clean identity or a deterministic dirty development one."""
+    """Resolve a clean identity or warn and fingerprint a dirty worktree."""
 
     requested_root = Path(repo_root).resolve()
     top_level_raw = cast(str, _git(requested_root, "rev-parse", "--show-toplevel", text=True))
@@ -424,7 +425,10 @@ def resolve_code_identity(
             dirty_fingerprint_sha256=None,
         )
     if policy is CodeIdentityPolicy.RELEASE_CLEAN:
-        raise CodeIdentityError("release mode requires a clean Git worktree")
+        LOGGER.warning(
+            "release-preferred execution is using a dirty Git worktree; outputs are not release eligible",
+            extra={"stage": "code_identity", "policy": policy.value},
+        )
 
     digest = hashlib.sha256()
     digest.update(b"tracked-index\0")

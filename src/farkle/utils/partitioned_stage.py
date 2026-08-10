@@ -595,8 +595,9 @@ def run_partitioned_stage(
     )
     apply_native_thread_limits(policy)
     guard = memory_guard or ProcessTreeMemoryGuard(
-        resources.rss_abort_mb,
-        resources.rss_sample_interval_seconds,
+        resources.hard_memory_limit_mb,
+        rss_warning_mb=resources.target_memory_mb,
+        sample_interval_seconds=resources.rss_sample_interval_seconds,
     )
     guard.check_before_schedule(force=True)
     root.mkdir(parents=True, exist_ok=True)

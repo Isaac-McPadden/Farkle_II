@@ -8,6 +8,7 @@ ProcessPoolExecutor. Keep simulation-specific logic outside utils.
 from __future__ import annotations
 
 import contextlib
+import logging
 import multiprocessing as mp
 import os
 import threading
@@ -32,6 +33,7 @@ _NATIVE_THREAD_ENV_VARS: tuple[str, ...] = (
 _NATIVE_LIMIT_LOCK = threading.Lock()
 _NATIVE_LIMITER: Any | None = None
 _NATIVE_LIMITER_CAP: int | None = None
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class ProcessTreeMemoryGuard:
     """
 
     rss_abort_mb: int
+    rss_warning_mb: int | None = None
     sample_interval_seconds: float = 0.25
     pid: int | None = None
     last_rss_bytes: int = 0
@@ -75,6 +78,8 @@ class ProcessTreeMemoryGuard:
     peak_native_threads: int = 0
     _last_sample_at: float = 0.0
     tripped_rss_bytes: int = 0
+    warned_rss_bytes: int = 0
+    warning_emitted: bool = False
     monitoring_error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _monitor_started: bool = field(default=False, init=False, repr=False)
@@ -88,6 +93,8 @@ class ProcessTreeMemoryGuard:
             self._last_sample_at = sampled_at
             if rss >= self.rss_abort_mb * 1024 * 1024:
                 self.tripped_rss_bytes = max(self.tripped_rss_bytes, rss)
+            if self.rss_warning_mb is not None and rss >= self.rss_warning_mb * 1024 * 1024:
+                self.warned_rss_bytes = max(self.warned_rss_bytes, rss)
 
     def _ensure_monitor(self) -> None:
         with self._lock:
@@ -136,12 +143,28 @@ class ProcessTreeMemoryGuard:
         return rss
 
     def check_before_schedule(self, *, force: bool = False) -> int:
-        """Fail closed when sampled RSS reaches the configured abort threshold."""
+        """Warn at the target and fail closed at the derived hard threshold."""
 
         rss = self.sample(force=force)
         with self._lock:
             tripped = self.tripped_rss_bytes
+            warned = self.warned_rss_bytes
+            warning_emitted = self.warning_emitted
             monitoring_error = self.monitoring_error
+            warning_mb = self.rss_warning_mb
+        if warned and warning_mb is not None and not warning_emitted:
+            LOGGER.warning(
+                "process-tree RSS exceeded the configured resource target; continuing until "
+                "the safety-factor hard stop",
+                extra={
+                    "stage": "resource_safety",
+                    "rss_mb": warned / (1024 * 1024),
+                    "target_memory_mb": warning_mb,
+                    "hard_memory_limit_mb": self.rss_abort_mb,
+                },
+            )
+            with self._lock:
+                self.warning_emitted = True
         if monitoring_error is not None:
             raise ResourceSafetyError(
                 f"process-tree RSS monitoring failed closed: {monitoring_error}"
@@ -316,10 +339,25 @@ def resolve_stage_parallel_policy(
         available_mb = target_memory_mb - parent_reserve_mb
         memory_worker_cap = available_mb // (estimated_worker_memory_mb * concurrent_roots)
         if memory_worker_cap < 1:
-            raise ResourceSafetyError(
-                f"stage {stage!r} estimated worker memory ({estimated_worker_memory_mb} MiB) "
-                f"exceeds its process-tree target share ({available_mb // concurrent_roots} MiB)"
+            hard_available_mb = int(resources.hard_memory_limit_mb) - parent_reserve_mb
+            hard_worker_cap = hard_available_mb // (estimated_worker_memory_mb * concurrent_roots)
+            if hard_worker_cap < 1:
+                raise ResourceSafetyError(
+                    f"stage {stage!r} estimated worker memory ({estimated_worker_memory_mb} MiB) "
+                    f"exceeds its safety-factor process-tree share "
+                    f"({hard_available_mb // concurrent_roots} MiB)"
+                )
+            LOGGER.warning(
+                "stage estimated worker memory exceeds its configured target share; "
+                "continuing with one worker under the safety-factor hard limit",
+                extra={
+                    "stage": stage,
+                    "estimated_worker_memory_mb": estimated_worker_memory_mb,
+                    "target_share_mb": available_mb // concurrent_roots,
+                    "hard_share_mb": hard_available_mb // concurrent_roots,
+                },
             )
+            memory_worker_cap = 1
         process_workers = min(process_workers, cpu_worker_cap, memory_worker_cap)
     if active_process_executor:
         process_workers = 1

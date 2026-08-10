@@ -44,9 +44,10 @@ Preserve these invariants:
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
 - public process-tree execution is launched inside one aggregate Windows Job
-  Object or delegated cgroup-v2 `memory.max` boundary at 1024 MiB; setup fails
-  closed in strict mode, the 768 MiB scheduler target and sticky 950 MiB RSS
-  abort remain cooperative controls, worker counts obey CPU/native-thread and
+  Object or delegated cgroup-v2 `memory.max` boundary derived from the configured
+  target times safety factor; setup fails closed in strict mode, the 768 MiB
+  scheduler target logs a warning when crossed and the default 3.0x hard RSS
+  stop remains cooperative, worker counts obey CPU/native-thread and
   per-stage memory caps, and partition manifests publish only after every unit validates;
 - curate preserves its authenticated provenance boundary with independent
   copy-on-write reflinks where supported and deterministic bounded physical-copy

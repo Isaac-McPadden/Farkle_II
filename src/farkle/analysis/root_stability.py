@@ -1745,8 +1745,9 @@ def build_two_root_stability(
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
     guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     guard.check_before_schedule(force=True)
     matrix_cells = {

@@ -14,6 +14,7 @@ import contextlib
 import ctypes
 import json
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -58,6 +59,8 @@ class MemoryBoundaryStatus:
     platform: str
     enforced: bool
     requested_hard_limit_mb: int
+    warning_target_mb: int
+    safety_factor: float
     effective_hard_limit_mb: int | None
     enclosing_hard_limit_mb: int | None
     strict_required: bool
@@ -91,14 +94,18 @@ def memory_boundary_provenance(resources: Any | None = None) -> dict[str, Any]:
     active = current_memory_boundary()
     if active is not None:
         return active
-    requested = int(getattr(resources, "max_memory_mb", 0)) if resources is not None else 0
+    requested = _hard_memory_limit_mb(resources) if resources is not None else 0
+    target = _memory_target_mb(resources) if resources is not None else 0
+    factor = _memory_safety_factor(resources) if resources is not None else 1.0
     required = bool(getattr(resources, "os_memory_limit_required", False))
     return MemoryBoundaryStatus(
-        contract_version=1,
+        contract_version=2,
         backend="none",
         platform=_platform_label(),
         enforced=False,
         requested_hard_limit_mb=requested,
+        warning_target_mb=target,
+        safety_factor=factor,
         effective_hard_limit_mb=None,
         enclosing_hard_limit_mb=None,
         strict_required=required,
@@ -121,6 +128,30 @@ def _platform_label() -> str:
             return "linux-container"
         return "linux"
     return sys.platform
+
+
+def _memory_target_mb(resources: Any) -> int:
+    """Return the configured soft memory target for config objects and CLI probes."""
+
+    return int(getattr(resources, "target_memory_mb", 0))
+
+
+def _memory_safety_factor(resources: Any) -> float:
+    """Return the configured multiplier, with a one-times probe fallback."""
+
+    return float(getattr(resources, "memory_safety_factor", 1.0))
+
+
+def _hard_memory_limit_mb(resources: Any) -> int:
+    """Derive the OS boundary from the target and safety factor."""
+
+    configured = getattr(resources, "hard_memory_limit_mb", None)
+    if configured is not None:
+        return int(configured)
+    target = _memory_target_mb(resources)
+    if target < 1:
+        raise ValueError("memory boundary resources require a positive target_memory_mb")
+    return math.ceil(target * _memory_safety_factor(resources))
 
 
 def _status_environment(
@@ -161,11 +192,13 @@ def _run_unenforced(
     detail: str,
 ) -> int:
     status = MemoryBoundaryStatus(
-        contract_version=1,
+        contract_version=2,
         backend="unenforced",
         platform=_platform_label(),
         enforced=False,
-        requested_hard_limit_mb=int(resources.max_memory_mb),
+        requested_hard_limit_mb=_hard_memory_limit_mb(resources),
+        warning_target_mb=_memory_target_mb(resources),
+        safety_factor=_memory_safety_factor(resources),
         effective_hard_limit_mb=None,
         enclosing_hard_limit_mb=None,
         strict_required=bool(resources.os_memory_limit_required),
@@ -389,7 +422,8 @@ def _run_windows_job(
         if outer.BasicLimitInformation.LimitFlags & _WINDOWS_JOB_MEMORY:
             enclosing_limit_bytes = int(outer.JobMemoryLimit)
 
-    requested_bytes = int(resources.max_memory_mb) * _MIB
+    requested_limit_mb = _hard_memory_limit_mb(resources)
+    requested_bytes = requested_limit_mb * _MIB
     effective_bytes = min(
         requested_bytes,
         enclosing_limit_bytes if enclosing_limit_bytes is not None else requested_bytes,
@@ -415,11 +449,13 @@ def _run_windows_job(
                 f"SetInformationJobObject(job memory) failed with WinError {error}"
             )
         status = MemoryBoundaryStatus(
-            contract_version=1,
+            contract_version=2,
             backend="windows_job",
             platform="windows",
             enforced=True,
-            requested_hard_limit_mb=int(resources.max_memory_mb),
+            requested_hard_limit_mb=requested_limit_mb,
+            warning_target_mb=_memory_target_mb(resources),
+            safety_factor=_memory_safety_factor(resources),
             effective_hard_limit_mb=effective_bytes // _MIB,
             enclosing_hard_limit_mb=(
                 enclosing_limit_bytes // _MIB if enclosing_limit_bytes is not None else None
@@ -549,7 +585,8 @@ def _read_memory_events(path: Path) -> dict[str, int]:
 def _run_cgroup_v2(command: Sequence[str], resources: Any, *, env: Mapping[str, str] | None) -> int:
     mount, current = _cgroup_v2_location()
     parent_limit = _effective_cgroup_parent_limit(mount, current)
-    requested_bytes = int(resources.max_memory_mb) * _MIB
+    requested_limit_mb = _hard_memory_limit_mb(resources)
+    requested_bytes = requested_limit_mb * _MIB
     effective_bytes = min(
         requested_bytes,
         parent_limit if parent_limit is not None else requested_bytes,
@@ -571,11 +608,13 @@ def _run_cgroup_v2(command: Sequence[str], resources: Any, *, env: Mapping[str, 
         ) from exc
 
     status = MemoryBoundaryStatus(
-        contract_version=1,
+        contract_version=2,
         backend="cgroup_v2",
         platform=_platform_label(),
         enforced=True,
-        requested_hard_limit_mb=int(resources.max_memory_mb),
+        requested_hard_limit_mb=requested_limit_mb,
+        warning_target_mb=_memory_target_mb(resources),
+        safety_factor=_memory_safety_factor(resources),
         effective_hard_limit_mb=effective_bytes // _MIB,
         enclosing_hard_limit_mb=(parent_limit // _MIB if parent_limit is not None else None),
         strict_required=bool(resources.os_memory_limit_required),
@@ -643,7 +682,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not command:
         raise SystemExit("a command is required after --")
     resources = SimpleNamespace(
-        max_memory_mb=int(args.limit_mb),
+        target_memory_mb=int(args.limit_mb),
+        memory_safety_factor=1.0,
         os_memory_limit_enabled=True,
         os_memory_limit_required=not args.permissive,
         allow_unenforced_memory_fallback=bool(args.permissive),

@@ -531,8 +531,9 @@ def run_pipeline(
     validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.rss_abort_mb,
-        cfg.resources.rss_sample_interval_seconds,
+        cfg.resources.hard_memory_limit_mb,
+        rss_warning_mb=cfg.resources.target_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
@@ -714,8 +715,9 @@ def run_pipeline(
             "os_memory_boundary": boundary_provenance,
             "peak_sampled_process_tree_rss_mb": memory_guard.peak_rss_bytes / (1024 * 1024),
             "peak_sampled_native_threads": memory_guard.peak_native_threads,
-            "cooperative_rss_abort_mb": cfg.resources.rss_abort_mb,
+            "hard_memory_limit_mb": cfg.resources.hard_memory_limit_mb,
             "normal_target_memory_mb": cfg.resources.target_memory_mb,
+            "memory_safety_factor": cfg.resources.memory_safety_factor,
         },
         "pair_public_config_sha256": (
             pair_context.config.config_sha if pair_context is not None else None

@@ -6,11 +6,11 @@ import pytest
 from farkle.config import AppConfig, ResourcesConfig, compute_config_sha, load_app_config
 
 
-def test_resource_defaults_hold_one_gib_process_tree_envelope() -> None:
+def test_resource_defaults_use_a_soft_target_and_safety_factor() -> None:
     resources = ResourcesConfig()
-    assert resources.max_memory_mb == 1024
     assert resources.target_memory_mb == 768
-    assert resources.target_memory_mb < resources.rss_abort_mb < resources.max_memory_mb
+    assert resources.memory_safety_factor == 3.0
+    assert resources.hard_memory_limit_mb == 2304
     assert resources.os_memory_limit_enabled is True
     assert resources.os_memory_limit_required is True
     assert resources.allow_unenforced_memory_fallback is False
@@ -37,8 +37,8 @@ def test_resource_controls_are_execution_provenance_not_statistical_freshness() 
 @pytest.mark.parametrize(
     "yaml_text",
     [
-        "resources:\n  max_memory_mb: 2048\n",
-        "resources:\n  target_memory_mb: 960\n  rss_abort_mb: 950\n",
+        "resources:\n  memory_safety_factor: 0.99\n",
+        "resources:\n  target_memory_mb: 192\n  parent_reserve_mb: 192\n",
         "resources:\n  native_threads_per_worker: 0\n",
         "resources:\n  estimated_worker_memory_mb: {analysis: 0}\n",
         "resources:\n  os_memory_limit_enabled: false\n",

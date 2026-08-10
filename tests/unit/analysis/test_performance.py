@@ -464,4 +464,4 @@ def test_max_configured_k_and_bootstrap_count_stay_under_process_tree_ceiling(
 
     artifacts = build_canonical_performance(cfg)
     assert pq.read_table(artifacts.bootstrap).column("bootstrap_replicates")[0].as_py() == 2_000
-    assert process_tree_rss_bytes() < cfg.resources.rss_abort_mb * 1024 * 1024
+    assert process_tree_rss_bytes() < cfg.resources.hard_memory_limit_mb * 1024 * 1024

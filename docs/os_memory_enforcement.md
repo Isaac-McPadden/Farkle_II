@@ -3,8 +3,9 @@
 The public `farkle run`, `farkle analyze`, and `farkle two-seed-pipeline`
 surfaces start through a lightweight supervisor. The supervisor establishes one
 aggregate operating-system boundary before the real CLI imports numerical or
-analysis modules. The existing 950 MiB process-tree RSS guard remains the
-cooperative early warning; the OS boundary is the allocation-spike backstop.
+analysis modules. The configured process-tree target is a cooperative warning
+threshold; the OS boundary is the allocation-spike backstop at
+`target_memory_mb * memory_safety_factor`.
 
 ## Backends
 
@@ -30,9 +31,8 @@ Official defaults are strict:
 
 ```yaml
 resources:
-  max_memory_mb: 1024
   target_memory_mb: 768
-  rss_abort_mb: 950
+  memory_safety_factor: 3.0
   os_memory_limit_enabled: true
   os_memory_limit_required: true
   allow_unenforced_memory_fallback: false
@@ -56,7 +56,7 @@ temporary and unauthenticated files remain ineligible on resume.
 Run the maximum-k, two-concurrent-root canary only in its dedicated directory:
 
 ```powershell
-.\.venv\Scripts\python -m farkle.utils.os_memory --limit-mb 1024 -- `
+.\.venv\Scripts\python -m farkle.utils.os_memory --limit-mb 2304 -- `
   .\.venv\Scripts\python scripts\run_step_5_5_canary.py `
   --workspace data\step_5_5_canary_full --force
 ```

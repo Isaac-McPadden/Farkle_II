@@ -400,8 +400,8 @@ def test_unavailable_code_identity_is_rejected_in_release_mode(tmp_path: Path) -
         resolve_code_identity(tmp_path, policy=CodeIdentityPolicy.RELEASE_CLEAN)
 
 
-def test_git_code_identity_enforces_clean_release_and_fingerprints_dirty_development(
-    tmp_path: Path,
+def test_git_code_identity_warns_for_dirty_release_and_fingerprints_development(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     repo = tmp_path / "repo"
     source = repo / "src" / "module.py"
@@ -421,8 +421,11 @@ def test_git_code_identity_enforces_clean_release_and_fingerprints_dirty_develop
     assert len(clean.commit) == 40
 
     source.write_text("VALUE = 2\n", encoding="utf-8")
-    with pytest.raises(CodeIdentityError, match="clean Git worktree"):
-        resolve_code_identity(repo, policy=CodeIdentityPolicy.RELEASE_CLEAN)
+    release_dirty = resolve_code_identity(repo, policy=CodeIdentityPolicy.RELEASE_CLEAN)
+    assert release_dirty.policy == CodeIdentityPolicy.RELEASE_CLEAN.value
+    assert release_dirty.state == "development_dirty"
+    assert release_dirty.dirty_fingerprint_sha256 is not None
+    assert "dirty Git worktree" in caplog.text
     dirty = resolve_code_identity(repo, policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY)
     repeated = resolve_code_identity(repo, policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY)
     assert dirty.state == "development_dirty"

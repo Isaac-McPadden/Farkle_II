@@ -10,8 +10,8 @@ sim:
   n_players_list: [2, 4, 5]
 
   # Schedule & runtime controls
-  seed: 40                        # primary RNG seed (results_root uses seed suffix)
-  seed_list: [40, 41]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 42                        # primary RNG seed (results_root uses seed suffix)
+  seed_list: [42, 43]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 12                    # null = auto; otherwise an int
   mp_start_method: null          # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
@@ -67,7 +67,7 @@ ingest:
   row_group_size: 64000           # parquet/arrow row group target
   parquet_codec: "snappy"
   batch_rows: 100000
-  n_jobs: 3
+  n_jobs: 1
 
 combine:
   max_players: 12
@@ -144,9 +144,8 @@ orchestration:
   parallel_seeds: false
 
 resources:
-  max_memory_mb: 1024
   target_memory_mb: 768
-  rss_abort_mb: 950
+  memory_safety_factor: 3.0
   os_memory_limit_enabled: true
   os_memory_limit_required: true
   allow_unenforced_memory_fallback: false

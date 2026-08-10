@@ -37,7 +37,8 @@ def _supervisor(limit_mb: int, *arguments: str) -> subprocess.CompletedProcess[s
 
 def _resources(*, required: bool, fallback: bool) -> SimpleNamespace:
     return SimpleNamespace(
-        max_memory_mb=128,
+        target_memory_mb=128,
+        memory_safety_factor=1.0,
         os_memory_limit_enabled=True,
         os_memory_limit_required=required,
         allow_unenforced_memory_fallback=fallback,

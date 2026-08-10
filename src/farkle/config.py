@@ -391,9 +391,8 @@ class OrchestrationConfig:
 class ResourcesConfig:
     """Execution-only CPU, native-thread, memory, and streaming budgets."""
 
-    max_memory_mb: int = 1_024
     target_memory_mb: int = 768
-    rss_abort_mb: int = 950
+    memory_safety_factor: float = 3.0
     os_memory_limit_enabled: bool = True
     os_memory_limit_required: bool = True
     allow_unenforced_memory_fallback: bool = False
@@ -427,6 +426,12 @@ class ResourcesConfig:
             "partitioned_stage": 16 * 1024 * 1024,
         }
     )
+
+    @property
+    def hard_memory_limit_mb(self) -> int:
+        """Return the process-tree stop threshold derived from the soft target."""
+
+        return math.ceil(self.target_memory_mb * self.memory_safety_factor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1795,12 +1800,10 @@ def _project_effective_config(
 
 
 def _validate_resource_contract(resources: ResourcesConfig) -> None:
-    """Reject resource settings that cannot preserve the 1 GiB safety envelope."""
+    """Validate the soft resource target and its derived hard-stop threshold."""
 
     integer_fields = {
-        "max_memory_mb": resources.max_memory_mb,
         "target_memory_mb": resources.target_memory_mb,
-        "rss_abort_mb": resources.rss_abort_mb,
         "parent_reserve_mb": resources.parent_reserve_mb,
         "logical_cpu_workers": resources.logical_cpu_workers,
         "native_threads_per_worker": resources.native_threads_per_worker,
@@ -1810,8 +1813,13 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
         isinstance(value, bool) or not isinstance(value, int) for value in integer_fields.values()
     ):
         raise TypeError("resource memory, CPU, thread, and in-flight controls must be integers")
-    if resources.max_memory_mb > 1_024:
-        raise ValueError("resources.max_memory_mb cannot exceed the hard 1024 MiB ceiling")
+    if (
+        isinstance(resources.memory_safety_factor, bool)
+        or not isinstance(resources.memory_safety_factor, (int, float))
+        or not math.isfinite(float(resources.memory_safety_factor))
+        or float(resources.memory_safety_factor) < 1.0
+    ):
+        raise ValueError("resources.memory_safety_factor must be finite and >= 1.0")
     boolean_fields = {
         "os_memory_limit_enabled": resources.os_memory_limit_enabled,
         "os_memory_limit_required": resources.os_memory_limit_required,
@@ -1827,17 +1835,8 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
         raise ValueError(
             "non-strict OS memory enforcement requires an explicit development fallback"
         )
-    if not (
-        0
-        < resources.parent_reserve_mb
-        < resources.target_memory_mb
-        < resources.rss_abort_mb
-        < resources.max_memory_mb
-    ):
-        raise ValueError(
-            "resources must satisfy 0 < parent_reserve_mb < target_memory_mb "
-            "< rss_abort_mb < max_memory_mb"
-        )
+    if not (0 < resources.parent_reserve_mb < resources.target_memory_mb):
+        raise ValueError("resources must satisfy 0 < parent_reserve_mb < target_memory_mb")
     if resources.logical_cpu_workers < 0:
         raise ValueError("resources.logical_cpu_workers must be >= 0")
     if resources.native_threads_per_worker < 1:

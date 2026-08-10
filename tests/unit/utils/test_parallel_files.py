@@ -362,7 +362,6 @@ def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
 
     resources = ResourcesConfig(
         target_memory_mb=768,
-        rss_abort_mb=950,
         parent_reserve_mb=192,
         logical_cpu_workers=12,
         native_threads_per_worker=2,
@@ -377,6 +376,38 @@ def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
     assert policy.process_workers <= policy.configured_cpu_budget // 2
     assert policy.process_workers <= (768 - 192) // 160
     assert policy.native_threads_per_process == 2
+
+
+def test_resource_policy_warns_at_target_and_stops_beyond_safety_factor(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DummyCfg:
+        n_jobs: int | None = 4
+
+    warning_resources = ResourcesConfig(
+        target_memory_mb=768,
+        parent_reserve_mb=192,
+        logical_cpu_workers=4,
+        estimated_worker_memory_mb={"analysis": 700},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    policy = parallel.resolve_stage_parallel_policy(
+        "analysis", DummyCfg(), resources=warning_resources
+    )
+    assert policy.process_workers == 1
+    assert "exceeds its configured target share" in caplog.text
+
+    hard_stop_resources = ResourcesConfig(
+        target_memory_mb=768,
+        parent_reserve_mb=192,
+        logical_cpu_workers=4,
+        estimated_worker_memory_mb={"analysis": 2200},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    with pytest.raises(parallel.ResourceSafetyError, match="safety-factor process-tree share"):
+        parallel.resolve_stage_parallel_policy(
+            "analysis", DummyCfg(), resources=hard_stop_resources
+        )
 
 
 def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
@@ -416,6 +447,29 @@ def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
         lambda _pid=None: 100 * 1024 * 1024,
     )
     with pytest.raises(parallel.ResourceSafetyError, match="threshold crossed"):
+        guard.check_before_schedule(force=True)
+
+
+def test_process_tree_memory_target_warns_before_safety_factor_stop(
+    monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(rss_abort_mb=2304, rss_warning_mb=768)
+    guard._monitor_started = True
+    monkeypatch.setattr(
+        parallel,
+        "process_tree_rss_bytes",
+        lambda _pid=None: 951 * 1024 * 1024,
+    )
+
+    assert guard.check_before_schedule(force=True) == 951 * 1024 * 1024
+    assert "exceeded the configured resource target" in caplog.text
+
+    monkeypatch.setattr(
+        parallel,
+        "process_tree_rss_bytes",
+        lambda _pid=None: 2304 * 1024 * 1024,
+    )
+    with pytest.raises(parallel.ResourceSafetyError, match="2304 MiB"):
         guard.check_before_schedule(force=True)
 
 
