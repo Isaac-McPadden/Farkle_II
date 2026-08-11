@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import (
@@ -39,7 +38,7 @@ from farkle.config import (
 )
 from farkle.simulation import runner
 from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
-from farkle.simulation.workload_planner import TournamentWorkloadPlan, write_workload_plan
+from farkle.simulation.workload_planner import TournamentWorkloadPlan
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     make_artifact_sidecar,
@@ -51,9 +50,9 @@ from farkle.utils.authenticated_contract import (
     derive_canonical_location,
     validate_authenticated_artifact_unbound,
 )
-from farkle.utils.manifest import append_manifest_line
 from farkle.utils.random import RNG_SCHEME_VERSION
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
+from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import atomic_path
 
 
@@ -215,12 +214,47 @@ def publish_v3_simulation_run(
         raise ValueError("tiny simulation fixtures require sim.row_dir")
     row_dir.mkdir(parents=True, exist_ok=True)
     strategy_manifest = publish_v3_strategy_manifest(cfg, strategies)
+    plan = TournamentWorkloadPlan(
+        root_seed=int(cfg.sim.seed),
+        k=k,
+        strategy_count=len(strategies),
+        confidence=0.95,
+        resolution_delta=0.9,
+        required_shuffles_unrounded=1,
+        required_shuffles=1,
+        batch_count=1,
+        shuffles_per_batch=1,
+        batch_construction="equal_contiguous",
+        games_per_shuffle=1,
+        required_games=table.num_rows,
+        achieved_resolution=0.9,
+        shuffle_cap=None,
+        cap_exceeded=False,
+        achieved_resolution_at_cap=None,
+    )
+    workload = cfg.n_dir(k) / "simulation_workload_plan.json"
+    runner._write_workload_plan_simulation_output(
+        cfg,
+        workload,
+        plan,
+        n_players=k,
+        strategy_manifest=strategy_manifest,
+    )
     shard = row_dir / "rows_000000.parquet"
-    pq.write_table(table, shard)
     row_manifest = row_dir / "manifest.jsonl"
-    append_manifest_line(
-        row_manifest,
-        {
+    run_streaming_shard(
+        out_path=str(shard),
+        manifest_path=str(row_manifest),
+        schema=table.schema,
+        batch_iter=(table,),
+        sidecar=runner._simulation_output_sidecar(
+            cfg,
+            shard,
+            n_players=k,
+            operation="publish_simulation_row_shard",
+            sources=[strategy_manifest, workload],
+        ),
+        manifest_extra={
             "path": shard.name,
             "rows": table.num_rows,
             "root_seed": cfg.sim.seed,
@@ -233,28 +267,6 @@ def publish_v3_simulation_run(
             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         },
     )
-    workload = cfg.n_dir(k) / "simulation_workload_plan.json"
-    write_workload_plan(
-        workload,
-        TournamentWorkloadPlan(
-            root_seed=int(cfg.sim.seed),
-            k=k,
-            strategy_count=len(strategies),
-            confidence=0.95,
-            resolution_delta=0.9,
-            required_shuffles_unrounded=1,
-            required_shuffles=1,
-            batch_count=1,
-            shuffles_per_batch=1,
-            batch_construction="equal_contiguous",
-            games_per_shuffle=1,
-            required_games=table.num_rows,
-            achieved_resolution=0.9,
-            shuffle_cap=None,
-            cap_exceeded=False,
-            achieved_resolution_at_cap=None,
-        ),
-    )
     completion = runner.write_simulation_done(
         cfg,
         k,
@@ -262,7 +274,6 @@ def publish_v3_simulation_run(
         shuffles_per_batch=1,
         n_strategies=len(strategies),
         outputs=[strategy_manifest, workload, row_dir],
-        allow_unsealed_v3_outputs=True,
     )
     if not runner.simulation_is_complete(cfg, k):
         raise AssertionError("unmutated authenticated simulation fixture was not accepted")

@@ -24,11 +24,16 @@ runtime projection and cannot change their boundaries.
 Checkpoints own completed zero-based shuffle indices and one-based process-block
 indices even when row and metric outputs are disabled. Row manifests own one
 shuffle coordinate apiece. Metric manifests own an explicit ordered list of
-shuffle indices plus non-authoritative coordinate fingerprints, allowing an interrupted
-row-producing block to resume from its unfinished suffix. Completion markers
-record the full shuffle range, batch count, batch size, root, k, and RNG scheme.
-Changing process-executor worker counts, interrupting, or resuming therefore
-does not change coordinate identity or regenerate checkpointed work.
+shuffle indices plus non-authoritative coordinate fingerprints, allowing an
+interrupted row-producing block to resume from its unfinished suffix. Each
+append record also carries the content hash, byte length, adjacent-sidecar hash,
+and Arrow-schema fingerprint captured by the original bounded writer. Final
+manifests are canonicalized by semantic coordinate, so worker completion order,
+process IDs, and timestamps cannot change their bytes or root. Completion binds
+the immutable manifest and standalone producer-owned outputs rather than
+rehashing an expanded shard tree. Changing process-executor worker counts,
+interrupting, or resuming therefore does not change coordinate identity or
+regenerate authenticated work.
 
 RNG scheme v2 constructs every tournament seat generator directly from
 `(root_seed, k, shuffle_index, game_index, seat_index)` in namespace 103.

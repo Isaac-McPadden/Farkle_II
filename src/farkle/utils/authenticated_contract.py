@@ -1507,6 +1507,54 @@ def validate_authenticated_artifact_unbound(
     return metadata
 
 
+def validate_authenticated_artifact_metadata(
+    path: Path | str,
+    *,
+    cfg: AppConfig | None = None,
+    expected_location: CanonicalArtifactLocation | None = None,
+    expected_stage_identity: StageIdentity | None = None,
+    expected_versions: VersionIdentity | None = None,
+    expected_sidecar_sha256: str | None = None,
+) -> AuthenticatedSidecar:
+    """Validate immutable publication metadata without rereading artifact bytes.
+
+    This is the routine-resume seam for producer-owned immutable outputs.  The
+    sidecar remains the authoritative exact-byte identity; this check verifies
+    its canonical location, exact sidecar bytes, declared byte length, and
+    current code/config identity.  A deep audit must use
+    :func:`validate_authenticated_artifact_unbound`, which additionally
+    rehashes the complete artifact and reopens its schema.
+    """
+
+    artifact_path = Path(path)
+    metadata = load_authenticated_sidecar(artifact_path)
+    location = metadata.artifact.location
+    if expected_location is not None and location != expected_location:
+        raise ArtifactMismatchError("sidecar declares a different canonical artifact location")
+    if cfg is not None:
+        location.require_path(cfg, artifact_path)
+    else:
+        _require_unbound_canonical_suffix(artifact_path, location)
+    try:
+        byte_length = artifact_path.stat().st_size
+    except OSError as exc:
+        raise ArtifactMismatchError(f"artifact cannot be inspected: {artifact_path}") from exc
+    if byte_length != metadata.artifact.byte_length:
+        raise ArtifactMismatchError("artifact byte length does not match sidecar")
+    if expected_sidecar_sha256 is not None:
+        _require_sha256(expected_sidecar_sha256, label="expected_sidecar_sha256")
+        if sha256_file(sidecar_path(artifact_path)) != expected_sidecar_sha256:
+            raise ArtifactMismatchError("exact sidecar hash does not match completion identity")
+    if (
+        expected_stage_identity is not None
+        and metadata.stage_identity.sha256 != expected_stage_identity.sha256
+    ):
+        raise ArtifactMismatchError("stage identity does not match")
+    if expected_versions is not None and metadata.versions != expected_versions:
+        raise ArtifactMismatchError("method/RNG/outcome/schema version identity does not match")
+    return metadata
+
+
 def capture_source_artifact_unbound(
     path: Path | str,
     *,
@@ -1623,13 +1671,6 @@ def publish_immutable_manifest_atomic(
         final_sidecar.unlink(missing_ok=True)
         replace_file_atomic(staged_data, final_path)
         replace_file_atomic(staged_sidecar, final_sidecar)
-        capture_manifest_root(
-            logical_role="publication_check",
-            manifest_path=final_path,
-            cfg=cfg,
-            expected_location=location,
-            expected_stage_identity=stage_identity,
-        )
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -1692,13 +1733,6 @@ def publish_immutable_manifest_bytes_atomic(
         final_sidecar.unlink(missing_ok=True)
         replace_file_atomic(staged_data, final_path)
         replace_file_atomic(staged_sidecar, final_sidecar)
-        capture_manifest_root(
-            logical_role="publication_check",
-            manifest_path=final_path,
-            cfg=cfg,
-            expected_location=location,
-            expected_stage_identity=stage_identity,
-        )
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -1810,6 +1844,7 @@ def publish_staged_authenticated_artifact_atomic(
 ) -> AuthenticatedSidecar:
     """Publish an already staged v3 artifact without permitting sidecar backfill."""
 
+    _ = source_configs, manifest_configs, validate_unbound_sources
     staged_path = Path(staged_data)
     final_path = location.require_path(cfg, path)
     if not staged_path.is_file() or staged_path.stat().st_size <= 0:
@@ -1843,14 +1878,7 @@ def publish_staged_authenticated_artifact_atomic(
         final_sidecar.unlink(missing_ok=True)
         replace_file_atomic(staged_path, final_path)
         replace_file_atomic(staged_sidecar, final_sidecar)
-        if validate_unbound_sources:
-            validated = validate_authenticated_artifact_unbound(
-                final_path,
-                expected_location=location,
-                expected_method_contract=method_contract,
-                expected_versions=stage_identity.versions,
-                validate_provenance=False,
-            )
+        if sources:
             resolved_source_paths = source_paths or {}
             if set(resolved_source_paths) != {source.logical_role for source in sources}:
                 raise ArtifactMismatchError(
@@ -1866,19 +1894,33 @@ def publish_staged_authenticated_artifact_atomic(
                     raise ArtifactMismatchError(
                         f"source artifact identity changed: {source.logical_role}"
                     )
-            return validated
-        validate_authenticated_artifact(
-            final_path,
-            cfg=cfg,
-            expected_location=location,
-            expected_stage_identity=stage_identity,
-            expected_method_contract=method_contract,
-            expected_versions=stage_identity.versions,
-            source_paths=source_paths,
-            source_configs=source_configs,
-            manifest_paths=manifest_paths,
-            manifest_configs=manifest_configs,
-        )
+        if manifest_roots:
+            resolved_manifest_paths = manifest_paths or {}
+            if set(resolved_manifest_paths) != {
+                manifest.logical_role for manifest in manifest_roots
+            }:
+                raise ArtifactMismatchError(
+                    "all declared immutable manifest roles require exact paths"
+                )
+            for manifest in manifest_roots:
+                manifest_path, manifest_sidecar_path = resolved_manifest_paths[
+                    manifest.logical_role
+                ]
+                loaded = load_immutable_manifest_sidecar(manifest_path)
+                if (
+                    manifest_sidecar_path.resolve() != sidecar_path(manifest_path).resolve()
+                    or sha256_file(manifest_path) != manifest.manifest_sha256
+                    or sha256_file(manifest_sidecar_path) != manifest.sidecar_sha256
+                    or loaded.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
+                    or loaded.summary != manifest.summary
+                ):
+                    raise ArtifactMismatchError(
+                        f"immutable manifest identity changed: {manifest.logical_role}"
+                    )
+        # The exact bytes and schema were authenticated from the staged file
+        # immediately before its same-filesystem atomic rename.  Rehashing the
+        # canonical name here only repeats the complete data scan and is
+        # especially costly under filesystem providers such as OneDrive.
         return metadata
     finally:
         staged_sidecar.unlink(missing_ok=True)
@@ -1970,6 +2012,7 @@ def classify_authenticated_lifecycle(
     source_configs: Mapping[str, AppConfig] | None = None,
     manifest_paths: Mapping[str, tuple[Path, Path]] | None = None,
     manifest_configs: Mapping[str, AppConfig] | None = None,
+    deep_verify_artifacts: bool = True,
 ) -> CompletionState:
     """Classify authenticated work into exactly one canonical lifecycle state."""
 
@@ -2034,12 +2077,21 @@ def classify_authenticated_lifecycle(
                     if manifest_paths is not None and role in manifest_paths
                 }
             )
-            metadata = validate_authenticated_artifact_unbound(
-                path,
-                expected_location=location,
-                expected_versions=expected_stage_identity.versions,
-                source_paths=resolved_sources,
-                manifest_paths=resolved_manifests,
+            metadata = (
+                validate_authenticated_artifact_unbound(
+                    path,
+                    expected_location=location,
+                    expected_versions=expected_stage_identity.versions,
+                    source_paths=resolved_sources,
+                    manifest_paths=resolved_manifests,
+                )
+                if deep_verify_artifacts
+                else validate_authenticated_artifact_metadata(
+                    path,
+                    cfg=cfg,
+                    expected_location=location,
+                    expected_versions=expected_stage_identity.versions,
+                )
             )
             if (
                 sha256_file(sidecar_path(path)) != output.sidecar_sha256
@@ -2178,6 +2230,7 @@ __all__ = [
     "resolve_code_identity",
     "stage_config_identity",
     "validate_authenticated_artifact",
+    "validate_authenticated_artifact_metadata",
     "validate_authenticated_artifact_unbound",
     "write_authenticated_completion_atomic",
 ]

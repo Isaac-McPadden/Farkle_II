@@ -21,6 +21,7 @@ pytest.importorskip("pyarrow")
 import farkle.simulation.runner as runner
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
+from farkle.utils.artifact_contract import write_artifact_with_sidecar_atomic
 
 
 def _patch_tournament(
@@ -35,7 +36,16 @@ def _patch_tournament(
         calls.update(kwargs)
         ckpt_path = cast(Path, kwargs["checkpoint_path"])
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        ckpt_path.write_bytes(pickle.dumps(payload))
+        content = pickle.dumps(payload)
+        sidecar = kwargs.get("checkpoint_sidecar")
+        if sidecar is None:
+            ckpt_path.write_bytes(content)
+        else:
+
+            def _write(staged: Path) -> None:
+                staged.write_bytes(content)
+
+            write_artifact_with_sidecar_atomic(ckpt_path, sidecar, _write)  # type: ignore[arg-type]
         if after_checkpoint is not None:
             after_checkpoint(ckpt_path, kwargs)  # type: ignore[arg-type]
 

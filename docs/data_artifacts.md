@@ -80,6 +80,25 @@ exposure counters by strategy. Both version identifiers participate explicitly
 in freshness identity, so winner-only predecessor artifacts cannot resume into
 this contract.
 
+Artifact-contract-v3 simulation publication is producer-owned. Each row shard,
+metric chunk, checkpoint, summary, strategy manifest, and workload plan is
+written to a same-directory temporary path and authenticated there before its
+single canonical rename. The adjacent sidecar is then published; a crash may
+leave data without a sidecar, but such bytes are pending work and can never be
+consumed, completed, or sidecarred in place. Resume recomputes that coordinate.
+
+The append-time row and metric records carry the producer-captured content
+hash, byte length, sidecar hash, and Arrow-schema fingerprint. Finalization
+sorts these records by semantic coordinate, removes execution-only timestamp
+and process fields, and publishes one immutable native manifest. Completion
+lists that manifest root instead of expanding every shard into the completion
+inventory. Routine completion and resume validate exact sidecar/manifest
+bytes, declared data lengths, canonical paths, code/config identity, and every
+manifest membership record without rereading or schema-opening every data
+shard. Same-length in-place corruption is outside this metadata-fast path;
+the explicit release audit remains byte-deep and rehashes every adjacent-v3
+artifact, including simulation files outside analysis scope directories.
+
 Ingest and curate operate by k and preserve those identifiers. Curate first
 attempts an independent filesystem copy-on-write reflink of each byte-identical
 ingest Parquet and falls back to a physical copy with a configured byte-bounded

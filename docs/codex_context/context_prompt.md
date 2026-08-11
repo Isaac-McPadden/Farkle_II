@@ -57,6 +57,10 @@ Preserve these invariants:
   are never quarantined for a soft warning, and roots fail fast before pair work;
 - byte-bounded streaming, atomic durable units, and exact resume are permanent
   engineering invariants; a fixed 1 GiB process-tree ceiling is not;
+- simulation v3 publication is producer-owned: staged data is hashed and
+  sidecarred without a canonical data rewrite, coordinate-sorted native
+  manifests reuse those identities, routine completion/resume is metadata-fast,
+  and the explicit release audit remains byte-deep;
 - curate preserves its authenticated provenance boundary with independent
   copy-on-write reflinks where supported and deterministic bounded physical-copy
   fallback; combine keeps normalized by-k Parquets as its only canonical data

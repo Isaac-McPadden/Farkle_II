@@ -120,7 +120,10 @@ def _is_scoped_artifact(path: Path, root: Path) -> bool:
         and not path.name.startswith("._")
         and not any(part.startswith("_") for part in relative.parts)
         and path.suffix.lower() in _DERIVED_SUFFIXES
-        and bool(_CANONICAL_SCOPE_PARTS.intersection(relative.parts))
+        and (
+            bool(_CANONICAL_SCOPE_PARTS.intersection(relative.parts))
+            or _sidecar_path(path).is_file()
+        )
     )
 
 
@@ -178,6 +181,8 @@ def _canonical_location(value: Any) -> CanonicalArtifactLocation:
 
 
 def _canonical_suffix(location: CanonicalArtifactLocation) -> Path:
+    if location.stage_key == "simulation":
+        return Path(location.relative_path)
     parts = [location.scope]
     if location.scope == ArtifactScope.BY_K.value:
         assert location.player_count is not None
@@ -382,7 +387,10 @@ def _audit_completion(path: Path, index: _AuditIndex) -> list[str]:
             record = index.resolve(canonical_location)
             if record is None:
                 raise ValueError(f"completion output is missing: {location}")
-            expected_path = path.parent / _canonical_suffix(canonical_location)
+            expected_root = (
+                path.parent.parent if canonical_location.stage_key == "simulation" else path.parent
+            )
+            expected_path = expected_root / _canonical_suffix(canonical_location)
             if record.path.resolve() != expected_path.resolve():
                 raise ValueError(
                     "completion output is outside its canonical stage layout: " f"{record.path}"

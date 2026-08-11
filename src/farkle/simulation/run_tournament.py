@@ -42,6 +42,7 @@ from farkle.simulation.workload_planner import (
 )
 from farkle.utils import parallel
 from farkle.utils import random as urandom
+from farkle.utils.artifact_contract import ArtifactSidecar, write_artifact_with_sidecar_atomic
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
@@ -454,6 +455,7 @@ def _run_chunk_metrics(
     collect_rows: bool = False,
     row_dir: Path | None = None,
     manifest_path: Path | None = None,
+    row_sidecar: ArtifactSidecar | None = None,
 ) -> Tuple[
     Counter[int | str],
     Dict[str, Dict[int | str, float]],
@@ -531,6 +533,7 @@ def _run_chunk_metrics(
                         else {}
                     ),
                 },
+                sidecar=row_sidecar,
             )
             LOGGER.info(
                 "Row shard written",
@@ -590,6 +593,7 @@ def _save_checkpoint(
     sq_sums: Mapping[str, Mapping[int | str, float]] | None,
     *,
     meta: Mapping[str, Any] | None = None,
+    sidecar: ArtifactSidecar | None = None,
 ) -> None:
     """Pickle the current aggregates to path."""
 
@@ -602,8 +606,16 @@ def _save_checkpoint(
     if meta:
         payload["meta"] = dict(meta)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
-        Path(tmp_path).write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    content = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    if sidecar is None:
+        with atomic_path(str(path)) as tmp_path:
+            Path(tmp_path).write_bytes(content)
+        return
+
+    def _write(staged: Path) -> None:
+        staged.write_bytes(content)
+
+    write_artifact_with_sidecar_atomic(path, sidecar, _write)
 
 
 def _coerce_counter(raw: object, outcome_counts: Mapping[str, Any] | None = None) -> OutcomeCounter:
@@ -1019,6 +1031,11 @@ def run_tournament(
     workload_plan_path: Path | None = None,
     oracle_game_profile: GameProfile | None = None,
     memory_guard: parallel.ProcessTreeMemoryGuard | None = None,
+    row_sidecar: ArtifactSidecar | None = None,
+    metric_chunk_sidecar: ArtifactSidecar | None = None,
+    checkpoint_sidecar: ArtifactSidecar | None = None,
+    write_final_metrics_artifact: bool = True,
+    write_workload_plan_artifact: bool = True,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -1135,7 +1152,7 @@ def run_tournament(
                 "Tournament workload plan does not match the resolved run configuration"
             )
         workload_plan = workload_plan.with_games_per_second(games_per_sec)
-        if workload_plan_path is not None:
+        if workload_plan_path is not None and write_workload_plan_artifact:
             write_workload_plan(workload_plan_path, workload_plan)
         LOGGER.info(
             "Tournament workload projection complete",
@@ -1356,11 +1373,15 @@ def run_tournament(
 
     if collect_metrics or collect_rows:
         manifest_path = row_manifest_path
+        chunk_kwargs: dict[str, Any] = {
+            "collect_rows": collect_rows,
+            "row_dir": row_output_directory,
+            "manifest_path": manifest_path,
+        }
+        if row_sidecar is not None:
+            chunk_kwargs["row_sidecar"] = row_sidecar
         chunk_fn: Callable[[Sequence[ShuffleTask]], object] = partial(
-            _run_chunk_metrics,
-            collect_rows=collect_rows,
-            row_dir=row_output_directory,
-            manifest_path=manifest_path,
+            _run_chunk_metrics, **chunk_kwargs
         )
     else:
         chunk_fn = _run_chunk
@@ -1471,6 +1492,7 @@ def run_tournament(
                                 else {}
                             ),
                         },
+                        sidecar=metric_chunk_sidecar,
                     )
                     LOGGER.info(
                         "Metrics chunk written",
@@ -1524,6 +1546,7 @@ def run_tournament(
                     (metric_sums if (collect_metrics or collect_rows) else None),
                     (metric_sq_sums if (collect_metrics or collect_rows) else None),
                     meta=checkpoint_meta,
+                    sidecar=checkpoint_sidecar,
                 )
                 checkpoint_progress.maybe_log(
                     win_totals.games_attempted,
@@ -1574,8 +1597,14 @@ def run_tournament(
         metric_sums if (collect_metrics or collect_rows) else None,
         metric_sq_sums if (collect_metrics or collect_rows) else None,
         meta=checkpoint_meta,
+        sidecar=checkpoint_sidecar,
     )
-    if (collect_metrics or collect_rows) and metric_sums is not None and metric_sq_sums is not None:
+    if (
+        write_final_metrics_artifact
+        and (collect_metrics or collect_rows)
+        and metric_sums is not None
+        and metric_sq_sums is not None
+    ):
         metrics_rows = []
         for label in METRIC_LABELS:
             sums_for_label = metric_sums.get(label, {})

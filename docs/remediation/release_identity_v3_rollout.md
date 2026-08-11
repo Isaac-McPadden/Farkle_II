@@ -44,6 +44,24 @@ promoted or consumed by adding a new sidecar.
 | migration inventory and reporting | Migration report version 3, structure report contract 4, Markdown, plot, and JSON publish as v3. Retired artifact contents remain unread. | Reporting completion owns all final products and sidecars. No report is reusable when any source, method, version, or sidecar identity differs. |
 | global lifecycle, audit, and health | Root/pair stage state is derived only from authenticated v3 completions. Run contexts are self-hashed, revalidated against adjacent active configs, and bind parent lifecycle roots and code identity. | The read-only release audit requires explicit fresh roots, rejects missing/orphan/mixed sidecars and incompatible completion inventories, and cannot succeed by discovering an old tree. `pipeline_health.json` remains operational non-evidence, but `complete_success` is gated on the authenticated graph audit and records accepted identity, run-context hashes, code identity, audit roots/failures, and release eligibility. Production requires release-clean Git identity. |
 
+### Simulation publication ownership and validation depth
+
+Simulation no longer uses the historical adapter that read each completed
+artifact into `bytes` and rewrote identical data merely to attach v3 metadata.
+The bounded producer writes and hashes its staged file once, publishes data and
+sidecar coherently, and records that authenticated identity in the append
+manifest. Finalization creates a coordinate-sorted native manifest from those
+records and completion binds its immutable root plus standalone output/sidecar
+identities. Missing sidecars never authorize backfill or promotion.
+
+Routine simulation completion and resume are deliberately manifest/metadata
+validation: they hash small manifest and sidecar control files, stat declared
+data lengths, and verify every manifest identity and current code/config
+contract. They do not rehash or schema-open every large shard. Release audit is
+the separate assurance operation and still performs a complete byte hash and
+format/schema authentication for every v3 artifact, including simulation
+artifacts whose physical path is rooted directly below `results_root`.
+
 ### Public switch and fast-run isolation
 
 - `ArtifactContractConfig` defaults and all genuinely runnable checked-in

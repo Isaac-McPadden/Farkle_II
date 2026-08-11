@@ -50,17 +50,21 @@ from farkle.simulation.workload_planner import (
 )
 from farkle.utils import random as urandom
 from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
     make_artifact_sidecar,
     sha256_file,
     sidecar_path,
     write_artifact_with_sidecar_atomic,
 )
-from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
 from farkle.utils.authenticated_contract import (
     ArtifactMismatchError,
+    AuthenticatedContractError,
     ManifestEntry,
-    load_authenticated_sidecar,
-    validate_authenticated_artifact_unbound,
+    canonical_json_bytes,
+    compute_manifest_root,
+    load_immutable_manifest_sidecar,
+    validate_authenticated_artifact_metadata,
 )
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
@@ -297,10 +301,17 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
         return False
     if is_v3_config(cfg):
         try:
+            for path in outputs:
+                if path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
+                    _publish_simulation_manifest_v3(
+                        cfg,
+                        path=path,
+                        n_players=n_players,
+                    )
             return any(
                 path.resolve().is_relative_to(cfg.n_dir(n_players).resolve()) for path in outputs
             )
-        except OSError:
+        except (OSError, ValueError, AuthenticatedContractError):
             return False
     try:
         payload = json.loads(done_path.read_text(encoding="utf-8"))
@@ -322,12 +333,119 @@ def _simulation_stage_config_sha(cfg: AppConfig, n_players: int) -> str:
     return freshness_sha256(identity)
 
 
+def _simulation_output_sidecar(
+    cfg: AppConfig,
+    path: Path,
+    *,
+    n_players: int,
+    operation: str,
+    sources: Sequence[Path] = (),
+    support_counts: Sequence[int] | None = None,
+) -> ArtifactSidecar:
+    """Build the v3 producer contract used at the original simulation write."""
+
+    counts = list(support_counts if support_counts is not None else [n_players])
+    return make_artifact_sidecar(
+        cfg,
+        path,
+        producer="simulation",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope=ArtifactScope.DIAGNOSTICS,
+        operation=operation,
+        baseline="tournament_design",
+        weighted_quantity="raw_simulation_evidence",
+        support_count_role="root_k_simulation",
+        uncertainty_method="deterministic_monte_carlo",
+        replication_unit="shuffle",
+        conditioning="all_attempted_games",
+        source_artifacts=sources,
+        player_counts=counts,
+        required_player_counts=counts,
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+        method_contract={
+            "kind": "operation",
+            "procedure": operation,
+            "parameters": {
+                "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+                "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            },
+        },
+    )
+
+
+def _write_parquet_simulation_output(
+    cfg: AppConfig,
+    table: pa.Table,
+    path: Path,
+    *,
+    n_players: int,
+    operation: str,
+    sources: Sequence[Path],
+) -> None:
+    sidecar = _simulation_output_sidecar(
+        cfg,
+        path,
+        n_players=n_players,
+        operation=operation,
+        sources=sources,
+    )
+    write_parquet_artifact_atomic(table, path, sidecar=sidecar)
+
+
+def _write_workload_plan_simulation_output(
+    cfg: AppConfig,
+    path: Path,
+    plan: TournamentWorkloadPlan,
+    *,
+    n_players: int,
+    strategy_manifest: Path,
+) -> None:
+    """Publish the immutable workload plan once, or validate an exact resume."""
+
+    expected = json.dumps(plan.to_dict(), indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    if path.exists():
+        metadata = validate_authenticated_artifact_metadata(path, cfg=cfg)
+        if path.stat().st_size != len(expected):
+            raise ValueError(f"simulation workload plan is stale: {path}")
+        if path.read_bytes() != expected:
+            raise ValueError(
+                f"simulation workload plan does not match current configuration: {path}"
+            )
+        if metadata.artifact.content_sha256 != hashlib.sha256(expected).hexdigest():
+            raise ValueError(f"simulation workload plan identity is stale: {path}")
+        return
+    sidecar = _simulation_output_sidecar(
+        cfg,
+        path,
+        n_players=n_players,
+        operation="publish_simulation_workload_plan",
+        sources=[strategy_manifest],
+    )
+
+    def _write(staged: Path) -> None:
+        staged.write_bytes(expected)
+
+    write_artifact_with_sidecar_atomic(path, sidecar, _write)
+
+
 def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Path]:
     """Expand directories so a stamp never recursively authenticates itself."""
 
     files: list[Path] = []
     for path in paths:
         if path.is_dir():
+            immutable_manifests = [
+                candidate
+                for candidate in (
+                    path / "manifest.jsonl",
+                    path / "metrics_manifest.jsonl",
+                )
+                if candidate.is_file() and sidecar_path(candidate).is_file()
+            ]
+            if immutable_manifests:
+                files.extend(immutable_manifests)
+                continue
             files.extend(
                 child
                 for child in sorted(path.rglob("*"), key=lambda item: item.as_posix())
@@ -345,9 +463,12 @@ def _publish_simulation_manifest_v3(
     *,
     path: Path,
     n_players: int,
+    expected_entry_count: int | None = None,
 ) -> None:
     records = list(iter_manifest(path))
     entries: list[ManifestEntry] = []
+    canonical_records: list[tuple[tuple[int, ...], dict[str, Any]]] = []
+    reference_metadata = None
     for index, record in enumerate(records):
         raw_path = record.get("path")
         if not isinstance(raw_path, str):
@@ -355,27 +476,70 @@ def _publish_simulation_manifest_v3(
         source = Path(raw_path)
         if not source.is_absolute():
             source = path.parent / source
-        metadata = load_authenticated_sidecar(source)
+        metadata = validate_authenticated_artifact_metadata(source, cfg=cfg)
+        if reference_metadata is None:
+            reference_metadata = metadata
         schema = metadata.artifact.arrow_schema
         if schema is None:
             raise ValueError(f"simulation shard is not Parquet: {source}")
         coordinate_value = record.get(
             "shuffle_index",
-            record.get("deterministic_batch_id", index),
+            record.get("process_block_index", record.get("deterministic_batch_id", index)),
         )
         coordinate = (int(coordinate_value),)
+        adjacent = sidecar_path(source)
+        current_sidecar_sha256 = sha256_file(adjacent)
+        declared_identity = {
+            "data_sha256": metadata.artifact.content_sha256,
+            "byte_length": metadata.artifact.byte_length,
+            "sidecar_sha256": current_sidecar_sha256,
+            "schema_fingerprint_sha256": schema.fingerprint_sha256,
+        }
+        if any(record.get(key) != value for key, value in declared_identity.items()):
+            raise ValueError(f"simulation manifest identity mismatch for {source}")
         entries.append(
             ManifestEntry(
                 coordinate=coordinate,
                 canonical_relative_path=source.resolve()
                 .relative_to(cfg.results_root.resolve())
                 .as_posix(),
-                data_sha256=sha256_file(source),
-                sidecar_sha256=sha256_file(sidecar_path(source)),
+                data_sha256=metadata.artifact.content_sha256,
+                sidecar_sha256=current_sidecar_sha256,
                 schema_fingerprint_sha256=schema.fingerprint_sha256,
             )
         )
-    entries.sort(key=lambda item: item.coordinate)
+        canonical_record = {key: value for key, value in record.items() if key not in {"pid", "ts"}}
+        canonical_record.update(declared_identity)
+        canonical_records.append((coordinate, canonical_record))
+    paired = sorted(
+        zip(entries, canonical_records, strict=True), key=lambda item: item[0].coordinate
+    )
+    entries = [item[0] for item in paired]
+    ordered_records = [item[1][1] for item in paired]
+    if not entries:
+        raise ValueError(f"simulation manifest has no authenticated entries: {path}")
+    if expected_entry_count is not None and len(entries) != expected_entry_count:
+        raise ValueError(
+            f"simulation manifest entry count mismatch at {path}: "
+            f"expected {expected_entry_count}, found {len(entries)}"
+        )
+    expected_summary = compute_manifest_root(entries)
+    expected_native_sha = hashlib.sha256()
+    for record in ordered_records:
+        expected_native_sha.update(canonical_json_bytes(record) + b"\n")
+    if sidecar_path(path).is_file():
+        existing = load_immutable_manifest_sidecar(path)
+        if (
+            existing.summary == expected_summary
+            and existing.manifest_sha256 == expected_native_sha.hexdigest()
+            and sha256_file(path) == existing.manifest_sha256
+            and reference_metadata is not None
+            and existing.stage_identity.code == reference_metadata.stage_identity.code
+            and existing.stage_identity.stage_config
+            == reference_metadata.stage_identity.stage_config
+        ):
+            return
+        raise ValueError(f"existing simulation manifest identity is stale: {path}")
     publish_native_manifest_v3(
         path,
         cfg=cfg,
@@ -384,6 +548,7 @@ def _publish_simulation_manifest_v3(
         source_paths=[],
         operation="publish_simulation_shard_manifest",
         player_counts=[n_players],
+        native_records=ordered_records,
     )
 
 
@@ -395,11 +560,13 @@ def _publish_simulation_outputs_v3(
     done_path: Path,
     allow_unsealed_outputs: bool,
     rewritten_outputs: Sequence[Path] = (),
+    num_shuffles: int | None = None,
+    shuffles_per_batch: int | None = None,
 ) -> None:
     if not is_v3_config(cfg):
         return
     files = _completion_output_files(outputs, done_path)
-    rewritten = {path.resolve() for path in rewritten_outputs}
+    _ = allow_unsealed_outputs, rewritten_outputs
     manifests = [
         path
         for path in files
@@ -407,109 +574,36 @@ def _publish_simulation_outputs_v3(
         and path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}
     ]
     ordinary = [path for path in files if path not in manifests]
-    strategy = cfg.strategy_manifest_root_path()
-    workload = done_path.parent / "simulation_workload_plan.json"
-    ordered = sorted(
-        ordinary,
-        key=lambda path: (
-            (
-                0
-                if path.resolve() == strategy.resolve()
-                else 1 if path.resolve() == workload.resolve() else 2
-            ),
-            path.as_posix(),
-        ),
-    )
-    for path in ordered:
+    for path in sorted(ordinary, key=lambda item: item.as_posix()):
         if not path.is_file() or path.stat().st_size <= 0:
             raise FileNotFoundError(f"simulation output is missing or empty: {path}")
         adjacent = sidecar_path(path)
-        is_rewritten = path.resolve() in rewritten
-        if adjacent.is_file():
-            try:
-                payload = json.loads(adjacent.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                payload = {}
-            if payload.get("artifact_contract_version") == 3:
-                try:
-                    validate_authenticated_artifact_unbound(path, validate_provenance=False)
-                except ArtifactMismatchError:
-                    if not is_rewritten:
-                        raise
-                else:
-                    continue
-            else:
-                raise ValueError(f"legacy sidecar cannot satisfy simulation v3: {path}")
-        if not allow_unsealed_outputs and not is_rewritten:
+        if not adjacent.is_file():
             raise ValueError(
-                "refusing to promote pre-existing simulation bytes into artifact "
-                f"contract v3: {path}"
+                "refusing to promote pre-existing simulation bytes: simulation "
+                f"producer did not publish an authenticated v3 sidecar for {path}"
             )
-        sources: list[Path] = []
-        if path.resolve() != strategy.resolve():
-            sources.append(strategy)
-        if path.resolve() not in {strategy.resolve(), workload.resolve()}:
-            sources.append(workload)
-        operation = (
-            "publish_strategy_manifest"
-            if path.resolve() == strategy.resolve()
-            else (
-                "publish_simulation_workload_plan"
-                if path.resolve() == workload.resolve()
-                else "publish_simulation_output"
-            )
-        )
-        support_counts = (
-            sorted({int(value) for value in cfg.sim.n_players_list})
-            if path.resolve() == strategy.resolve()
-            else [n_players]
-        )
-        metadata = make_artifact_sidecar(
-            cfg,
-            path,
-            producer="simulation",
-            scope=ArtifactScope.DIAGNOSTICS,
-            source_scope=ArtifactScope.DIAGNOSTICS,
-            operation=operation,
-            baseline="tournament_design",
-            weighted_quantity="raw_simulation_evidence",
-            support_count_role="root_k_simulation",
-            uncertainty_method="deterministic_monte_carlo",
-            replication_unit="shuffle",
-            conditioning="all_attempted_games",
-            source_artifacts=sources,
-            player_counts=support_counts,
-            required_player_counts=support_counts,
-            missing_cell_policy="fail",
-            seed_scope="single_root",
-            method_contract={
-                "kind": "operation",
-                "procedure": operation,
-                "parameters": {
-                    "tournament_method_version": TOURNAMENT_METHOD_VERSION,
-                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-                },
-            },
-        )
-        existing = path.read_bytes()
-
-        def _write_existing(
-            staged: Path,
-            *,
-            content: bytes = existing,
-        ) -> None:
-            staged.write_bytes(content)
-
-        write_artifact_with_sidecar_atomic(
-            path,
-            metadata,
-            _write_existing,
-        )
+        try:
+            validate_authenticated_artifact_metadata(path, cfg=cfg)
+        except ArtifactMismatchError as exc:
+            raise ValueError(f"simulation output metadata is invalid: {path}") from exc
     for manifest in manifests:
+        expected_entry_count = None
+        if num_shuffles is not None:
+            expected_entry_count = (
+                num_shuffles
+                if manifest.name == "manifest.jsonl"
+                else (
+                    None
+                    if shuffles_per_batch is None
+                    else (num_shuffles + shuffles_per_batch - 1) // shuffles_per_batch
+                )
+            )
         _publish_simulation_manifest_v3(
             cfg,
             path=manifest,
             n_players=n_players,
+            expected_entry_count=expected_entry_count,
         )
 
 
@@ -553,6 +647,8 @@ def write_simulation_done(
         done_path=done_path,
         allow_unsealed_outputs=allow_unsealed_v3_outputs,
         rewritten_outputs=rewritten_outputs,
+        num_shuffles=num_shuffles,
+        shuffles_per_batch=shuffles_per_batch,
     )
     output_files = _completion_output_files(outputs, done_path)
     immutable_inputs = [
@@ -806,7 +902,43 @@ def _has_unsealed_simulation_outputs(
                 and not path.name.endswith(".done.json")
                 and not path.name.startswith("._")
             )
-    return any(path.is_file() and not sidecar_path(path).is_file() for path in candidates)
+
+    def _requires_preexisting_seal(path: Path) -> bool:
+        if not path.is_file() or sidecar_path(path).is_file():
+            return False
+        if path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
+            return False
+        return not (
+            path.suffix.lower() == ".parquet"
+            and (path.name.startswith("rows_") or path.name.startswith("metrics_"))
+        )
+
+    return any(_requires_preexisting_seal(path) for path in candidates)
+
+
+def _validate_manifest_record_identity_v3(
+    cfg: AppConfig,
+    manifest_path: Path,
+    record: Mapping[str, Any],
+) -> None:
+    """Reject a partial manifest record not backed by one exact sealed shard."""
+
+    raw_path = record.get("path")
+    if not isinstance(raw_path, str):
+        raise ValueError(f"simulation manifest entry is missing a path: {manifest_path}")
+    shard = Path(raw_path)
+    if not shard.is_absolute():
+        shard = manifest_path.parent / shard
+    metadata = validate_authenticated_artifact_metadata(shard, cfg=cfg)
+    schema = metadata.artifact.arrow_schema
+    expected = {
+        "data_sha256": metadata.artifact.content_sha256,
+        "byte_length": metadata.artifact.byte_length,
+        "sidecar_sha256": sha256_file(sidecar_path(shard)),
+        "schema_fingerprint_sha256": (None if schema is None else schema.fingerprint_sha256),
+    }
+    if schema is None or any(record.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"simulation manifest shard identity mismatch: {shard}")
 
 
 def _validate_resume_outputs(
@@ -851,6 +983,8 @@ def _validate_resume_outputs(
         expected_meta["game_profile_sha256"] = cfg._game_profile_sha256
     root_manifest_path = cfg.strategy_manifest_root_path()
     if root_manifest_path.exists():
+        if is_v3_config(cfg) and sidecar_path(root_manifest_path).is_file():
+            validate_authenticated_artifact_metadata(root_manifest_path, cfg=cfg)
         _validate_manifest_matches(strategies_manifest, root_manifest_path, label="Strategy")
     else:
         raise ValueError(
@@ -862,6 +996,13 @@ def _validate_resume_outputs(
         metric_chunk_dir is not None and (metric_chunk_dir / "metrics_manifest.jsonl").exists()
     )
     if ckpt_path.exists():
+        if is_v3_config(cfg) and sidecar_path(ckpt_path).is_file():
+            try:
+                validate_authenticated_artifact_metadata(ckpt_path, cfg=cfg)
+            except AuthenticatedContractError as exc:
+                raise ValueError(
+                    f"Checkpoint metadata mismatch at {ckpt_path}; rerun with --force."
+                ) from exc
         payload = pickle.loads(ckpt_path.read_bytes())
         meta = payload.get("meta")
         if not isinstance(meta, Mapping):
@@ -899,6 +1040,11 @@ def _validate_resume_outputs(
             unexpected = 0
             coordinate_errors = 0
             for record in iter_manifest(manifest_path):
+                record_path = manifest_path.parent / str(record.get("path", ""))
+                if is_v3_config(cfg) and (
+                    "data_sha256" in record or sidecar_path(record_path).is_file()
+                ):
+                    _validate_manifest_record_identity_v3(cfg, manifest_path, record)
                 seed_val = record.get("shuffle_seed")
                 index_val = record.get("shuffle_index")
                 if seed_val is None or index_val is None:
@@ -946,6 +1092,11 @@ def _validate_resume_outputs(
             seen_shuffle_indices: set[int] = set()
             duplicates = 0
             for record in iter_manifest(metrics_manifest):
+                record_path = metrics_manifest.parent / str(record.get("path", ""))
+                if is_v3_config(cfg) and (
+                    "data_sha256" in record or sidecar_path(record_path).is_file()
+                ):
+                    _validate_manifest_record_identity_v3(cfg, metrics_manifest, record)
                 batch_value = record.get("deterministic_batch_id")
                 block_value = record.get("process_block_index")
                 start_value = record.get("shuffle_index_start")
@@ -1121,6 +1272,9 @@ def run_single_n(
     results_dir = cfg.results_root
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
+    if not force and simulation_is_complete(cfg, n):
+        LOGGER.info("Simulation already complete; preserving published outputs for %sp", n)
+        return total_games
     workload_plan_path = n_dir / "simulation_workload_plan.json"
     row_dir = _resolve_row_output_dir(cfg, n)
     metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
@@ -1187,13 +1341,28 @@ def run_single_n(
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
         )
-    write_workload_plan(workload_plan_path, workload_plan)
+    manifest_path = cfg.strategy_manifest_root_path()
     if not manifest.empty:
-        manifest_path = cfg.strategy_manifest_root_path()
         if not manifest_path.exists():
-            write_parquet_atomic(
-                pa.Table.from_pandas(manifest, preserve_index=False), manifest_path
-            )
+            manifest_table = pa.Table.from_pandas(manifest, preserve_index=False)
+            if is_v3_config(cfg):
+                write_parquet_artifact_atomic(
+                    manifest_table,
+                    manifest_path,
+                    sidecar=_simulation_output_sidecar(
+                        cfg,
+                        manifest_path,
+                        n_players=n,
+                        operation="publish_strategy_manifest",
+                        support_counts=sorted({int(value) for value in cfg.sim.n_players_list}),
+                    ),
+                )
+            else:
+                write_parquet_atomic(manifest_table, manifest_path)
+        else:
+            if is_v3_config(cfg):
+                validate_authenticated_artifact_metadata(manifest_path, cfg=cfg)
+            _validate_manifest_matches(manifest, manifest_path, label="Strategy")
         if row_dir is not None and row_dir != n_dir:
             row_dir.mkdir(parents=True, exist_ok=True)
         if LOGGER.isEnabledFor(logging.DEBUG):
@@ -1206,6 +1375,51 @@ def run_single_n(
                     "sample": sample,
                 },
             )
+    if is_v3_config(cfg):
+        _write_workload_plan_simulation_output(
+            cfg,
+            workload_plan_path,
+            workload_plan,
+            n_players=n,
+            strategy_manifest=manifest_path,
+        )
+    else:
+        write_workload_plan(workload_plan_path, workload_plan)
+
+    simulation_sources = [manifest_path, workload_plan_path]
+    checkpoint_sidecar = (
+        _simulation_output_sidecar(
+            cfg,
+            ckpt_path,
+            n_players=n,
+            operation="publish_simulation_checkpoint",
+            sources=simulation_sources,
+        )
+        if is_v3_config(cfg)
+        else None
+    )
+    row_sidecar = (
+        _simulation_output_sidecar(
+            cfg,
+            (row_dir or n_dir) / "rows_template.parquet",
+            n_players=n,
+            operation="publish_simulation_row_shard",
+            sources=simulation_sources,
+        )
+        if is_v3_config(cfg) and row_dir is not None
+        else None
+    )
+    metric_chunk_sidecar = (
+        _simulation_output_sidecar(
+            cfg,
+            (metric_chunk_dir or n_dir) / "metrics_template.parquet",
+            n_players=n,
+            operation="publish_simulation_metric_chunk",
+            sources=simulation_sources,
+        )
+        if is_v3_config(cfg) and metric_chunk_dir is not None
+        else None
+    )
 
     # --- Tournament run ---
     tourn_cfg = TournamentConfig(
@@ -1255,6 +1469,11 @@ def run_single_n(
         workload_plan_path=workload_plan_path,
         oracle_game_profile=oracle_game_profile,
         memory_guard=memory_guard,
+        row_sidecar=row_sidecar,
+        metric_chunk_sidecar=metric_chunk_sidecar,
+        checkpoint_sidecar=checkpoint_sidecar,
+        write_final_metrics_artifact=not is_v3_config(cfg),
+        write_workload_plan_artifact=not is_v3_config(cfg),
     )
 
     # --- Final checkpoint post-processing ---
@@ -1301,7 +1520,18 @@ def run_single_n(
 
     if summary_rows:
         ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"
-        write_parquet_atomic(pa.Table.from_pylist(summary_rows), ckpt_parquet)
+        summary_table = pa.Table.from_pylist(summary_rows)
+        if is_v3_config(cfg):
+            _write_parquet_simulation_output(
+                cfg,
+                summary_table,
+                ckpt_parquet,
+                n_players=n,
+                operation="publish_simulation_checkpoint_summary",
+                sources=simulation_sources,
+            )
+        else:
+            write_parquet_atomic(summary_table, ckpt_parquet)
 
     # (B) Expanded metrics parquet
     if cfg.sim.expanded_metrics:
@@ -1349,7 +1579,18 @@ def run_single_n(
 
         if metrics_rows:
             metrics_file = n_dir / f"{n}p_metrics.parquet"
-            write_parquet_atomic(pa.Table.from_pylist(metrics_rows), metrics_file)
+            metrics_table = pa.Table.from_pylist(metrics_rows)
+            if is_v3_config(cfg):
+                _write_parquet_simulation_output(
+                    cfg,
+                    metrics_table,
+                    metrics_file,
+                    n_players=n,
+                    operation="publish_simulation_metrics_summary",
+                    sources=simulation_sources,
+                )
+            else:
+                write_parquet_atomic(metrics_table, metrics_file)
 
     outputs: list[Path] = [ckpt_path, workload_plan_path]
     ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"

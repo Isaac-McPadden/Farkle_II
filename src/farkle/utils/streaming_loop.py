@@ -18,9 +18,10 @@ import pyarrow as pa
 
 from .artifact_contract import (
     ArtifactSidecar,
-    make_artifact_sidecar,
-    write_artifact_with_sidecar_atomic,
+    sha256_file,
+    sidecar_path,
 )
+from .authenticated_contract import load_authenticated_sidecar
 from .manifest import append_manifest_line
 from .types import Compression
 from .writer import ParquetShardWriter
@@ -85,48 +86,25 @@ def run_streaming_shard(
             LOGGER.error("Skipping manifest append because output path %s is missing.", out_path)
             return
 
-    append_manifest_line(
-        manifest_path,
-        {
-            "path": rel_path,
-            "rows": rows,
-            **(manifest_extra or {}),
-        },
-    )
+    record = {
+        "path": rel_path,
+        "rows": rows,
+        **(manifest_extra or {}),
+    }
     if sidecar is not None and sidecar.artifact_contract_version == 3:
-        cfg = sidecar._cfg
-        if cfg is None:
-            raise RuntimeError("authenticated v3 stream manifest requires its owning config")
-        manifest = Path(manifest_path)
-        existing = manifest.read_bytes()
-        manifest_sidecar = make_artifact_sidecar(
-            cfg,
-            manifest,
-            producer=sidecar.producer,
-            scope=sidecar.scope,
-            source_scope=sidecar.scope,
-            operation=f"{sidecar.operation}_stream_manifest",
-            baseline="none",
-            weighted_quantity="coordinate_manifest",
-            support_count_role="streamed_output_inventory",
-            uncertainty_method="none",
-            replication_unit="manifest_entry",
-            conditioning=sidecar.conditioning,
-            source_artifacts=[Path(out_path)],
-            player_counts=sidecar.player_counts,
-            required_player_counts=sidecar.required_player_counts,
-            missing_cell_policy=sidecar.missing_cell_policy,
-            seed_scope=sidecar.seed_scope,
+        authenticated = load_authenticated_sidecar(out_path)
+        schema_identity = authenticated.artifact.arrow_schema
+        if schema_identity is None:
+            raise RuntimeError("streamed simulation shard must declare an Arrow schema")
+        record.update(
+            {
+                "data_sha256": authenticated.artifact.content_sha256,
+                "byte_length": authenticated.artifact.byte_length,
+                "sidecar_sha256": sha256_file(sidecar_path(out_path)),
+                "schema_fingerprint_sha256": schema_identity.fingerprint_sha256,
+            }
         )
-
-        def _write_manifest(staged: Path) -> None:
-            staged.write_bytes(existing)
-
-        write_artifact_with_sidecar_atomic(
-            manifest,
-            manifest_sidecar,
-            _write_manifest,
-        )
+    append_manifest_line(manifest_path, record)
 
 
 def _output_ready(out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None) -> bool:
@@ -193,6 +171,7 @@ def writer_thread(
     row_group_size: int,
     compression: Compression,
     manifest_extra: Dict[str, Any] | None,
+    sidecar: ArtifactSidecar | None = None,
 ):
     """Consume tables from ``pop`` and write them via :func:`run_streaming_shard`."""
 
@@ -212,6 +191,7 @@ def writer_thread(
         row_group_size=row_group_size,
         compression=compression,
         manifest_extra=manifest_extra,
+        sidecar=sidecar,
     )
 
 

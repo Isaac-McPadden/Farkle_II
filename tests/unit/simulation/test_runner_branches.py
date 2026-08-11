@@ -10,14 +10,29 @@ import pandas as pd
 import pytest
 from tests.helpers.artifact_sidecars import (
     make_authenticated_v3_config,
-    publish_v3_strategy_manifest,
+    publish_v3_simulation_run,
 )
 
-pytest.importorskip("pyarrow")
+pa = pytest.importorskip("pyarrow")
 
 import farkle.simulation.runner as runner
 from farkle.config import AppConfig, SimConfig, assign_config_sha
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.artifact_contract import write_artifact_with_sidecar_atomic
+
+
+def _write_fake_checkpoint(kwargs: dict[str, Any], payload: object) -> None:
+    path = Path(kwargs["checkpoint_path"])
+    content = pickle.dumps(payload)
+    sidecar = kwargs.get("checkpoint_sidecar")
+    if sidecar is None:
+        path.write_bytes(content)
+        return
+
+    def _write(staged: Path) -> None:
+        staged.write_bytes(content)
+
+    write_artifact_with_sidecar_atomic(path, sidecar, _write)
 
 
 def _cfg(tmp_path: Path, **sim_kwargs: Any) -> AppConfig:
@@ -101,32 +116,24 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     )
     assert runner.simulation_is_complete(cfg, 2) is False
 
-    checkpoint = cfg.results_root / "2_players" / "2p_checkpoint.pkl"
-    checkpoint.write_bytes(pickle.dumps({"checkpoint": True}))
-    publish_v3_strategy_manifest(
+    published = publish_v3_simulation_run(
         cfg,
-        (
+        pa.table({"value": [1]}),
+        strategies=(
             ThresholdStrategy(300, 3, strategy_id=1),
             ThresholdStrategy(500, 2, strategy_id=2),
         ),
     )
-    workload = done_path.parent / "simulation_workload_plan.json"
-    workload.write_text("{}", encoding="utf-8")
-    marker = runner.write_simulation_done(
-        cfg,
-        2,
-        num_shuffles=3,
-        shuffles_per_batch=1,
-        n_strategies=2,
-        outputs=[checkpoint, cfg.strategy_manifest_root_path(), workload],
-        allow_unsealed_v3_outputs=True,
-    )
+    marker = published.completion
     assert marker == done_path
     assert runner.simulation_is_complete(cfg, 2) is True
     payload = json.loads(done_path.read_text())
     assert payload["state"] == "complete_valid"
-    assert {item["artifact"]["location"]["relative_path"] for item in payload["outputs"]} == {
-        "2_players/2p_checkpoint.pkl",
+    assert {
+        (item.get("artifact") or item.get("manifest"))["location"]["relative_path"]
+        for item in payload["outputs"]
+    } == {
+        "2_players/2p_rows/manifest.jsonl",
         "2_players/simulation_workload_plan.json",
         "strategy_manifest.parquet",
     }
@@ -253,7 +260,7 @@ def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: boo
                 "strategy_manifest_sha": "bad" if wrong_meta else metadata["strategy_manifest_sha"],
             },
         }
-        ckpt.write_bytes(pickle.dumps(payload))
+        _write_fake_checkpoint(kwargs, payload)
 
     monkeypatch.setattr(runner.tournament_mod, "run_tournament", fake_run_tournament)
 
@@ -321,30 +328,28 @@ def test_run_single_n_branch_table(
 
     def fake_run_tournament(**kwargs: Any) -> None:  # noqa: ANN001
         calls["worker"] += 1
-        ckpt = Path(kwargs["checkpoint_path"])
         meta = kwargs["checkpoint_metadata"]
         assert isinstance(meta, dict)
-        ckpt.write_bytes(
-            pickle.dumps(
-                {
-                    "win_totals": {"s0": 1, "s1": 0},
-                    "outcome_counts": {
-                        "games_attempted": 1,
-                        "games_completed": 1,
-                        "games_safety_limit": 0,
-                        "attempted_exposures": {"s0": 1, "s1": 1},
-                        "completed_exposures": {"s0": 1, "s1": 1},
-                        "safety_limit_exposures": {},
-                    },
-                    "meta": {
-                        "n_players": kwargs["config"].n_players,
-                        "num_shuffles": kwargs["num_shuffles"],
-                        "global_seed": kwargs["global_seed"],
-                        "n_strategies": len(kwargs["strategies"]),
-                        **meta,
-                    },
-                }
-            )
+        _write_fake_checkpoint(
+            kwargs,
+            {
+                "win_totals": {"s0": 1, "s1": 0},
+                "outcome_counts": {
+                    "games_attempted": 1,
+                    "games_completed": 1,
+                    "games_safety_limit": 0,
+                    "attempted_exposures": {"s0": 1, "s1": 1},
+                    "completed_exposures": {"s0": 1, "s1": 1},
+                    "safety_limit_exposures": {},
+                },
+                "meta": {
+                    "n_players": kwargs["config"].n_players,
+                    "num_shuffles": kwargs["num_shuffles"],
+                    "global_seed": kwargs["global_seed"],
+                    "n_strategies": len(kwargs["strategies"]),
+                    **meta,
+                },
+            },
         )
 
     monkeypatch.setattr(runner.tournament_mod, "run_tournament", fake_run_tournament)
@@ -1032,7 +1037,6 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
     ]
 
     def fake_worker(**kwargs: Any) -> None:  # noqa: ANN001
-        ckpt = Path(kwargs["checkpoint_path"])
         meta_sha = kwargs["checkpoint_metadata"]["strategy_manifest_sha"]
         payload = payloads.pop(0)
         payload["meta"] = {
@@ -1043,7 +1047,7 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
             **kwargs["checkpoint_metadata"],
             "strategy_manifest_sha": meta_sha,
         }
-        ckpt.write_bytes(pickle.dumps(payload))
+        _write_fake_checkpoint(kwargs, payload)
 
     captured_outputs: list[list[Path]] = []
 

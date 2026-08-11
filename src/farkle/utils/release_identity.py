@@ -9,7 +9,8 @@ sidecars are never upgraded or accepted as v3 sources.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import shutil
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from farkle.utils.authenticated_contract import (
     publish_staged_authenticated_artifact_atomic,
     resolve_code_identity,
     stage_config_identity,
+    validate_authenticated_artifact_metadata,
     validate_authenticated_artifact_unbound,
     write_authenticated_completion_atomic,
 )
@@ -558,7 +560,7 @@ def publish_staged_v3_from_metadata(
             )
     versions, method_version = _versions(cfg, stage_key=stage_key, metadata=metadata)
     method = _typed_method(cfg, metadata, method_version=method_version)
-    sources, manifests, source_paths, _manifest_paths, designs = _capture_inputs(metadata)
+    sources, manifests, source_paths, manifest_paths, designs = _capture_inputs(metadata)
     if cfg._run_lineage_sha256 is not None:
         designs["run_lineage_sha256"] = cfg._run_lineage_sha256
     if cfg._game_profile_sha256 is not None:
@@ -590,7 +592,7 @@ def publish_staged_v3_from_metadata(
         upstream_identity_sha256=upstream,
         immutable_design_identities=dict(sorted(designs.items())),
     )
-    publish_staged_authenticated_artifact_atomic(
+    authenticated = publish_staged_authenticated_artifact_atomic(
         staged_path,
         final_path,
         cfg=cfg,
@@ -601,9 +603,10 @@ def publish_staged_v3_from_metadata(
         sources=sources,
         manifest_roots=manifests,
         source_paths=source_paths,
+        manifest_paths=manifest_paths,
         validate_unbound_sources=True,
     )
-    return _compatibility_view(final_path, metadata=metadata)
+    return _compatibility_view(final_path, metadata=metadata, authenticated=authenticated)
 
 
 def publish_native_manifest_v3(
@@ -615,6 +618,7 @@ def publish_native_manifest_v3(
     source_paths: list[Path],
     operation: str,
     player_counts: list[int],
+    native_records: Sequence[Mapping[str, Any]] | None = None,
 ) -> None:
     """Publish native manifest bytes with a coordinate-sorted immutable root."""
 
@@ -685,10 +689,15 @@ def publish_native_manifest_v3(
         upstream_identity_sha256=tuple(item.sha256 for item in sources),
         immutable_design_identities=dict(sorted(designs.items())),
     )
-    native_bytes = path.read_bytes()
 
     def _write_native(staged: Path) -> None:
-        staged.write_bytes(native_bytes)
+        if native_records is not None:
+            with staged.open("wb") as handle:
+                for record in native_records:
+                    handle.write(canonical_json_bytes(dict(record)) + b"\n")
+            return
+        with path.open("rb") as source, staged.open("wb") as destination:
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
 
     publish_immutable_manifest_bytes_atomic(
         path,
@@ -704,8 +713,11 @@ def _compatibility_view(
     path: Path,
     *,
     metadata: ArtifactSidecar | None = None,
+    authenticated: AuthenticatedSidecar | None = None,
 ) -> ArtifactSidecar:
-    loaded = validate_authenticated_artifact_unbound(path, validate_provenance=False)
+    loaded = authenticated or validate_authenticated_artifact_unbound(
+        path, validate_provenance=False
+    )
     method = loaded.method_contract
     location = loaded.artifact.location
     template = metadata
@@ -886,6 +898,7 @@ def _completion_contract(
     stage_key: str,
     inputs: list[Path],
     outputs: list[Path],
+    deep_verify_outputs: bool = True,
 ) -> tuple[
     Any,
     tuple[CompletionOutputIdentity, ...],
@@ -955,9 +968,10 @@ def _completion_contract(
             locations.append(location)
             designs[f"output:{location.relative_path}"] = sha256_file(adjacent)
             continue
-        sidecar = validate_authenticated_artifact_unbound(
-            path,
-            validate_provenance=False,
+        sidecar = (
+            validate_authenticated_artifact_unbound(path, validate_provenance=False)
+            if deep_verify_outputs
+            else validate_authenticated_artifact_metadata(path)
         )
         if stage_key == "hgb":
             expected_hgb_versions, _method_version = _method_versions(
@@ -1043,9 +1057,10 @@ def _completion_contract(
             manifest = load_immutable_manifest_sidecar(path)
             manifest_paths[_manifest_role(manifest)] = (path, adjacent)
         else:
-            sidecar = validate_authenticated_artifact_unbound(
-                path,
-                validate_provenance=False,
+            sidecar = (
+                validate_authenticated_artifact_unbound(path, validate_provenance=False)
+                if deep_verify_outputs
+                else validate_authenticated_artifact_metadata(path)
             )
             source_paths[_source_role(sidecar)] = path
 
@@ -1119,11 +1134,13 @@ def write_v3_stage_completion(
         raise ArtifactContractError(
             "v3 release stages publish only authenticated success or blocked-by-cap state"
         )
+    deep_verify_outputs = stage_key != "simulation"
     stage_identity, identities, locations, source_paths, manifest_paths = _completion_contract(
         cfg,
         stage_key=stage_key,
         inputs=inputs,
         outputs=outputs,
+        deep_verify_outputs=deep_verify_outputs,
     )
     completion = AuthenticatedCompletion(
         lifecycle_contract_version=LIFECYCLE_CONTRACT_VERSION,
@@ -1146,6 +1163,7 @@ def write_v3_stage_completion(
             required_locations=locations,
             source_paths=source_paths,
             manifest_paths=manifest_paths,
+            deep_verify_artifacts=deep_verify_outputs,
         )
         expected_state = (
             CompletionState.COMPLETE_VALID
@@ -1191,11 +1209,13 @@ def resolve_v3_stage_state(
     if not done_path.exists():
         return CompletionState.PARTIAL_RESUMABLE if materialized else CompletionState.NOT_STARTED
     try:
+        deep_verify_outputs = stage_key != "simulation"
         stage_identity, _, locations, source_paths, manifest_paths = _completion_contract(
             cfg,
             stage_key=stage_key,
             inputs=inputs,
             outputs=outputs,
+            deep_verify_outputs=deep_verify_outputs,
         )
     except Exception:
         return CompletionState.COMPLETE_STALE
@@ -1207,6 +1227,7 @@ def resolve_v3_stage_state(
         partial_paths=partial_paths,
         source_paths=source_paths,
         manifest_paths=manifest_paths,
+        deep_verify_artifacts=deep_verify_outputs,
     )
 
 

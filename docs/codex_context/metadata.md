@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-10`
+- Reconciled date: `2026-08-11`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -131,6 +131,14 @@ changing code or accepting a statistical conclusion.
   Byte-bounded streaming, atomic publication, authenticated durable partitions,
   and exact resume remain the permanent memory-safety invariants; the historical
   1 GiB process-tree ceiling does not.
+  The simulation publication recovery removes the post-run `read_bytes`/rewrite
+  adapter: bounded producers now publish v3 data and sidecars from the original
+  staged file, append exact shard identities, and finalize deterministic native
+  manifests in coordinate order. Simulation completion owns manifest roots and
+  standalone output/sidecar identities. Routine completion/resume validates
+  metadata and manifest membership without repeated shard rehashes, while the
+  explicit release audit remains a full-byte/schema audit and now includes
+  adjacent-v3 simulation artifacts outside analysis scope directories.
   The subsequent curate/combine I/O revision replaces unconditional curated
   copies with independently mutable reflinks plus deterministic bounded-copy
   fallback and records that execution provenance in authenticated manifests.
