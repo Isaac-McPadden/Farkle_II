@@ -50,7 +50,11 @@ Preserve these invariants:
   estimates have separate meanings, and requested/resolved/effective execution
   policy is authenticated outside statistical freshness; setup fails closed in
   strict mode, nested pools are suppressed, and partition manifests publish only
-  after every unit validates;
+  after every unit validates; RSS high water provides nonsticky submission
+  backpressure, Windows Job committed-memory peak and cgroup current/peak remain
+  distinct telemetry, recognized resource failures cancel pending work and may
+  retry pending partition coordinates once at half workers, valid publications
+  are never quarantined for a soft warning, and roots fail fast before pair work;
 - byte-bounded streaming, atomic durable units, and exact resume are permanent
   engineering invariants; a fixed 1 GiB process-tree ceiling is not;
 - curate preserves its authenticated provenance boundary with independent

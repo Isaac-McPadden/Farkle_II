@@ -27,6 +27,7 @@ from farkle.utils.authenticated_contract import (
 )
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    ResourceFailureError,
     ResourceSafetyError,
     StageParallelPolicy,
     apply_native_thread_limits,
@@ -198,6 +199,7 @@ class PartitionedStageResult:
     completed_units: int
     peak_sampled_rss_mb: float
     policy: StageParallelPolicy
+    execution_attempts: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,13 +639,19 @@ def run_partitioned_stage(
 
     reused = 0
     scheduled = 0
+    execution_attempts: list[dict[str, Any]] = []
+    telemetry_path = root / "_execution" / "execution_telemetry.json"
 
-    def pending_tasks() -> Iterable[_UnitTask]:
+    def pending_tasks(
+        attempt_policy: StageParallelPolicy,
+        *,
+        honor_force: bool,
+    ) -> Iterable[_UnitTask]:
         nonlocal reused, scheduled
         for unit in _iter_ordered_units(unit_source):
             valid = (
                 None
-                if force
+                if honor_force and force
                 else _validate_unit(
                     root,
                     unit,
@@ -662,23 +670,82 @@ def run_partitioned_stage(
                 unit,
                 identity,
                 writer,
-                policy,
+                attempt_policy,
                 output_prefix,
                 sidecar_factory,
                 post_publisher,
                 validator,
             )
 
-    window = policy.process_workers * resources.max_in_flight_per_worker
-    for _completed_key in process_map(
-        _execute_unit,
-        pending_tasks(),
-        n_jobs=policy.process_workers,
-        window=window,
-        mp_context=resolve_mp_context(mp_start_method),
-        memory_guard=guard,
-    ):
-        guard.check_before_schedule()
+    def write_execution_telemetry(final_outcome: str) -> None:
+        payload = {
+            "telemetry_schema_version": 1,
+            "stage_name": identity.stage_name,
+            "stage_identity_sha256": identity.sha256,
+            "original_policy": asdict(policy),
+            "attempts": execution_attempts,
+            "final_outcome": final_outcome,
+            "warning_crossings": int(getattr(guard, "warning_crossings", 0)),
+            "backpressure_seconds": float(getattr(guard, "backpressure_seconds", 0.0)),
+            "high_water_timeout_seconds": float(getattr(guard, "high_water_timeout_seconds", 30.0)),
+            "aggregate_memory_source": getattr(guard, "aggregate_memory_source", None),
+            "peak_aggregate_memory_bytes": int(getattr(guard, "peak_aggregate_memory_bytes", 0)),
+        }
+        _write_bytes_atomic(
+            telemetry_path,
+            _canonical_bytes(payload) + b"\n",
+            prefix="._partition_execution_telemetry_",
+        )
+
+    attempt_policy = policy
+    for attempt_index in range(2):
+        attempt_record: dict[str, Any] = {
+            "attempt": attempt_index + 1,
+            "worker_count": attempt_policy.process_workers,
+            "policy": asdict(attempt_policy),
+            "retry": attempt_index == 1,
+        }
+        execution_attempts.append(attempt_record)
+        try:
+            window = attempt_policy.process_workers * resources.max_in_flight_per_worker
+            for _completed_key in process_map(
+                _execute_unit,
+                pending_tasks(attempt_policy, honor_force=attempt_index == 0),
+                n_jobs=attempt_policy.process_workers,
+                window=window,
+                mp_context=resolve_mp_context(mp_start_method),
+                memory_guard=guard,
+            ):
+                guard.check_before_schedule()
+            attempt_record["outcome"] = "complete"
+            break
+        except ResourceSafetyError as exc:
+            classification = (
+                exc.classification if isinstance(exc, ResourceFailureError) else "resource_safety"
+            )
+            attempt_record.update(
+                outcome="resource_failure",
+                failure_classification=classification,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            write_execution_telemetry("retrying" if attempt_index == 0 else "resource_failure")
+            if attempt_index == 1:
+                raise
+            retry_workers = max(1, attempt_policy.process_workers // 2)
+            attempt_policy = resolve_stage_parallel_policy(
+                resources_stage,
+                policy_cfg,
+                n_jobs_override=retry_workers,
+                resources=resources,
+            )
+            apply_native_thread_limits(attempt_policy)
+        except BaseException as exc:
+            attempt_record.update(
+                outcome="non_resource_failure",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            write_execution_telemetry("non_resource_failure")
+            raise
 
     guard.check_before_schedule(force=True)
     manifest_sha, count = _publish_final_manifest(
@@ -702,11 +769,7 @@ def run_partitioned_stage(
     if validated != (manifest_sha, count):
         _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
         raise PartitionedStageError("final partition manifest failed post-publication validation")
-    try:
-        guard.check_before_schedule(force=True)
-    except ResourceSafetyError:
-        _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
-        raise
+    write_execution_telemetry("complete")
     return PartitionedStageResult(
         manifest_path,
         manifest_sha,
@@ -715,6 +778,7 @@ def run_partitioned_stage(
         scheduled,
         guard.peak_rss_bytes / (1024 * 1024),
         policy,
+        tuple(execution_attempts),
     )
 
 

@@ -82,3 +82,46 @@ peak sampled aggregate RSS, and peak sampled native-thread count.
 The durable engineering invariants are byte-bounded streaming, atomic durable
 units, authenticated manifests, and exact resume after interruption. A fixed
 1 GiB process-tree ceiling is not an artifact-validity or statistical invariant.
+
+## Monitoring and failure outcomes
+
+Resource handling distinguishes three outcomes:
+
+1. **Warning/backpressure.** Process-tree RSS is diagnostic high-water
+   telemetry. Crossing `process_tree_warning_threshold_mb` pauses new bounded
+   submissions. It is nonfatal and nonsticky: after RSS recedes, submission and
+   valid publication continue. A warning alone never quarantines an
+   authenticated unit or manifest.
+2. **Recoverable resource failure.** Persistent high water, loss of the
+   configured system-available reserve, `MemoryError`, Arrow bad allocation,
+   Windows paging-file error 1455, a broken process executor near the aggregate boundary,
+   or a failed memory monitor stops submission and cancels queued futures.
+   Completed atomic units remain eligible for validation and resume. The shared
+   partitioned-stage runner makes at most one retry, revalidates all units, and
+   schedules only pending coordinates with `max(1, previous_workers // 2)`.
+   Non-resource exceptions are never retried. Execution-only telemetry records
+   both policies, the classification, warning/backpressure observations, and
+   final outcome outside statistical freshness.
+3. **OS-enforced hard termination.** The Job Object or cgroup is authoritative.
+   The supervisor maps a supported memory-limit event to exit code 86. Because
+   two-root health is written as `running` before work, an abrupt termination
+   cannot leave a newly published successful top-level state. Previously
+   authenticated units and manifests remain reusable.
+
+On Windows, `JOB_OBJECT_LIMIT_JOB_MEMORY` accounts for the job-wide sum of
+committed virtual memory. The worker-side monitor queries
+`QueryInformationJobObject(JobObjectExtendedLimitInformation)` for
+`PeakJobMemoryUsed` and the effective `JobMemoryLimit`; it never interprets RSS
+as Job commit. The supervisor performs the same query after child exit to
+classify a failed process near the boundary. RSS remains useful for reversible
+admission backpressure.
+
+On cgroup v2, `memory.max` remains the hard boundary while `memory.current`,
+`memory.peak`, and `memory.events` provide current/peak accounting and OOM
+classification. When no privileged boundary is available in explicitly
+permissive development mode, portable RSS and host-available sampling remain
+telemetry/backpressure only and provenance remains labelled `unenforced`.
+
+Sequential two-root execution is fail-fast for both resource and ordinary
+failures: the second root and pair workflow do not start. Parallel roots may
+already be in flight, but no pair workflow starts after either root fails.

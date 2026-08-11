@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from farkle.config import ResourcesConfig
+from farkle.utils import parallel
+from farkle.utils import partitioned_stage as partitioned_stage_module
 from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
 from farkle.utils.parallel import ResourceSafetyError
 from farkle.utils.partitioned_stage import (
@@ -63,6 +65,17 @@ def _interrupting_writer(unit: PartitionedUnit, path: Path) -> None:
     if unit.key == (2,):
         raise RuntimeError("simulated interruption")
     _deterministic_writer(unit, path)
+
+
+class _FailOnceMemoryWriter:
+    def __init__(self) -> None:
+        self.failed = False
+
+    def __call__(self, unit: PartitionedUnit, path: Path) -> None:
+        if unit.key == (2,) and not self.failed:
+            self.failed = True
+            raise MemoryError("synthetic allocator exhaustion")
+        _deterministic_writer(unit, path)
 
 
 def _outputs(root: Path) -> dict[str, bytes]:
@@ -129,6 +142,90 @@ def test_interruption_resume_reuses_only_authenticated_units(tmp_path: Path) -> 
     assert resumed.required_units == 12
     assert not orphan.exists()
     assert any(path.read_bytes() == b"partial" for path in (root / "quarantine").iterdir())
+
+
+def test_resource_failure_retries_pending_units_once_with_identical_outputs(tmp_path: Path) -> None:
+    recovered_root = tmp_path / "recovered"
+    baseline_root = tmp_path / "baseline"
+    result = run_partitioned_stage(
+        root=recovered_root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_FailOnceMemoryWriter(),
+        resources=_resources(),
+        requested_workers=1,
+    )
+    baseline = run_partitioned_stage(
+        root=baseline_root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+    )
+
+    assert len(result.execution_attempts) == 2
+    assert result.execution_attempts[0]["failure_classification"] == "allocator_memory_error"
+    assert result.execution_attempts[1]["outcome"] == "complete"
+    assert _outputs(recovered_root) == _outputs(baseline_root)
+    assert result.manifest_sha256 == baseline.manifest_sha256
+    telemetry = json.loads((recovered_root / "_execution" / "execution_telemetry.json").read_text())
+    assert telemetry["final_outcome"] == "complete"
+    assert telemetry["attempts"][0]["worker_count"] == 1
+
+
+def test_resource_retry_halves_workers_and_skips_authenticated_units(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    worker_counts: list[int] = []
+    executed_keys: list[list[tuple[int | str, ...]]] = []
+
+    def fake_process_map(fn, items, *, n_jobs, **_kwargs):  # noqa: ANN001, ANN003
+        worker_counts.append(int(n_jobs))
+        this_attempt: list[tuple[int | str, ...]] = []
+        executed_keys.append(this_attempt)
+        iterator = iter(items)
+        if len(worker_counts) == 1:
+            task = next(iterator)
+            this_attempt.append(task.unit.key)
+            yield fn(task)
+            raise parallel.ResourceFailureError("allocator_memory_error", "synthetic failure")
+        for task in iterator:
+            this_attempt.append(task.unit.key)
+            yield fn(task)
+
+    monkeypatch.setattr(partitioned_stage_module, "process_map", fake_process_map)
+    root = tmp_path / "recovered"
+    result = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=4,
+    )
+
+    assert worker_counts == [4, 2]
+    assert executed_keys[0] == [(0,)]
+    assert executed_keys[1][0] == (1,)
+    assert (0,) not in executed_keys[1]
+    assert len(result.execution_attempts) == 2
+
+
+def test_non_resource_failure_is_not_retried(tmp_path: Path) -> None:
+    root = tmp_path / "stage"
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        run_partitioned_stage(
+            root=root,
+            identity=_identity(),
+            unit_source=_unit_source,
+            writer=_interrupting_writer,
+            resources=_resources(),
+            requested_workers=1,
+        )
+    telemetry = json.loads((root / "_execution" / "execution_telemetry.json").read_text())
+    assert telemetry["final_outcome"] == "non_resource_failure"
+    assert len(telemetry["attempts"]) == 1
 
 
 def test_corrupt_and_missing_units_are_quarantined_and_rebuilt(tmp_path: Path) -> None:
@@ -308,16 +405,49 @@ class _LateAbortingGuard:
         return self.peak_rss_bytes
 
 
-def test_late_rss_abort_quarantines_published_manifest(tmp_path: Path) -> None:
+def test_valid_manifest_is_not_quarantined_for_a_late_soft_warning(tmp_path: Path) -> None:
     root = tmp_path / "stage"
-    with pytest.raises(ResourceSafetyError, match="synthetic late RSS abort"):
-        run_partitioned_stage(
-            root=root,
-            identity=_identity(),
-            unit_source=_unit_source,
-            writer=_deterministic_writer,
-            resources=_resources(),
-            requested_workers=1,
-            memory_guard=_LateAbortingGuard(),  # type: ignore[arg-type]
-        )
-    assert not (root / "partition_manifest.jsonl").exists()
+    result = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+        memory_guard=_LateAbortingGuard(),  # type: ignore[arg-type]
+    )
+    assert result.manifest_path.exists()
+    assert validate_final_manifest(
+        result.manifest_path, root=root, identity=_identity(), unit_source=_unit_source
+    ) == (result.manifest_sha256, 12)
+
+
+def test_receded_soft_warning_allows_valid_manifest_publication(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    samples = iter((800, 700))
+    monkeypatch.setattr(
+        parallel,
+        "process_tree_rss_bytes",
+        lambda _pid=None: next(samples, 700) * 1024 * 1024,
+    )
+    monkeypatch.setattr(parallel.time, "sleep", lambda _seconds: None)
+    guard = parallel.ProcessTreeMemoryGuard(
+        aggregate_hard_limit_mb=2304,
+        rss_warning_mb=768,
+        sample_interval_seconds=0.001,
+    )
+    guard._monitor_started = True
+
+    result = run_partitioned_stage(
+        root=tmp_path / "stage",
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+        memory_guard=guard,
+    )
+
+    assert result.manifest_path.exists()
+    assert guard.warning_crossings == 1

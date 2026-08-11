@@ -8,6 +8,8 @@ ProcessPoolExecutor. Keep simulation-specific logic outside utils.
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -15,8 +17,10 @@ import threading
 import time
 import weakref
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing.context import BaseContext
+from pathlib import Path
 from typing import Any, Mapping
 
 import psutil
@@ -56,6 +60,159 @@ class StageParallelPolicy:
 
 class ResourceSafetyError(RuntimeError):
     """Raised before more work is scheduled outside the safe resource envelope."""
+
+
+class ResourceFailureError(ResourceSafetyError):
+    """A recoverable execution-resource failure, distinct from invalid data."""
+
+    def __init__(self, classification: str, message: str) -> None:
+        super().__init__(message)
+        self.classification = classification
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateMemorySample:
+    """OS-boundary memory accounting; values are committed/cgroup bytes, not RSS."""
+
+    source: str
+    current_bytes: int | None
+    peak_bytes: int | None
+    hard_limit_bytes: int | None
+
+
+def _boundary_environment() -> dict[str, Any]:
+    raw = os.environ.get("FARKLE_OS_MEMORY_BOUNDARY")
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _windows_job_memory_sample() -> AggregateMemorySample | None:
+    """Query committed-memory peak and hard limit for the current Windows Job."""
+
+    if os.name != "nt":
+        return None
+
+    ulong_ptr = ctypes.c_size_t
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_uint64)
+            for name in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
+
+    class _BasicLimit(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ulong_ptr),
+            ("MaximumWorkingSetSize", ulong_ptr),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ulong_ptr),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class _ExtendedLimit(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimit),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ulong_ptr),
+            ("JobMemoryLimit", ulong_ptr),
+            ("PeakProcessMemoryUsed", ulong_ptr),
+            ("PeakJobMemoryUsed", ulong_ptr),
+        ]
+
+    query = ctypes.windll.kernel32.QueryInformationJobObject
+    query.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    query.restype = ctypes.c_int
+    info = _ExtendedLimit()
+    if not query(None, 9, ctypes.byref(info), ctypes.sizeof(info), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    limit = int(info.JobMemoryLimit) if info.BasicLimitInformation.LimitFlags & 0x200 else None
+    return AggregateMemorySample(
+        "windows_job_commit_peak", None, int(info.PeakJobMemoryUsed), limit
+    )
+
+
+def _cgroup_memory_sample() -> AggregateMemorySample | None:
+    status = _boundary_environment()
+    if status.get("backend") != "cgroup_v2" or not status.get("enforced"):
+        return None
+    boundary = status.get("boundary_path")
+    if not isinstance(boundary, str) or not boundary:
+        return None
+    root = Path(boundary).resolve()
+
+    def read_value(name: str) -> int | None:
+        try:
+            text_value = (root / name).read_text(encoding="ascii").strip()
+        except OSError:
+            return None
+        return None if text_value == "max" else int(text_value)
+
+    return AggregateMemorySample(
+        "cgroup_v2",
+        read_value("memory.current"),
+        read_value("memory.peak"),
+        read_value("memory.max"),
+    )
+
+
+def aggregate_memory_sample() -> AggregateMemorySample | None:
+    """Return authoritative-boundary accounting where the platform exposes it."""
+
+    if os.name == "nt":
+        status = _boundary_environment()
+        if status.get("backend") == "windows_job" and status.get("enforced"):
+            return _windows_job_memory_sample()
+        return None
+    return _cgroup_memory_sample()
+
+
+def classify_resource_exception(
+    exc: BaseException,
+    *,
+    memory_guard: "ProcessTreeMemoryGuard | None" = None,
+) -> str | None:
+    """Classify only recognized execution-resource failures."""
+
+    if isinstance(exc, ResourceFailureError):
+        return exc.classification
+    if isinstance(exc, ResourceSafetyError):
+        return "resource_safety"
+    if isinstance(exc, MemoryError):
+        return "allocator_memory_error"
+    if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 1455:
+        return "windows_commit_exhaustion"
+    text_value = f"{type(exc).__name__}: {exc}".lower()
+    if "bad allocation" in text_value or "out of memory" in text_value:
+        return "allocator_bad_allocation"
+    if (
+        isinstance(exc, BrokenProcessPool)
+        and memory_guard is not None
+        and memory_guard.near_hard_boundary
+    ):
+        return "broken_process_executor_near_hard_boundary"
+    return None
 
 
 @dataclass(frozen=True)
@@ -168,15 +325,9 @@ def resolve_resource_policy(
 
 @dataclass(slots=True, weakref_slot=True)
 class ProcessTreeMemoryGuard:
-    """Continuously sample current-process plus descendant resident memory.
+    """Sample RSS diagnostics and apply nonfatal, nonsticky admission backpressure."""
 
-    A threshold crossing is sticky for the lifetime of the guard.  This matters
-    because a short-lived worker allocation can disappear before the next
-    scheduling boundary; a later low sample must never make that execution
-    eligible for successful publication.
-    """
-
-    rss_abort_mb: int
+    aggregate_hard_limit_mb: int
     rss_warning_mb: int | None = None
     minimum_system_available_memory_mb: int = 0
     sample_interval_seconds: float = 0.25
@@ -186,9 +337,15 @@ class ProcessTreeMemoryGuard:
     last_native_threads: int = 0
     peak_native_threads: int = 0
     _last_sample_at: float = 0.0
-    tripped_rss_bytes: int = 0
     warned_rss_bytes: int = 0
     warning_emitted: bool = False
+    warning_crossings: int = 0
+    backpressure_seconds: float = 0.0
+    high_water_timeout_seconds: float = 30.0
+    last_aggregate_memory_bytes: int = 0
+    peak_aggregate_memory_bytes: int = 0
+    aggregate_memory_source: str | None = None
+    aggregate_hard_limit_bytes: int = 0
     monitoring_error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _monitor_started: bool = field(default=False, init=False, repr=False)
@@ -200,10 +357,21 @@ class ProcessTreeMemoryGuard:
             self.last_native_threads = native_threads
             self.peak_native_threads = max(self.peak_native_threads, native_threads)
             self._last_sample_at = sampled_at
-            if rss >= self.rss_abort_mb * 1024 * 1024:
-                self.tripped_rss_bytes = max(self.tripped_rss_bytes, rss)
             if self.rss_warning_mb is not None and rss >= self.rss_warning_mb * 1024 * 1024:
                 self.warned_rss_bytes = max(self.warned_rss_bytes, rss)
+
+    def _record_aggregate_sample(self, sample: AggregateMemorySample | None) -> None:
+        if sample is None:
+            return
+        observed = sample.current_bytes if sample.current_bytes is not None else sample.peak_bytes
+        with self._lock:
+            self.aggregate_memory_source = sample.source
+            self.aggregate_hard_limit_bytes = int(sample.hard_limit_bytes or 0)
+            if observed is not None:
+                self.last_aggregate_memory_bytes = int(observed)
+                self.peak_aggregate_memory_bytes = max(
+                    self.peak_aggregate_memory_bytes, int(observed)
+                )
 
     def _ensure_monitor(self) -> None:
         with self._lock:
@@ -222,6 +390,7 @@ class ProcessTreeMemoryGuard:
                     rss = process_tree_rss_bytes(guard.pid)
                     native_threads = process_tree_native_thread_count(guard.pid)
                     guard._record_sample(rss, time.monotonic(), native_threads)
+                    guard._record_aggregate_sample(aggregate_memory_sample())
                 except Exception as exc:  # noqa: BLE001 - monitoring must fail closed
                     with guard._lock:
                         guard.monitoring_error = f"{type(exc).__name__}: {exc}"
@@ -249,49 +418,67 @@ class ProcessTreeMemoryGuard:
         rss = process_tree_rss_bytes(self.pid)
         native_threads = process_tree_native_thread_count(self.pid)
         self._record_sample(rss, now, native_threads)
+        self._record_aggregate_sample(aggregate_memory_sample())
         return rss
+
+    @property
+    def near_hard_boundary(self) -> bool:
+        with self._lock:
+            limit = self.aggregate_hard_limit_bytes or self.aggregate_hard_limit_mb * 1024 * 1024
+            observed = self.last_aggregate_memory_bytes
+        return bool(limit and observed and observed >= int(limit * 0.95))
 
     def check_before_schedule(self, *, force: bool = False) -> int:
-        """Warn at high water and fail closed at explicit process/host thresholds."""
+        """Wait for soft high water to recede; fail only for persistent/resource conditions."""
 
-        rss = self.sample(force=force)
-        with self._lock:
-            tripped = self.tripped_rss_bytes
-            warned = self.warned_rss_bytes
-            warning_emitted = self.warning_emitted
-            monitoring_error = self.monitoring_error
-            warning_mb = self.rss_warning_mb
-        if warned and warning_mb is not None and not warning_emitted:
-            LOGGER.warning(
-                "process-tree RSS exceeded the configured high-water threshold; continuing "
-                "until the explicit aggregate hard limit",
-                extra={
-                    "stage": "resource_safety",
-                    "rss_mb": warned / (1024 * 1024),
-                    "process_tree_warning_threshold_mb": warning_mb,
-                    "aggregate_memory_hard_limit_mb": self.rss_abort_mb,
-                },
-            )
+        started = time.monotonic()
+        while True:
+            rss = self.sample(force=force)
             with self._lock:
-                self.warning_emitted = True
-        if monitoring_error is not None:
-            raise ResourceSafetyError(
-                f"process-tree RSS monitoring failed closed: {monitoring_error}"
-            )
-        if tripped:
-            raise ResourceSafetyError(
-                "process-tree RSS safety threshold crossed: "
-                f"{tripped / (1024 * 1024):.1f} MiB >= {self.rss_abort_mb} MiB"
-            )
-        if self.minimum_system_available_memory_mb:
-            available_mb = int(psutil.virtual_memory().available // (1024 * 1024))
-            if available_mb < self.minimum_system_available_memory_mb:
-                raise ResourceSafetyError(
-                    "system-available memory reserve would be violated before scheduling: "
-                    f"{available_mb} MiB available < "
-                    f"{self.minimum_system_available_memory_mb} MiB required"
+                warning_emitted = self.warning_emitted
+                monitoring_error = self.monitoring_error
+                warning_mb = self.rss_warning_mb
+            if monitoring_error is not None:
+                raise ResourceFailureError(
+                    "monitor_failure", f"process-tree memory monitoring failed: {monitoring_error}"
                 )
-        return rss
+            if self.minimum_system_available_memory_mb:
+                available_mb = int(psutil.virtual_memory().available // (1024 * 1024))
+                if available_mb < self.minimum_system_available_memory_mb:
+                    raise ResourceFailureError(
+                        "minimum_system_available_violation",
+                        "system-available memory reserve would be violated before scheduling: "
+                        f"{available_mb} MiB available < "
+                        f"{self.minimum_system_available_memory_mb} MiB required",
+                    )
+            high = warning_mb is not None and rss >= warning_mb * 1024 * 1024
+            if not high:
+                with self._lock:
+                    self.warning_emitted = False
+                self.backpressure_seconds += max(0.0, time.monotonic() - started)
+                return rss
+            if not warning_emitted:
+                LOGGER.warning(
+                    "process-tree RSS exceeded the configured high-water threshold; pausing new submissions",
+                    extra={
+                        "stage": "resource_safety",
+                        "rss_mb": rss / (1024 * 1024),
+                        "process_tree_warning_threshold_mb": warning_mb,
+                        "aggregate_memory_hard_limit_mb": self.aggregate_hard_limit_mb,
+                    },
+                )
+                with self._lock:
+                    self.warning_emitted = True
+                    self.warning_crossings += 1
+            elapsed = time.monotonic() - started
+            if elapsed >= self.high_water_timeout_seconds:
+                self.backpressure_seconds += elapsed
+                raise ResourceFailureError(
+                    "persistent_high_water",
+                    f"process-tree RSS remained above {warning_mb} MiB for {elapsed:.1f} seconds",
+                )
+            time.sleep(min(self.sample_interval_seconds, self.high_water_timeout_seconds - elapsed))
+            force = True
 
 
 def process_tree_rss_bytes(pid: int | None = None) -> int:
@@ -523,6 +710,20 @@ def _initialize_process_worker(initializer, initargs: tuple[Any, ...]) -> None:
         initializer(*initargs)
 
 
+def cancel_pending_process_work(executor: Any, futures: Any) -> None:
+    """Cancel queued work, terminate running executor workers, and wait for quiescence."""
+
+    for future in futures:
+        future.cancel()
+    processes = tuple((getattr(executor, "_processes", None) or {}).values())
+    for process in processes:
+        with contextlib.suppress(Exception):
+            if process.is_alive():
+                process.terminate()
+    with contextlib.suppress(Exception):
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def process_map(
     fn,
     items,
@@ -546,19 +747,27 @@ def process_map(
         for it in items:
             if memory_guard is not None:
                 memory_guard.check_before_schedule()
-            yield fn(it)
+            try:
+                yield fn(it)
+            except BaseException as exc:
+                classification = classify_resource_exception(exc, memory_guard=memory_guard)
+                if classification is not None and not isinstance(exc, ResourceFailureError):
+                    raise ResourceFailureError(classification, str(exc)) from exc
+                raise
         return
     if window <= 0:
         window = resolved_jobs * 4
 
-    with ProcessPoolExecutor(
+    executor = ProcessPoolExecutor(
         max_workers=resolved_jobs,
         initializer=_initialize_process_worker,
         initargs=(initializer, tuple(initargs)),
         mp_context=mp_context,
-    ) as executor:
+    )
+    clean_shutdown = False
+    futs = []
+    try:
         it = iter(items)
-        futs = []
         # prefill the window
         for _ in range(window):
             try:
@@ -570,20 +779,42 @@ def process_map(
         while futs:
             done = next(as_completed(futs))
             futs.remove(done)
-            yield done.result()
+            try:
+                yield done.result()
+            except BaseException as exc:
+                classification = classify_resource_exception(exc, memory_guard=memory_guard)
+                if classification is not None and not isinstance(exc, ResourceFailureError):
+                    raise ResourceFailureError(classification, str(exc)) from exc
+                raise
             with contextlib.suppress(StopIteration):
                 if memory_guard is not None:
                     memory_guard.check_before_schedule()
                 futs.append(executor.submit(fn, next(it)))
+        clean_shutdown = True
+    except BaseException as exc:
+        classification = classify_resource_exception(exc, memory_guard=memory_guard)
+        if classification is not None and not isinstance(exc, ResourceFailureError):
+            raise ResourceFailureError(classification, str(exc)) from exc
+        raise
+    finally:
+        if not clean_shutdown:
+            cancel_pending_process_work(executor, futs)
+        else:
+            executor.shutdown(wait=True, cancel_futures=False)
 
 
 __all__ = [
     "ParallelNestingContext",
     "ProcessTreeMemoryGuard",
+    "AggregateMemorySample",
+    "ResourceFailureError",
     "ResourceSafetyError",
     "ResolvedResourcePolicy",
     "StageParallelPolicy",
     "apply_native_thread_limits",
+    "aggregate_memory_sample",
+    "classify_resource_exception",
+    "cancel_pending_process_work",
     "normalize_n_jobs",
     "process_map",
     "process_tree_native_thread_count",

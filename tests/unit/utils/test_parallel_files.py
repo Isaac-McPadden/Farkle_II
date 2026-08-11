@@ -201,6 +201,9 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
             submitted.append(item)
             return DummyFuture(fn(item))
 
+        def shutdown(self, *, wait, cancel_futures):  # noqa: ANN001
+            executor_kwargs["shutdown"] = (wait, cancel_futures)
+
     monkeypatch.setattr(parallel, "ProcessPoolExecutor", DummyExecutor)
     monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
 
@@ -220,6 +223,44 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
     assert result == [2, 4, 6]
     assert submitted == [1, 2, 3]
     assert executor_kwargs.get("mp_context") is mp_context
+
+
+def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPatch) -> None:
+    cancelled: list[int] = []
+    shutdown: list[tuple[bool, bool]] = []
+
+    class DummyFuture:
+        def __init__(self, item: int) -> None:
+            self.item = item
+
+        def result(self) -> int:
+            if self.item == 1:
+                raise MemoryError("synthetic worker allocation")
+            return self.item
+
+        def cancel(self) -> bool:
+            cancelled.append(self.item)
+            return True
+
+    class DummyExecutor:
+        def __init__(self, **_kwargs) -> None:  # noqa: ANN003
+            pass
+
+        def submit(self, _fn, item: int) -> DummyFuture:  # noqa: ANN001
+            return DummyFuture(item)
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            shutdown.append((wait, cancel_futures))
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", DummyExecutor)
+    monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
+
+    with pytest.raises(parallel.ResourceFailureError) as raised:
+        list(parallel.process_map(_times_two, [1, 2, 3], n_jobs=2, window=3))
+
+    assert raised.value.classification == "allocator_memory_error"
+    assert cancelled == [2, 3]
+    assert shutdown == [(True, True)]
 
 
 def test_process_map_context_modes_identical_artifacts(tmp_path: Path) -> None:
@@ -494,8 +535,8 @@ def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
     assert repeated == policy
 
 
-def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
-    guard = parallel.ProcessTreeMemoryGuard(rss_abort_mb=950)
+def test_rss_is_not_a_sticky_hard_limit(monkeypatch: MonkeyPatch) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(aggregate_hard_limit_mb=950)
     # Keep this unit test synchronous; the public sample/check path remains the
     # behavior under test while the daemon sampler is covered by integration.
     guard._monitor_started = True
@@ -504,23 +545,21 @@ def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
         "process_tree_rss_bytes",
         lambda _pid=None: 951 * 1024 * 1024,
     )
-    with pytest.raises(parallel.ResourceSafetyError, match="threshold crossed"):
-        guard.check_before_schedule(force=True)
+    assert guard.check_before_schedule(force=True) == 951 * 1024 * 1024
 
     monkeypatch.setattr(
         parallel,
         "process_tree_rss_bytes",
         lambda _pid=None: 100 * 1024 * 1024,
     )
-    with pytest.raises(parallel.ResourceSafetyError, match="threshold crossed"):
-        guard.check_before_schedule(force=True)
+    assert guard.check_before_schedule(force=True) == 100 * 1024 * 1024
 
 
 def test_process_tree_guard_enforces_system_available_reserve(
     monkeypatch: MonkeyPatch,
 ) -> None:
     guard = parallel.ProcessTreeMemoryGuard(
-        rss_abort_mb=2304,
+        aggregate_hard_limit_mb=2304,
         minimum_system_available_memory_mb=1024,
     )
     guard._monitor_started = True
@@ -535,27 +574,48 @@ def test_process_tree_guard_enforces_system_available_reserve(
         guard.check_before_schedule(force=True)
 
 
-def test_process_tree_memory_warning_precedes_explicit_hard_stop(
+def test_process_tree_memory_warning_backpressures_until_memory_recedes(
     monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    guard = parallel.ProcessTreeMemoryGuard(rss_abort_mb=2304, rss_warning_mb=768)
+    guard = parallel.ProcessTreeMemoryGuard(aggregate_hard_limit_mb=2304, rss_warning_mb=768)
     guard._monitor_started = True
+    samples = iter((951, 951, 700))
     monkeypatch.setattr(
-        parallel,
-        "process_tree_rss_bytes",
-        lambda _pid=None: 951 * 1024 * 1024,
+        parallel, "process_tree_rss_bytes", lambda _pid=None: next(samples) * 1024 * 1024
     )
+    monkeypatch.setattr(parallel.time, "sleep", lambda _seconds: None)
 
-    assert guard.check_before_schedule(force=True) == 951 * 1024 * 1024
+    assert guard.check_before_schedule(force=True) == 700 * 1024 * 1024
     assert "exceeded the configured high-water threshold" in caplog.text
+    assert guard.warning_crossings == 1
+    assert not guard.warning_emitted
 
-    monkeypatch.setattr(
-        parallel,
-        "process_tree_rss_bytes",
-        lambda _pid=None: 2304 * 1024 * 1024,
+
+def test_resource_exceptions_are_separate_from_data_failures() -> None:
+    assert parallel.classify_resource_exception(MemoryError("worker allocation")) == (
+        "allocator_memory_error"
     )
-    with pytest.raises(parallel.ResourceSafetyError, match="2304 MiB"):
+    assert parallel.classify_resource_exception(RuntimeError("Arrow bad allocation")) == (
+        "allocator_bad_allocation"
+    )
+    paging = OSError("paging file too small")
+    paging.winerror = 1455  # type: ignore[attr-defined]
+    assert parallel.classify_resource_exception(paging) == "windows_commit_exhaustion"
+    assert parallel.classify_resource_exception(ValueError("invalid schema")) is None
+
+
+def test_persistent_high_water_is_a_resource_failure(monkeypatch: MonkeyPatch) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(
+        aggregate_hard_limit_mb=2304,
+        rss_warning_mb=768,
+        high_water_timeout_seconds=0.001,
+        sample_interval_seconds=0.001,
+    )
+    guard._monitor_started = True
+    monkeypatch.setattr(parallel, "process_tree_rss_bytes", lambda _pid=None: 800 * 1024 * 1024)
+    with pytest.raises(parallel.ResourceFailureError) as raised:
         guard.check_before_schedule(force=True)
+    assert raised.value.classification == "persistent_high_water"
 
 
 def test_nested_executor_environment_prevents_process_pool() -> None:

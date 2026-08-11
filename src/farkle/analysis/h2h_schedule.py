@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -30,7 +28,6 @@ from farkle.utils.artifact_contract import (
     H2HMethodContract,
     make_artifact_sidecar,
     sha256_file,
-    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -1235,16 +1232,6 @@ def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
     )
 
 
-def _quarantine_new_h2h_aggregate(cfg: AppConfig, output: Path) -> None:
-    """Retain a newly written aggregate for diagnosis after a sticky RSS abort."""
-
-    quarantine = cfg.h2h_2p_dir("h2h_execute") / "quarantine"
-    quarantine.mkdir(parents=True, exist_ok=True)
-    for candidate in (output, sidecar_path(output)):
-        if candidate.exists():
-            os.replace(candidate, quarantine / f"{time.time_ns()}_{candidate.name}")
-
-
 def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -1780,13 +1767,6 @@ def execute_h2h_schedule(
         sidecar=sidecar,
         codec=cfg.parquet_codec,
     )
-    try:
-        # The guard is sticky: a short-lived child spike is still fatal even
-        # when this final parent-side sample is below the threshold.
-        memory_guard.check_before_schedule(force=True)
-    except Exception:
-        _quarantine_new_h2h_aggregate(cfg, output)
-        raise
     _write_execution_state(
         cfg,
         plan,

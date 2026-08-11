@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from farkle.utils import os_memory
+from farkle.utils import os_memory, parallel
 
 PROBE = Path(__file__).resolve().parents[2] / "helpers" / "os_memory_probe.py"
 
@@ -234,6 +234,41 @@ def test_enclosing_cgroup_limit_can_only_reduce_effective_limit(tmp_path: Path) 
     (current / "memory.max").write_text("max", encoding="ascii")
 
     assert os_memory._effective_cgroup_parent_limit(mount, current) == 96 * 1024 * 1024
+
+
+def test_portable_cgroup_accounting_seam_is_distinct_from_rss(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "memory.current").write_text("1234", encoding="ascii")
+    (tmp_path / "memory.peak").write_text("5678", encoding="ascii")
+    (tmp_path / "memory.max").write_text("9999", encoding="ascii")
+    monkeypatch.setenv(
+        os_memory.BOUNDARY_STATUS_ENV,
+        json.dumps({"backend": "cgroup_v2", "enforced": True, "boundary_path": str(tmp_path)}),
+    )
+
+    sample = parallel._cgroup_memory_sample()
+
+    assert sample == parallel.AggregateMemorySample("cgroup_v2", 1234, 5678, 9999)
+    assert sample.current_bytes != parallel.process_tree_rss_bytes()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="live Windows Job accounting test")
+def test_windows_job_commit_peak_is_queried_separately_from_rss() -> None:
+    try:
+        before = parallel._windows_job_memory_sample()
+    except OSError as exc:
+        pytest.skip(f"current test process is not queryable through a Job Object: {exc}")
+    allocation = bytearray(2 * 1024 * 1024)
+    allocation[0] = 1
+    after = parallel._windows_job_memory_sample()
+
+    assert before is not None and after is not None
+    assert after.source == "windows_job_commit_peak"
+    assert after.current_bytes is None
+    assert after.peak_bytes is not None and before.peak_bytes is not None
+    assert after.peak_bytes >= before.peak_bytes
+    assert parallel.process_tree_rss_bytes() > 0
 
 
 def test_cgroup_permission_failure_is_reported_as_setup_failure(

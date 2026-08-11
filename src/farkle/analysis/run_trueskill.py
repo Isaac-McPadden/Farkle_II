@@ -69,8 +69,11 @@ from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    ResourceFailureError,
     StageParallelPolicy,
     apply_native_thread_limits,
+    cancel_pending_process_work,
+    classify_resource_exception,
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
@@ -1274,14 +1277,16 @@ def run_trueskill(
             },
         )
     if actual_workers > 1 and len(blocks) > 1:
-        with cf.ProcessPoolExecutor(
+        ex = cf.ProcessPoolExecutor(
             max_workers=actual_workers,
             mp_context=mp_context,
             initializer=_initialize_trueskill_worker,
             initargs=(policy,),
-        ) as ex:
+        )
+        clean_shutdown = False
+        futures: dict[cf.Future[tuple[str, int]], Path] = {}
+        try:
             block_iterator = iter(blocks)
-            futures: dict[cf.Future[tuple[str, int]], Path] = {}
 
             def submit_one() -> bool:
                 if memory_guard is not None:
@@ -1322,10 +1327,26 @@ def run_trueskill(
                         "TrueSkill block failed",
                         extra={"stage": "trueskill", "block": bad.name, "error": str(e)},
                     )
+                    classification = classify_resource_exception(e, memory_guard=memory_guard)
+                    if classification is not None:
+                        raise ResourceFailureError(
+                            classification, f"TrueSkill block failed for {bad.name}: {e}"
+                        ) from e
                     raise RuntimeError(f"TrueSkill block failed for {bad.name}: {e}") from e
                 futures.pop(fut)
                 del player_count, block_games
                 submit_one()
+            clean_shutdown = True
+        except BaseException as exc:
+            classification = classify_resource_exception(exc, memory_guard=memory_guard)
+            if classification is not None and not isinstance(exc, ResourceFailureError):
+                raise ResourceFailureError(classification, str(exc)) from exc
+            raise
+        finally:
+            if not clean_shutdown:
+                cancel_pending_process_work(ex, futures)
+            else:
+                ex.shutdown(wait=True, cancel_futures=False)
     else:
         for block in blocks:
             player_count, block_games = _rate_block_worker(

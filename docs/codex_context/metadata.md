@@ -116,8 +116,15 @@ changing code or accepting a statistical conclusion.
   Strict official execution fails before analysis when setup is unavailable; an
   explicit development fallback is labelled unenforced. Backend/effective-limit
   provenance lives in run contexts and manifests, not statistical freshness.
-  The two-root health marker becomes `running` before work, and process-tree
-  telemetry records peak RSS and native threads. Combine now normalizes Arrow
+  The two-root health marker becomes `running` before work. Resource recovery
+  separates reversible RSS high-water backpressure, recoverable classified
+  resource failure, and OS hard termination. Windows telemetry queries Job
+  committed-memory peak/limit rather than treating RSS as commit; cgroup-v2
+  reads current/peak/events. Shared pools cancel queued work on failure, and
+  partitioned stages retry only pending authenticated coordinates at most once
+  with a halved worker count. Soft warnings do not invalidate valid manifests,
+  and sequential roots fail fast before the second root or pair workflow.
+  Process-tree telemetry records peak RSS and native threads. Combine now normalizes Arrow
   field nullability before streamed writes, and release audit excludes
   underscore-prefixed authenticated working directories from the public
   canonical sidecar graph.

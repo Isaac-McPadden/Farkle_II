@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,7 @@ def _install_root_results(
     tmp_path: Path,
     *,
     failed_root: int | None = None,
+    failure_classification: str | None = None,
 ) -> None:
     def fake_run_one_seed(
         _cfg: AppConfig,
@@ -103,6 +105,7 @@ def _install_root_results(
                 simulation_ok=True,
                 analysis_ok=False,
                 analysis_error="root analysis failed",
+                failure_classification=failure_classification,
             )
         return two_seed_pipeline._SeedRunStatus(
             seed=seed,
@@ -225,6 +228,86 @@ def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(
     assert pair_calls == []
     assert health["status"] == "failed"
     assert health["pair_workflow"]["status"] == "failed"
+
+
+def test_sequential_non_resource_failure_prevents_second_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(
+        monkeypatch, tmp_path, failed_root=11, failure_classification="non_resource_failure"
+    )
+    health: dict[str, Any] = {}
+    monkeypatch.setattr(
+        two_seed_pipeline, "_write_pipeline_health", lambda _path, payload: health.update(payload)
+    )
+
+    with pytest.raises(RuntimeError, match="root analysis failed"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert health["root_workflows"]["22"]["analysis"] == "not_started"
+    assert health["root_workflows"]["22"]["failure_classification"] == "not_started_fail_fast"
+
+
+def test_sequential_resource_failure_prevents_second_root_and_pair_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(
+        monkeypatch, tmp_path, failed_root=11, failure_classification="persistent_high_water"
+    )
+    pair_calls: list[object] = []
+    health: dict[str, Any] = {}
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda context, **_: pair_calls.append(context),
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline, "_write_pipeline_health", lambda _path, payload: health.update(payload)
+    )
+
+    with pytest.raises(two_seed_pipeline.ResourceFailureError) as raised:
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert raised.value.classification == "persistent_high_water"
+    assert health["root_workflows"]["22"]["analysis"] == "not_started"
+    assert pair_calls == []
+
+
+def test_hard_supervisor_exit_cannot_leave_successful_health(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_run_one_seed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit(86)),
+    )
+
+    with pytest.raises(SystemExit, match="86"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    health_path = two_seed_pipeline.seed_pair_root(cfg, (11, 22)) / "pipeline_health.json"
+    health = json.loads(health_path.read_text(encoding="utf-8"))
+    assert health["status"] == "running"
+    assert health["status"] != "complete_success"
 
 
 def test_pipeline_health_cannot_report_success_over_stale_pair_stage(

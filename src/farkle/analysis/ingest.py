@@ -969,17 +969,6 @@ def _ingest_partition_identity(
     )
 
 
-def _quarantine_final_ingest_manifest(root: Path, done: Path) -> None:
-    """Remove a newly published final marker after a sticky memory failure."""
-
-    if not done.exists():
-        return
-    destination_root = root / "quarantine"
-    destination_root.mkdir(parents=True, exist_ok=True)
-    token = hashlib.sha256(str(done).encode("utf-8")).hexdigest()[:12]
-    done.replace(destination_root / f"{token}_{done.name}")
-
-
 def _run_partitioned_ingest(cfg: AppConfig) -> None:
     player_counts = tuple(sorted(int(value) for value in cfg.sim.n_players_list))
     blocks = [cfg.results_root / f"{n_players}_players" for n_players in player_counts]
@@ -1035,22 +1024,14 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
         LOGGER.info("Ingest up-to-date", extra={"stage": "ingest", "path": str(done)})
         return
     guard.check_before_schedule(force=True)
-    published = False
-    try:
-        write_stage_done(
-            done,
-            inputs=upstream_inputs,
-            outputs=[*outputs, *manifests],
-            cfg=cfg,
-            stage="ingest",
-            sidecar_artifacts=outputs,
-        )
-        published = True
-        guard.check_before_schedule(force=True)
-    except Exception:
-        if published:
-            _quarantine_final_ingest_manifest(cfg.ingest_stage_dir, done)
-        raise
+    write_stage_done(
+        done,
+        inputs=upstream_inputs,
+        outputs=[*outputs, *manifests],
+        cfg=cfg,
+        stage="ingest",
+        sidecar_artifacts=outputs,
+    )
     LOGGER.info(
         "Ingest finished",
         extra={

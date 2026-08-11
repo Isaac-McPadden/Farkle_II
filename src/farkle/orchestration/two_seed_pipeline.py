@@ -45,9 +45,11 @@ from farkle.utils.manifest import (
 from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    ResourceFailureError,
     ResourceSafetyError,
     StageParallelPolicy,
     apply_native_thread_limits,
+    classify_resource_exception,
     normalize_n_jobs,
     resolve_resource_policy,
     resolve_stage_parallel_policy,
@@ -70,6 +72,7 @@ class _SeedRunStatus:
     analysis_error: str | None = None
     lifecycle_sha256: str | None = None
     stage_states: dict[str, str] | None = None
+    failure_classification: str | None = None
 
 
 @dataclass(frozen=True)
@@ -382,12 +385,14 @@ def _run_one_seed(
         )
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
+        classification = classify_resource_exception(exc)
         return _SeedRunStatus(
             seed=seed,
             context=context,
             simulation_ok=False,
             analysis_ok=False,
             simulation_error=error,
+            failure_classification=classification or "non_resource_failure",
         )
     try:
         _run_per_seed_analysis(
@@ -397,12 +402,14 @@ def _run_one_seed(
             policy_bundle=policy_bundle,
         )
     except Exception as exc:  # noqa: BLE001
+        classification = classify_resource_exception(exc)
         return _SeedRunStatus(
             seed=seed,
             context=context,
             simulation_ok=True,
             analysis_ok=False,
             analysis_error=f"{type(exc).__name__}: {exc}",
+            failure_classification=classification or "non_resource_failure",
         )
     plan = analysis.build_root_stage_plan(root_cfg, force=False)
     lifecycle_sha, stage_states = _root_lifecycle_identity(context, plan)
@@ -414,6 +421,7 @@ def _run_one_seed(
             analysis_ok=False,
             analysis_error="root workflow contains stale or incomplete canonical stages",
             stage_states=stage_states,
+            failure_classification="non_resource_failure",
         )
     return _SeedRunStatus(
         seed=seed,
@@ -608,28 +616,58 @@ def run_pipeline(
                 cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,
             )
+            # Sequential roots are fail-fast for every failure class. Resource
+            # failures additionally prevent any retry outside the owning stage.
+            if not root_results[seed].analysis_ok:
+                break
     root_health = {
         str(seed): {
-            "simulation": "complete" if result.simulation_ok else "failed",
-            "analysis": "complete" if result.analysis_ok else "failed",
-            "error": result.simulation_error or result.analysis_error,
-            "lifecycle_sha256": result.lifecycle_sha256,
-            "stage_states": result.stage_states,
-            "public_config_sha256": result.context.config.config_sha,
+            "simulation": (
+                "not_started"
+                if seed not in root_results
+                else ("complete" if root_results[seed].simulation_ok else "failed")
+            ),
+            "analysis": (
+                "not_started"
+                if seed not in root_results
+                else ("complete" if root_results[seed].analysis_ok else "failed")
+            ),
+            "error": (
+                "prior root failed; fail-fast policy prevented this root"
+                if seed not in root_results
+                else root_results[seed].simulation_error or root_results[seed].analysis_error
+            ),
+            "failure_classification": (
+                "not_started_fail_fast"
+                if seed not in root_results
+                else root_results[seed].failure_classification
+            ),
+            "lifecycle_sha256": (
+                root_results[seed].lifecycle_sha256 if seed in root_results else None
+            ),
+            "stage_states": root_results[seed].stage_states if seed in root_results else None,
+            "public_config_sha256": (
+                root_results[seed].context.config.config_sha if seed in root_results else None
+            ),
         }
-        for seed, result in root_results.items()
+        for seed in seed_pair
     }
     root_failures = [
         f"root {seed}: {status['error']}"
         for seed, status in root_health.items()
         if status["analysis"] != "complete"
     ]
+    orchestration_resource_classification: str | None = None
     try:
         memory_guard.check_before_schedule(force=True)
     except ResourceSafetyError as exc:
         root_failures.append(f"process-tree resource safety: {exc}")
+        orchestration_resource_classification = (
+            exc.classification if isinstance(exc, ResourceFailureError) else "resource_safety"
+        )
     pair_context: RootPairRunContext | None = None
     pair_error: str | None = None
+    pair_failure_classification: str | None = None
     if not root_failures:
         root_contexts = cast(
             tuple[SeedRunContext, SeedRunContext],
@@ -663,6 +701,7 @@ def run_pipeline(
             )
         except Exception as exc:  # noqa: BLE001
             pair_error = f"{type(exc).__name__}: {exc}"
+            pair_failure_classification = classify_resource_exception(exc) or "non_resource_failure"
     pair_stage_states: dict[str, str] = {}
     if pair_context is not None and pair_error is None:
         pair_stage_states = _current_plan_states(
@@ -713,7 +752,25 @@ def run_pipeline(
         memory_guard.check_before_schedule(force=True)
     except ResourceSafetyError as exc:
         pair_error = pair_error or f"process-tree resource safety: {exc}"
-    overall_status = "complete_success" if not root_failures and pair_error is None else "failed"
+        pair_failure_classification = pair_failure_classification or (
+            exc.classification if isinstance(exc, ResourceFailureError) else "resource_safety"
+        )
+    root_resource_classifications = [
+        status["failure_classification"]
+        for status in root_health.values()
+        if status["failure_classification"]
+        not in (None, "non_resource_failure", "not_started_fail_fast")
+    ]
+    resource_classifications = [*root_resource_classifications]
+    if orchestration_resource_classification is not None:
+        resource_classifications.append(orchestration_resource_classification)
+    if pair_failure_classification not in (None, "non_resource_failure"):
+        resource_classifications.append(pair_failure_classification)
+    overall_status = (
+        "complete_success"
+        if not root_failures and pair_error is None
+        else ("resource_failure" if resource_classifications else "failed")
+    )
     health = {
         "seed_pair": list(seed_pair),
         "status": overall_status,
@@ -724,6 +781,13 @@ def run_pipeline(
             "os_memory_boundary": boundary_provenance,
             "peak_sampled_process_tree_rss_mb": memory_guard.peak_rss_bytes / (1024 * 1024),
             "peak_sampled_native_threads": memory_guard.peak_native_threads,
+            "aggregate_memory_measurement_source": memory_guard.aggregate_memory_source,
+            "peak_sampled_aggregate_memory_mb": (
+                memory_guard.peak_aggregate_memory_bytes / (1024 * 1024)
+            ),
+            "warning_crossings": memory_guard.warning_crossings,
+            "backpressure_seconds": memory_guard.backpressure_seconds,
+            "high_water_timeout_seconds": memory_guard.high_water_timeout_seconds,
             "aggregate_memory_hard_limit_mb": cfg.resources.aggregate_memory_hard_limit_mb,
             "scheduler_memory_budget_mb": cfg.resources.scheduler_memory_budget_mb,
             "process_tree_warning_threshold_mb": (cfg.resources.process_tree_warning_threshold_mb),
@@ -741,6 +805,7 @@ def run_pipeline(
             "status": "complete" if pair_context is not None and pair_error is None else "failed",
             "analysis_root": str(pair_context.analysis_root) if pair_context else None,
             "error": pair_error or (root_failures[0] if root_failures else None),
+            "failure_classification": pair_failure_classification,
             "stage_states": pair_stage_states,
             "run_lineage_sha256": (
                 pair_context.config._run_lineage_sha256 if pair_context is not None else None
@@ -759,6 +824,10 @@ def run_pipeline(
         config_sha=cfg.config_sha,
     )
     if root_failures or pair_error is not None:
+        if resource_classifications:
+            raise ResourceFailureError(
+                str(resource_classifications[0]), pair_error or root_failures[0]
+            )
         raise RuntimeError(pair_error or root_failures[0])
 
 
