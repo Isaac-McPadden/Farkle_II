@@ -236,6 +236,7 @@ class ArtifactSidecar:
     artifact_sha256: str = ""
     artifact_size_bytes: int = 0
     _cfg: AppConfig | None = field(default=None, repr=False, compare=False)
+    _captured_v3_inputs: Any | None = field(default=None, repr=False, compare=False)
 
     def with_artifact_identity(self, path: Path) -> "ArtifactSidecar":
         """Return metadata bound to the exact bytes at *path*."""
@@ -481,6 +482,7 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
 def _canonical_json(metadata: ArtifactSidecar) -> str:
     payload = asdict(metadata)
     payload.pop("_cfg", None)
+    payload.pop("_captured_v3_inputs", None)
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 

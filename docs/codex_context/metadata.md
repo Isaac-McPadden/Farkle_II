@@ -149,6 +149,16 @@ changing code or accepting a statistical conclusion.
   `concat_ks` table. Routine completion no longer writes or row-compares a
   monolithic duplicate, while deep verification and explicit non-canonical
   release materialization remain available.
+  The fourth recovery task replaces repeated ingest/combine source discovery
+  with parent-owned immutable source snapshots. Ingest now performs one
+  lifecycle/snapshot resolution per configured root/k, binds routine freshness
+  to the simulation manifest and completion roots, and removes the unreachable
+  pandas-era implementation. Combine authenticates each curated source once,
+  carries its exact source/sidecar/schema/row identity through writers and
+  validators, and avoids a separate worker `read_schema` call. Captured v3
+  inputs are rechecked metadata-fast at publication without rehashing upstream
+  data. The shared partition runner caps workers to pending units and preserves
+  recognized Arrow/Parquet allocator errors as resource failures.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

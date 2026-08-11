@@ -50,6 +50,9 @@ Standalone analysis runs the root workflow and appends the same H2H tail with
   modify the immutable power-plan artifact.
 - A root-pair config writes under its dedicated `seed_pair_analysis` directory.
 - Every canonical derived artifact requires a compatible adjacent sidecar.
+- Ingest and combine source discovery is parent-owned: each root/k is
+  authenticated once into an immutable worker snapshot, and partition workers
+  never rediscover the global upstream tree.
 - A completion stamp is valid only when inputs, output identities, stage hash,
   freshness key, and sidecars validate.
 - The lifecycle is `not_started`, `partial_resumable`, `complete_valid`,

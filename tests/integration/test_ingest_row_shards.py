@@ -102,6 +102,29 @@ def test_ingest_reads_manifest_backed_row_directory_through_spawn_worker(tmp_pat
     validate_artifact_sidecar(cfg.ingested_rows_raw(2))
 
 
+def test_ingest_resolves_simulation_snapshot_once_per_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path, workers=1, name="snapshot_once")
+    _publish_completed_row_run(cfg)
+    original = ingest._canonical_row_shards
+    calls: list[int] = []
+
+    def counted(block: Path, current: AppConfig, n_players: int):
+        calls.append(n_players)
+        return original(block, current, n_players)
+
+    monkeypatch.setattr(ingest, "_canonical_row_shards", counted)
+    ingest.run(cfg)
+    assert calls == [2]
+    stable = cfg.ingested_rows_raw(2).read_bytes()
+
+    calls.clear()
+    ingest.run(cfg)
+    assert calls == [2]
+    assert cfg.ingested_rows_raw(2).read_bytes() == stable
+
+
 def test_ingest_rejects_retired_winner_field_in_new_row_shard(tmp_path: Path) -> None:
     def authenticated_run(name: str, *, retired_winner_field: bool) -> AppConfig:
         cfg = _config(tmp_path, workers=1, name=name)

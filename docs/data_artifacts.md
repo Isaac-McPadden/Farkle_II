@@ -107,6 +107,18 @@ backend, fallback reason, source/output hashes, schema, and row count. Reflinks
 are treated as mutable files: current source bytes, source sidecars, schema,
 code identity, and stage identity must still validate.
 
+Ingest resolves each configured root/k simulation lifecycle once in the parent.
+That pass authenticates the immutable native manifest and completion, rejects
+noncanonical/missing/duplicated/reordered shard membership, and freezes ordered
+shard coordinates, paths, declared byte lengths, content hashes, sidecar hashes,
+and schema fingerprints into a pickle-safe snapshot. Workers receive only their
+assigned snapshot and stream bounded Arrow batches; unit sidecar publication,
+validation, final partition validation, and completion never rediscover the
+simulation tree. Routine ingest completion binds the authoritative manifest and
+completion roots rather than enumerating every concrete shard as an ad hoc input.
+The lifecycle pass and snapshot parse remain separate checks, but neither is
+multiplied by writer, publisher, validator, or finalization layers.
+
 Combine normalizes one canonical physical Parquet partition per k. The logical
 `concat_ks` table is the deterministic k-ordered, row-ordered scan of those
 partitions; no canonical monolithic Parquet is stored. The shared partitioned
@@ -118,6 +130,16 @@ source resumes only its k, while a changed code identity invalidates every
 partition. `analyze combine --deep-verify` rereads all logical rows and hashes;
 `--materialize PATH` creates an explicitly non-canonical compatibility Parquet
 inside `combine/concat_ks` for release packaging.
+
+Combine likewise authenticates each curated by-k source once in the parent and
+captures its exact artifact, sidecar, schema, byte-length, and row-count identity.
+Partition writers use the captured schema projection and bounded scanner without
+an extra `pq.read_schema` discovery call. Validators compare output provenance
+to the captured source identity instead of reopening or rehashing the upstream
+source. Arrow/Parquet allocator failures containing recognized resource signals
+remain classified resource failures and are not reported as authenticated-source
+corruption. Shared partition execution caps process workers at the number of
+pending independent units, including after resume and resource retry.
 
 ## All-player metrics and performance
 

@@ -67,6 +67,11 @@ Preserve these invariants:
   bytes and exposes `concat_ks` through one authenticated ordered partition
   manifest and deterministic scanner, with explicit deep verification and
   non-canonical release materialization;
+- ingest and combine resolve authenticated upstream lifecycle/artifact identity
+  once per root/k in the parent, pass immutable pickle-safe source snapshots to
+  workers and validators, bind ingest freshness to simulation manifest/completion
+  roots, classify allocator failures separately from malformed Parquet, and cap
+  process workers by pending independent units;
 - TrueSkill projected reads use byte-bounded Arrow batches; screening
   diagnostics publish an authenticated root/k result and completion stamp
   before deterministic aggregation, using one forward projected scan and a

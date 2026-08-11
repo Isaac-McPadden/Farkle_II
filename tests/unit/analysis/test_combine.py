@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+import pickle
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -16,7 +18,9 @@ from farkle.analysis import combine
 from farkle.analysis.checks import check_pre_metrics
 from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.config import AppConfig
+from farkle.utils import source_snapshot as source_snapshot_module
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
+from farkle.utils.parallel import ResourceFailureError
 from farkle.utils.schema_helpers import expected_schema_for
 
 
@@ -70,7 +74,7 @@ def _write_all_sources(cfg: AppConfig) -> tuple[Path, ...]:
     return tuple(_write_curated(cfg, k, [_row(k, k)]) for k in sorted(cfg.sim.n_players_list))
 
 
-def _manifest_units(cfg: AppConfig) -> list[dict[str, object]]:
+def _manifest_units(cfg: AppConfig) -> list[dict[str, Any]]:
     records = [
         json.loads(line)
         for line in cfg.combined_manifest_path().read_text(encoding="utf-8").splitlines()
@@ -121,6 +125,53 @@ def test_partitioned_concat_is_logically_equivalent_and_deterministic(tmp_path: 
     }
     combine.run(cfg)
     assert {path: path.read_bytes() for path in stable} == stable
+
+
+def test_combine_resolves_each_curated_source_once_per_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    original = combine.capture_v3_inputs
+    calls: list[str] = []
+
+    def counted(metadata):  # noqa: ANN001
+        calls.extend(metadata.source_artifacts)
+        return original(metadata)
+
+    monkeypatch.setattr(combine, "capture_v3_inputs", counted)
+    combine.run(cfg)
+    assert len(calls) == 2
+
+    calls.clear()
+    combine.run(cfg)
+    assert len(calls) == 2
+
+
+def test_combine_source_snapshots_are_immutable_and_pickle_safe(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, (1,))
+    _write_all_sources(cfg)
+
+    snapshots = combine._resolve_sources(cfg)
+
+    assert pickle.loads(pickle.dumps(snapshots)) == snapshots
+    with pytest.raises(FrozenInstanceError):
+        snapshots[0].k = 2  # type: ignore[misc]
+
+
+def test_combine_schema_allocator_failure_is_classified_as_resource_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path, (1,))
+    _write_all_sources(cfg)
+
+    def bad_allocation(_path):  # noqa: ANN001
+        raise OSError("Couldn't deserialize thrift: bad allocation")
+
+    monkeypatch.setattr(source_snapshot_module.pq, "read_metadata", bad_allocation)
+    with pytest.raises(ResourceFailureError) as raised:
+        combine.run(cfg)
+    assert raised.value.classification == "allocator_bad_allocation"
 
 
 def test_partial_partition_set_never_publishes_completion(tmp_path: Path) -> None:

@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis import stage_registry
-from farkle.analysis.ingest import _process_block
 from farkle.analysis.stage_registry import (
     StageDefinition,
     StageLayout,
@@ -18,6 +17,12 @@ from farkle.analysis.stage_registry import (
     resolve_stage_layout,
 )
 from farkle.config import AppConfig, IOConfig
+
+
+def _resolved_layout_keys(cfg: AppConfig) -> tuple[str, ...]:
+    """Exercise the same resolved-config spawn boundary used by stage workers."""
+
+    return tuple(cfg.stage_layout.keys())
 
 
 def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
@@ -87,14 +92,8 @@ def test_resolved_app_config_crosses_spawn_process_boundary(tmp_path: Path) -> N
         max_workers=1,
         mp_context=multiprocessing.get_context("spawn"),
     ) as executor:
-        future = executor.submit(
-            _process_block,
-            tmp_path / "invalid_block",
-            cfg,
-            parent_process_workers=2,
-        )
-        with pytest.raises(ValueError, match="invalid player-count block name"):
-            future.result(timeout=30)
+        future = executor.submit(_resolved_layout_keys, cfg)
+        assert future.result(timeout=30) == expected_keys
 
     assert cfg.stage_layout.keys() == expected_keys
 

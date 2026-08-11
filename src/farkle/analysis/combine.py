@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -32,7 +33,13 @@ from farkle.utils.partitioned_stage import (
     run_partitioned_stage,
     validate_final_manifest,
 )
+from farkle.utils.release_identity import CapturedV3Inputs, capture_v3_inputs
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.source_snapshot import (
+    AuthenticatedParquetSnapshot,
+    parquet_snapshot_from_captured_inputs,
+    raise_classified_resource_failure,
+)
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.types import Compression
 
@@ -68,18 +75,17 @@ def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
     return cfg.combined_rows_by_k(n_players), cfg.combined_manifest_path()
 
 
-def _source_identity(path: Path) -> tuple[tuple[str, str], ...]:
-    metadata = validate_artifact_sidecar(
-        path,
-        expected={"scope": ArtifactScope.BY_K.value, "operation": "curate_game_rows"},
-    )
-    return (
-        ("curated_artifact", metadata.artifact_sha256),
-        ("curated_sidecar", sha256_file(sidecar_path(path))),
-    )
+@dataclass(frozen=True, slots=True)
+class _CombineSourceSnapshot:
+    """One fully authenticated curated input resolved by the parent."""
+
+    k: int
+    parquet: AuthenticatedParquetSnapshot
+    captured_inputs: CapturedV3Inputs
+    output_sidecar: ArtifactSidecar
 
 
-def _required_sources(cfg: AppConfig) -> tuple[tuple[int, Path], ...]:
+def _required_source_paths(cfg: AppConfig) -> tuple[tuple[int, Path], ...]:
     player_counts = tuple(sorted({int(k) for k in cfg.sim.n_players_list}))
     if not player_counts:
         raise ValueError("combine: sim.n_players_list must not be empty")
@@ -93,19 +99,81 @@ def _required_sources(cfg: AppConfig) -> tuple[tuple[int, Path], ...]:
     return sources
 
 
+def _partition_sidecar_template(
+    cfg: AppConfig,
+    *,
+    k: int,
+    source: Path,
+    target_names: Sequence[str],
+) -> ArtifactSidecar:
+    return make_artifact_sidecar(
+        cfg,
+        cfg.combined_rows_by_k(k),
+        producer="combine",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="concatenate_rows_within_k",
+        weighted_quantity="canonical_game_rows",
+        support_count_role="curated_games",
+        replication_unit="game",
+        conditioning="unconditional",
+        source_artifacts=[source],
+        consistency_columns=target_names,
+        grouping_keys=["root_seed", "k", "shuffle_index", "game_index"],
+        player_counts=[k],
+        required_player_counts=[k],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+    )
+
+
+def _resolve_sources(cfg: AppConfig) -> tuple[_CombineSourceSnapshot, ...]:
+    """Authenticate every curated source once and freeze its worker snapshot."""
+
+    target_names = tuple(expected_schema_for(cfg.combine_max_players).names)
+    snapshots: list[_CombineSourceSnapshot] = []
+    for k, path in _required_source_paths(cfg):
+        template = _partition_sidecar_template(
+            cfg,
+            k=k,
+            source=path,
+            target_names=target_names,
+        )
+        try:
+            captured = capture_v3_inputs(template)
+            parquet = parquet_snapshot_from_captured_inputs(
+                captured,
+                expected_path=path,
+                expected_schema=expected_schema_for(k),
+            )
+        except BaseException as exc:
+            raise_classified_resource_failure(exc)
+            raise
+        snapshots.append(
+            _CombineSourceSnapshot(
+                k,
+                parquet,
+                captured,
+                replace(template, _captured_v3_inputs=captured),
+            )
+        )
+    return tuple(snapshots)
+
+
 def _units(
     cfg: AppConfig,
-    sources: Sequence[tuple[int, Path]],
+    sources: Sequence[_CombineSourceSnapshot],
 ) -> tuple[PartitionedUnit, ...]:
     stage_root = cfg.combine_stage_dir
     units: list[PartitionedUnit] = []
-    for k, source in sources:
+    for snapshot in sources:
+        k = snapshot.k
         relative = cfg.combined_rows_by_k(k).relative_to(stage_root).as_posix()
         units.append(
             PartitionedUnit(
                 (k,),
                 relative,
-                input_identities=_source_identity(source),
+                input_identities=snapshot.parquet.input_identities,
             )
         )
     return tuple(units)
@@ -132,7 +200,7 @@ def _identity(cfg: AppConfig, player_counts: Sequence[int]) -> PartitionedStageI
 
 @dataclass(frozen=True, slots=True)
 class _PartitionWriter:
-    sources: tuple[tuple[int, str], ...]
+    sources: tuple[_CombineSourceSnapshot, ...]
     target: pa.Schema
     batch_bytes: int
     batch_rows: int
@@ -140,13 +208,13 @@ class _PartitionWriter:
 
     def __call__(self, unit: PartitionedUnit, output: Path) -> None:
         k = int(unit.key[0])
-        source_map = dict(self.sources)
-        source = Path(source_map[k])
-        source_schema = pq.read_schema(source)
+        snapshot = {item.k: item for item in self.sources}[k]
+        source = snapshot.parquet.artifact_path
+        source_columns = expected_schema_for(k).names
         with pq.ParquetWriter(output, self.target, compression=self.compression) as writer:
             for _row_group, _batch_index, table in iter_parquet_tables_by_bytes(
                 source,
-                columns=source_schema.names,
+                columns=source_columns,
                 max_batch_bytes=self.batch_bytes,
                 max_batch_rows=self.batch_rows,
                 use_threads=False,
@@ -161,50 +229,25 @@ class _PartitionWriter:
 
 @dataclass(frozen=True, slots=True)
 class _PartitionSidecarFactory:
-    cfg: AppConfig
-    sources: tuple[tuple[int, str], ...]
-    target_names: tuple[str, ...]
+    sources: tuple[_CombineSourceSnapshot, ...]
 
     def __call__(self, unit: PartitionedUnit, output: Path) -> ArtifactSidecar:
         k = int(unit.key[0])
-        source = Path(dict(self.sources)[k])
-        return make_artifact_sidecar(
-            self.cfg,
-            output,
-            producer="combine",
-            scope=ArtifactScope.BY_K,
-            source_scope=ArtifactScope.BY_K,
-            operation="concatenate_rows_within_k",
-            weighted_quantity="canonical_game_rows",
-            support_count_role="curated_games",
-            replication_unit="game",
-            conditioning="unconditional",
-            source_artifacts=[source],
-            consistency_columns=self.target_names,
-            grouping_keys=["root_seed", "k", "shuffle_index", "game_index"],
-            player_counts=[k],
-            required_player_counts=[k],
-            missing_cell_policy="fail",
-            seed_scope="single_root",
-        )
+        snapshot = {item.k: item for item in self.sources}[k]
+        if output.name != snapshot.output_sidecar.artifact_name:
+            raise ValueError("combine partition output does not match its captured sidecar")
+        return snapshot.output_sidecar
 
 
 @dataclass(frozen=True, slots=True)
 class _PartitionValidator:
-    sources: tuple[tuple[int, str], ...]
+    sources: tuple[_CombineSourceSnapshot, ...]
     target_schema: pa.Schema
 
     def __call__(self, unit: PartitionedUnit, output: Path) -> dict[str, Any] | bool:
         k = int(unit.key[0])
-        source = Path(dict(self.sources)[k])
+        snapshot = {item.k: item for item in self.sources}[k]
         try:
-            source_sidecar = validate_artifact_sidecar(
-                source,
-                expected={
-                    "scope": ArtifactScope.BY_K.value,
-                    "operation": "curate_game_rows",
-                },
-            )
             output_sidecar = validate_artifact_sidecar(
                 output,
                 expected={
@@ -213,13 +256,16 @@ class _PartitionValidator:
                     "player_counts": [k],
                 },
             )
-            source_metadata = pq.read_metadata(source)
             output_metadata = pq.read_metadata(output)
             output_schema = output_metadata.schema.to_arrow_schema()
-        except Exception:  # noqa: BLE001 - validation failure makes a unit non-reusable
+            authenticated = load_authenticated_sidecar(output)
+        except Exception as exc:  # noqa: BLE001 - invalid evidence is not reusable
+            raise_classified_resource_failure(exc)
             return False
-        if output_metadata.num_rows != source_metadata.num_rows or not output_schema.equals(
-            self.target_schema, check_metadata=False
+        if (
+            authenticated.source_artifacts != (snapshot.parquet.source,)
+            or output_metadata.num_rows != snapshot.parquet.row_count
+            or not output_schema.equals(self.target_schema, check_metadata=False)
         ):
             return False
         target_schema_sha256 = _schema_sha256(self.target_schema)
@@ -227,8 +273,8 @@ class _PartitionValidator:
             "logical_partition": k,
             "row_count": int(output_metadata.num_rows),
             "schema_sha256": target_schema_sha256,
-            "source_artifact_sha256": source_sidecar.artifact_sha256,
-            "source_sidecar_sha256": sha256_file(sidecar_path(source)),
+            "source_artifact_sha256": snapshot.parquet.source.artifact.content_sha256,
+            "source_sidecar_sha256": snapshot.parquet.source.sidecar_sha256,
             "output_artifact_sha256": output_sidecar.artifact_sha256,
         }
 
@@ -236,10 +282,10 @@ class _PartitionValidator:
 def _manifest_sidecar(
     cfg: AppConfig,
     manifest: Path,
-    sources: Sequence[tuple[int, Path]],
+    sources: Sequence[_CombineSourceSnapshot],
 ) -> ArtifactSidecar:
-    player_counts = [k for k, _path in sources]
-    return make_artifact_sidecar(
+    player_counts = [source.k for source in sources]
+    template = make_artifact_sidecar(
         cfg,
         manifest,
         producer="combine",
@@ -250,7 +296,7 @@ def _manifest_sidecar(
         support_count_role="partition_row_counts",
         replication_unit="game",
         conditioning="unconditional",
-        source_artifacts=[path for _k, path in sources],
+        source_artifacts=[source.parquet.artifact_path for source in sources],
         consistency_columns=expected_schema_for(cfg.combine_max_players).names,
         grouping_keys=["k", "root_seed", "shuffle_index", "game_index"],
         player_counts=player_counts,
@@ -258,16 +304,48 @@ def _manifest_sidecar(
         missing_cell_policy="fail",
         seed_scope="single_root",
     )
+    captured = CapturedV3Inputs(
+        sources=tuple(
+            sorted(
+                (source.parquet.source for source in sources),
+                key=lambda item: item.logical_role,
+            )
+        ),
+        manifests=(),
+        source_paths=tuple(
+            sorted(
+                ((source.parquet.source.logical_role, source.parquet.path) for source in sources),
+                key=lambda item: item[0],
+            )
+        ),
+        manifest_paths=(),
+        controls=(),
+    )
+    return replace(template, _captured_v3_inputs=captured)
 
 
 def _validated_layout(
     cfg: AppConfig,
-) -> tuple[tuple[tuple[int, Path], ...], tuple[PartitionedUnit, ...], PartitionedStageIdentity]:
-    sources = _required_sources(cfg)
+) -> tuple[
+    tuple[_CombineSourceSnapshot, ...],
+    tuple[PartitionedUnit, ...],
+    PartitionedStageIdentity,
+]:
+    sources = _resolve_sources(cfg)
+    units, identity = _validate_resolved_layout(cfg, sources)
+    return sources, units, identity
+
+
+def _validate_resolved_layout(
+    cfg: AppConfig,
+    sources: tuple[_CombineSourceSnapshot, ...],
+) -> tuple[tuple[PartitionedUnit, ...], PartitionedStageIdentity]:
+    """Validate published partitions against one parent-resolved source set."""
+
     units = _units(cfg, sources)
-    identity = _identity(cfg, [k for k, _path in sources])
+    identity = _identity(cfg, [source.k for source in sources])
     validator = _PartitionValidator(
-        tuple((k, str(path)) for k, path in sources),
+        sources,
         expected_schema_for(cfg.combine_max_players),
     )
     validated = validate_final_manifest(
@@ -281,7 +359,7 @@ def _validated_layout(
     )
     if validated is None:
         raise RuntimeError("combine: dataset manifest or a required partition is invalid")
-    return sources, units, identity
+    return units, identity
 
 
 def combined_partition_paths(cfg: AppConfig) -> tuple[Path, ...]:
@@ -432,9 +510,9 @@ def _remove_orphan_partitions(cfg: AppConfig, player_counts: Sequence[int]) -> N
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Publish or precisely resume the canonical partitioned ``concat_ks`` dataset."""
 
-    sources = _required_sources(cfg)
-    player_counts = tuple(k for k, _path in sources)
-    source_paths = [path for _k, path in sources]
+    sources = _resolve_sources(cfg)
+    player_counts = tuple(source.k for source in sources)
+    source_paths = [source.parquet.artifact_path for source in sources]
     units = _units(cfg, sources)
     outputs = [cfg.combine_stage_dir / unit.relative_output for unit in units]
     manifest = cfg.combined_manifest_path()
@@ -447,18 +525,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage="combine",
         sidecar_artifacts=[*outputs, manifest],
     ):
-        _validated_layout(cfg)
+        _validate_resolved_layout(cfg, sources)
         LOGGER.info("Combine: output up-to-date", extra={"stage": "combine", "path": str(manifest)})
         return
 
     target = expected_schema_for(cfg.combine_max_players)
-    source_strings = tuple((k, str(path)) for k, path in sources)
     result = run_partitioned_stage(
         root=cfg.combine_stage_dir,
         identity=_identity(cfg, player_counts),
         unit_source=lambda: iter(units),
         writer=_PartitionWriter(
-            source_strings,
+            sources,
             target,
             int(cfg.resources.stage_batch_bytes["combine"]),
             int(cfg.row_group_size),
@@ -470,17 +547,18 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         force=force,
         output_prefix=".",
         sidecar_factory=_PartitionSidecarFactory(
-            cfg,
-            source_strings,
-            tuple(target.names),
+            sources,
         ),
-        validator=_PartitionValidator(source_strings, target),
+        validator=_PartitionValidator(sources, target),
         manifest_path=manifest,
         manifest_sidecar=_manifest_sidecar(cfg, manifest, sources),
     )
     if result.required_units != len(units):
         raise RuntimeError("combine: final manifest does not cover every configured partition")
-    summary = verify_concat_ks(cfg)
+    summary = {
+        "partitions": len(sources),
+        "rows": sum(source.parquet.row_count for source in sources),
+    }
     _retire_legacy_outputs(cfg, player_counts)
     _remove_orphan_partitions(cfg, player_counts)
     write_stage_done(

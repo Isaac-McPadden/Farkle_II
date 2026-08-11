@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,21 @@ _GLOBAL_VERSION_KEYS = {
     "conditioning_version",
 }
 _CONTROL_SUFFIXES = (".done.json", ".yaml", ".yml")
+
+
+@dataclass(frozen=True, slots=True)
+class CapturedV3Inputs:
+    """Pickle-safe upstream identities resolved once by the parent process."""
+
+    sources: tuple[SourceArtifactIdentity, ...]
+    manifests: tuple[ManifestRootIdentity, ...]
+    source_paths: tuple[tuple[str, str], ...]
+    manifest_paths: tuple[tuple[str, str, str], ...]
+    controls: tuple[tuple[str, str, str], ...]
+
+    @property
+    def designs(self) -> dict[str, str]:
+        return {role: digest for role, _path, digest in self.controls}
 
 
 def is_v3_config(cfg: AppConfig | None) -> bool:
@@ -372,6 +388,63 @@ def _capture_inputs(
     dict[str, tuple[Path, Path]],
     dict[str, str],
 ]:
+    captured = metadata._captured_v3_inputs
+    if captured is not None:
+        if not isinstance(captured, CapturedV3Inputs):
+            raise ArtifactContractError("invalid captured v3 input snapshot")
+        if metadata._cfg is None:
+            raise ArtifactContractError("captured v3 inputs require their owning config")
+        captured_source_paths = {role: Path(path) for role, path in captured.source_paths}
+        captured_manifest_paths = {
+            role: (Path(path), Path(adjacent)) for role, path, adjacent in captured.manifest_paths
+        }
+        for source in captured.sources:
+            path = captured_source_paths.get(source.logical_role)
+            if path is None:
+                raise ArtifactContractError("captured source path inventory is incomplete")
+            loaded = validate_authenticated_artifact_metadata(
+                path,
+                cfg=metadata._cfg,
+                expected_sidecar_sha256=source.sidecar_sha256,
+            )
+            if (
+                loaded.artifact != source.artifact
+                or loaded.sidecar_contract_sha256 != source.sidecar_contract_sha256
+            ):
+                raise ArtifactContractError(
+                    f"captured source identity changed: {source.logical_role}"
+                )
+        for captured_manifest_identity in captured.manifests:
+            paths = captured_manifest_paths.get(captured_manifest_identity.logical_role)
+            if paths is None:
+                raise ArtifactContractError("captured manifest path inventory is incomplete")
+            path, adjacent = paths
+            loaded_manifest = load_immutable_manifest_sidecar(path)
+            if (
+                loaded_manifest.location != captured_manifest_identity.location
+                or loaded_manifest.manifest_sha256 != captured_manifest_identity.manifest_sha256
+                or loaded_manifest.sidecar_contract_sha256
+                != captured_manifest_identity.sidecar_contract_sha256
+                or loaded_manifest.summary != captured_manifest_identity.summary
+                or sha256_file(path) != captured_manifest_identity.manifest_sha256
+                or sha256_file(adjacent) != captured_manifest_identity.sidecar_sha256
+            ):
+                raise ArtifactContractError(
+                    "captured manifest identity changed: "
+                    f"{captured_manifest_identity.logical_role}"
+                )
+        for role, raw_path, digest in captured.controls:
+            path = Path(raw_path)
+            if not path.is_file() or sha256_file(path) != digest:
+                raise ArtifactContractError(f"captured control identity changed: {role}")
+        return (
+            captured.sources,
+            captured.manifests,
+            captured_source_paths,
+            captured_manifest_paths,
+            captured.designs,
+        )
+
     sources: list[SourceArtifactIdentity] = []
     manifests: list[ManifestRootIdentity] = []
     source_paths: dict[str, Path] = {}
@@ -464,6 +537,38 @@ def _capture_inputs(
         source_paths,
         manifest_paths,
         designs,
+    )
+
+
+def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
+    """Resolve and authenticate a metadata template's inputs exactly once."""
+
+    if metadata._captured_v3_inputs is not None:
+        captured = metadata._captured_v3_inputs
+        if not isinstance(captured, CapturedV3Inputs):
+            raise ArtifactContractError("invalid captured v3 input snapshot")
+        return captured
+    sources, manifests, source_paths, manifest_paths, designs = _capture_inputs(metadata)
+    control_paths: list[tuple[str, str, str]] = []
+    control_index = 0
+    for raw_path in metadata.source_artifacts:
+        path = Path(raw_path)
+        if sidecar_path(path).exists() or not path.name.endswith(_CONTROL_SUFFIXES):
+            continue
+        role = f"control:{path.name}:{control_index:04d}"
+        digest = designs.get(role)
+        if digest is None:
+            raise ArtifactContractError(f"captured control identity is missing: {path}")
+        control_paths.append((role, str(path), digest))
+        control_index += 1
+    return CapturedV3Inputs(
+        sources=sources,
+        manifests=manifests,
+        source_paths=tuple((role, str(path)) for role, path in source_paths.items()),
+        manifest_paths=tuple(
+            (role, str(paths[0]), str(paths[1])) for role, paths in manifest_paths.items()
+        ),
+        controls=tuple(control_paths),
     )
 
 
@@ -1232,6 +1337,8 @@ def resolve_v3_stage_state(
 
 
 __all__ = [
+    "CapturedV3Inputs",
+    "capture_v3_inputs",
     "is_v3_config",
     "publish_staged_v3_from_metadata",
     "publish_native_manifest_v3",

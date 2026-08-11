@@ -212,6 +212,33 @@ def test_resource_retry_halves_workers_and_skips_authenticated_units(
     assert len(result.execution_attempts) == 2
 
 
+def test_process_workers_never_exceed_pending_units(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed: list[tuple[int, int]] = []
+
+    def fake_process_map(fn, items, *, n_jobs, **_kwargs):  # noqa: ANN001, ANN003
+        tasks = list(items)
+        observed.append((int(n_jobs), len(tasks)))
+        for task in tasks:
+            yield fn(task)
+
+    monkeypatch.setattr(partitioned_stage_module, "process_map", fake_process_map)
+    units = lambda: iter((PartitionedUnit((0,), "only.bin"),))  # noqa: E731
+    result = run_partitioned_stage(
+        root=tmp_path / "bounded",
+        identity=_identity(),
+        unit_source=units,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=4,
+    )
+
+    assert observed == [(1, 1)]
+    assert result.execution_attempts[0]["worker_count"] == 1
+    assert result.execution_attempts[0]["pending_units"] == 1
+
+
 def test_non_resource_failure_is_not_retried(tmp_path: Path) -> None:
     root = tmp_path / "stage"
     with pytest.raises(RuntimeError, match="simulated interruption"):

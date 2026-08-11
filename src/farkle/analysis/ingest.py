@@ -12,14 +12,11 @@ import argparse
 import hashlib
 import json
 import logging
-import re
 import sys
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
@@ -31,17 +28,21 @@ from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     make_artifact_sidecar,
     sha256_file,
+    sidecar_path,
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
+from farkle.utils.authenticated_contract import (
+    ManifestEntry,
+    ManifestRootIdentity,
+    compute_manifest_root,
+    load_immutable_manifest_sidecar,
+    validate_authenticated_artifact_metadata,
+)
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
-    ParallelNestingContext,
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
-    normalize_n_jobs,
-    process_map,
-    resolve_mp_context,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.partitioned_stage import (
@@ -51,14 +52,13 @@ from farkle.utils.partitioned_stage import (
     run_partitioned_stage,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
-from farkle.utils.release_identity import is_v3_config
+from farkle.utils.release_identity import CapturedV3Inputs, is_v3_config
 from farkle.utils.schema_helpers import (
     OUTCOME_SCHEMA_VERSION,
     TOURNAMENT_METHOD_VERSION,
     raw_simulation_schema_for,
 )
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
-from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import ParquetShardWriter
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +75,54 @@ class _RowShard:
     shuffle_index: int
     deterministic_batch_id: int
     shuffle_seed: int
+    byte_length: int
+    data_sha256: str
+    sidecar_sha256: str
+    schema_fingerprint_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SimulationSourceSnapshot:
+    """Authenticated simulation lifecycle and ordered shard inventory for one k."""
+
+    n_players: int
+    block: Path
+    manifest_path: Path
+    manifest_sha256: str
+    manifest_sidecar_sha256: str
+    manifest_root: ManifestRootIdentity
+    completion_path: Path
+    completion_sha256: str
+    shards: tuple[_RowShard, ...]
+
+    @property
+    def identity_sha256(self) -> str:
+        payload = {
+            "n_players": self.n_players,
+            "manifest_sha256": self.manifest_sha256,
+            "manifest_sidecar_sha256": self.manifest_sidecar_sha256,
+            "completion_sha256": self.completion_sha256,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    @property
+    def captured_inputs(self) -> CapturedV3Inputs:
+        role = f"control:{self.completion_path.name}:0000"
+        return CapturedV3Inputs(
+            sources=(),
+            manifests=(self.manifest_root,),
+            source_paths=(),
+            manifest_paths=(
+                (
+                    self.manifest_root.logical_role,
+                    str(self.manifest_path),
+                    str(sidecar_path(self.manifest_path)),
+                ),
+            ),
+            controls=((role, str(self.completion_path), self.completion_sha256),),
+        )
 
 
 def _ingested_rows_sidecar(
@@ -115,8 +163,8 @@ def _canonical_row_shards(
     block: Path,
     cfg: AppConfig,
     n_players: int,
-) -> tuple[Path, list[_RowShard]]:
-    """Validate and return manifest-ordered canonical simulation row shards."""
+) -> _SimulationSourceSnapshot:
+    """Resolve one authenticated simulation lifecycle into an immutable snapshot."""
 
     row_dir = cfg.simulation_row_dir(n_players)
     if row_dir is None:
@@ -165,8 +213,18 @@ def _canonical_row_shards(
     ):
         raise ValueError(f"simulation completion mismatch: {completion_path}")
 
+    if not is_v3_config(cfg):
+        raise ValueError("immutable ingest source snapshots require artifact-contract-v3")
+    manifest_sidecar = load_immutable_manifest_sidecar(manifest_path)
+    manifest_sha256 = sha256_file(manifest_path)
+    manifest_adjacent_sha256 = sha256_file(sidecar_path(manifest_path))
+    if manifest_sha256 != manifest_sidecar.manifest_sha256:
+        raise ValueError(f"row manifest bytes do not match its immutable sidecar: {manifest_path}")
+
     records_by_index: dict[int, _RowShard] = {}
     seen_paths: set[Path] = set()
+    manifest_entries: list[ManifestEntry] = []
+    observed_order: list[int] = []
     for record in iter_manifest(manifest_path):
         raw_name = record.get("path")
         if not isinstance(raw_name, str):
@@ -179,6 +237,10 @@ def _canonical_row_shards(
             expected_rows = int(record["rows"])
             batch_id = int(record["deterministic_batch_id"])
             shuffle_seed = int(record["shuffle_seed"])
+            byte_length = int(record["byte_length"])
+            data_sha256 = str(record["data_sha256"])
+            shard_sidecar_sha256 = str(record["sidecar_sha256"])
+            schema_fingerprint_sha256 = str(record["schema_fingerprint_sha256"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid row manifest coordinate: {manifest_path}") from exc
         shard_path = row_dir / relative
@@ -194,6 +256,18 @@ def _canonical_row_shards(
             or batch_id != shuffle_index // shuffles_per_batch
         ):
             raise ValueError(f"row manifest support mismatch: {manifest_path}")
+        metadata = validate_authenticated_artifact_metadata(
+            shard_path,
+            cfg=cfg,
+            expected_sidecar_sha256=shard_sidecar_sha256,
+        )
+        if (
+            metadata.artifact.content_sha256 != data_sha256
+            or metadata.artifact.byte_length != byte_length
+            or metadata.artifact.arrow_schema is None
+            or schema_fingerprint_sha256 != metadata.artifact.arrow_schema.fingerprint_sha256
+        ):
+            raise ValueError(f"row manifest identity mismatch for {shard_path}")
         records_by_index[shuffle_index] = _RowShard(
             path=shard_path,
             expected_rows=expected_rows,
@@ -202,42 +276,63 @@ def _canonical_row_shards(
             shuffle_index=shuffle_index,
             deterministic_batch_id=batch_id,
             shuffle_seed=shuffle_seed,
+            byte_length=byte_length,
+            data_sha256=data_sha256,
+            sidecar_sha256=shard_sidecar_sha256,
+            schema_fingerprint_sha256=schema_fingerprint_sha256,
         )
         seen_paths.add(shard_path)
+        observed_order.append(shuffle_index)
+        manifest_entries.append(
+            ManifestEntry(
+                coordinate=(shuffle_index,),
+                canonical_relative_path=shard_path.resolve()
+                .relative_to(cfg.results_root.resolve())
+                .as_posix(),
+                data_sha256=data_sha256,
+                sidecar_sha256=shard_sidecar_sha256,
+                schema_fingerprint_sha256=schema_fingerprint_sha256,
+            )
+        )
 
     expected_indices = set(range(start, end + 1))
     if set(records_by_index) != expected_indices:
         raise ValueError(
             f"row manifest does not cover completed shuffle support {start}..{end}: {manifest_path}"
         )
+    if observed_order != list(range(start, end + 1)):
+        raise ValueError(
+            f"row manifest entries are not in canonical coordinate order: {manifest_path}"
+        )
+    if compute_manifest_root(manifest_entries) != manifest_sidecar.summary:
+        raise ValueError(f"row manifest root identity mismatch: {manifest_path}")
     disk_paths = set(row_dir.glob("rows_*.parquet"))
     if disk_paths != seen_paths:
         raise ValueError(f"row manifest and shard directory disagree: {row_dir}")
-    return manifest_path, [records_by_index[index] for index in range(start, end + 1)]
-
-
-def _iter_shards_legacy_removed(_shards: list[_RowShard], _cols: tuple[str, ...]):
-    """Removed legacy implementation retained temporarily during migration."""
-
-    raise RuntimeError("legacy pandas ingest path must not be called")
-
-
-_iter_shards = _iter_shards_legacy_removed
-
-
-def _ensure_ingested_rows_sidecar(
-    cfg: AppConfig,
-    *,
-    block: Path,
-    n_players: int,
-    source_manifest: Path,
-) -> None:
-    """Validate an existing sidecar; v3 artifacts are never retroactively blessed."""
-
-    del block, source_manifest
-    validate_artifact_sidecar(
-        cfg.ingested_rows_raw(n_players),
-        expected={"operation": "ingest_simulation_rows", "player_counts": [n_players]},
+    location = manifest_sidecar.location
+    role_relative = location.relative_path.replace("/", ".").replace("\\", ".")
+    manifest_role = (
+        f"manifest.{location.stage_key}.{location.scope}."
+        f"k_{location.player_count if location.player_count is not None else 'all'}.{role_relative}"
+    )
+    manifest_root = ManifestRootIdentity(
+        logical_role=manifest_role,
+        location=location,
+        manifest_sha256=manifest_sha256,
+        sidecar_sha256=manifest_adjacent_sha256,
+        sidecar_contract_sha256=manifest_sidecar.sidecar_contract_sha256,
+        summary=manifest_sidecar.summary,
+    )
+    return _SimulationSourceSnapshot(
+        n_players=n_players,
+        block=block,
+        manifest_path=manifest_path,
+        manifest_sha256=manifest_sha256,
+        manifest_sidecar_sha256=manifest_adjacent_sha256,
+        manifest_root=manifest_root,
+        completion_path=completion_path,
+        completion_sha256=sha256_file(completion_path),
+        shards=tuple(records_by_index[index] for index in range(start, end + 1)),
     )
 
 
@@ -484,7 +579,11 @@ def _validate_batch(table: pa.Table, shard: _RowShard, path: Path) -> None:
 
 
 def _iter_shards_arrow(
-    shards: list[_RowShard], *, columns: tuple[str, ...], max_batch_bytes: int, max_batch_rows: int
+    shards: tuple[_RowShard, ...],
+    *,
+    columns: tuple[str, ...],
+    max_batch_bytes: int,
+    max_batch_rows: int,
 ):
     """Projected stream with exact compact game-index bitmaps per input shard."""
 
@@ -551,265 +650,16 @@ def _iter_shards_arrow(
         )
 
 
-# Regex once, reuse
-_SEAT_RE = re.compile(r"^P(\d+)_strategy$")
-
-
-def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
-    """Validate and complete the canonical winner-related columns.
-
-    Args:
-        df: Raw results dataframe containing winner and seat strategy columns.
-
-    Returns:
-        A copy of the dataframe with standardized ``winner_seat``,
-        ``winner_strategy``, and ``seat_ranks`` columns.
-    """
-    df = df.copy()
-
-    if "winner" in df.columns:
-        raise ValueError("retired winner column is not accepted; expected winner_seat")
-
-    # strategy seat columns (P1_strategy, …)
-    seat_cols = sorted(
-        [c for c in df.columns if _SEAT_RE.match(c)],
-        key=lambda c: int(_SEAT_RE.match(c).group(1)),  # type: ignore
-    )
-
-    # winner_strategy derived from seat strategy identifiers (add if missing)
-    if "winner_strategy" not in df.columns and seat_cols:
-        seat_idx = (
-            df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"].astype("Int64")
-        )
-        S = df[seat_cols].to_numpy(dtype=object)
-        out = np.empty(len(df), dtype=object)
-        rows = np.arange(len(df))
-        has = seat_idx.notna()
-        out[has.to_numpy()] = S[rows[has], (seat_idx[has] - 1).astype(int)]
-        out[~has.to_numpy()] = None
-        df["winner_strategy"] = out
-
-    # seat_ranks: list[str] like ["P6","P2",...]
-    if "seat_ranks" not in df.columns and seat_cols:
-        rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
-        if all(col in df.columns for col in rank_cols):
-            R = df[rank_cols].to_numpy(dtype=float)
-            fill = R.shape[1] + 1
-            np.nan_to_num(R, copy=False, nan=fill)
-            seats = np.array([c.split("_", 1)[0] for c in seat_cols], dtype=object)
-            order = np.argsort(R, axis=1)
-            df["seat_ranks"] = [list(seats[idx]) for idx in order]
-        elif "winner_seat" in df.columns:
-            df["seat_ranks"] = df["winner_seat"].apply(lambda s: [s])
-
-    return df
-
-
-def _n_from_block(name: str) -> int | None:
-    """Extract the player count from a ``<N>_players`` directory name.
-
-    Args:
-        name: Directory basename encoded with the player count.
-
-    Returns:
-        Parsed number of players, or ``None`` when the name does not follow
-        the expected pattern.
-    """
-    m = re.match(r"^(\d+)_players$", name)
-    return int(m.group(1)) if m else None
-
-
-def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
-    """Return deterministic upstream files that should invalidate ingest freshness.
-
-    Directory mtimes can stay unchanged when shard file contents are rewritten, so
-    ingest freshness must key off concrete files beneath each ``*_players`` block.
-    """
-
-    blocks = sorted(
-        (p for p in results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
-        key=lambda p: (_n_from_block(p.name) or sys.maxsize, p.name),
-    )
-    inputs: list[Path] = []
-    allowed_suffixes = {".parquet", ".csv", ".json", ".jsonl", ".txt"}
-    for block in blocks:
-        block_files = sorted(
-            (p for p in block.rglob("*") if p.is_file() and p.suffix in allowed_suffixes),
-            key=lambda p: p.relative_to(results_root).as_posix(),
-        )
-        inputs.extend(block_files)
-    return inputs
-
-
-def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int = 1) -> int:
-    """Process a single ``<N>_players`` block."""
-    n = _n_from_block(block.name)
-    if n is None:
-        raise ValueError(f"invalid player-count block name: {block.name}")
-    worker_policy = resolve_stage_parallel_policy(
-        "ingest",
-        cfg.ingest,
-        ParallelNestingContext(
-            active_process_executor=parent_process_workers > 1,
-            parent_process_workers=max(1, int(parent_process_workers)),
-        ),
-        resources=cfg.resources,
-    )
-    apply_native_thread_limits(worker_policy)
-    pa.set_cpu_count(worker_policy.arrow_threads)
-    pa.set_io_thread_count(worker_policy.arrow_threads)
-    LOGGER.info(
-        "Ingest block discovered",
-        extra={"stage": "ingest", "block": block.name, "path": str(block)},
-    )
-
-    raw_out = cfg.ingested_rows_raw(n)
-    source_manifest, row_shards = _canonical_row_shards(block, cfg, n)
-
-    canon = raw_simulation_schema_for(n)
-    seat_cols = [c for c in canon.names if c.startswith("P")]
-    wanted = tuple(
-        dict.fromkeys(
-            (
-                *canon.names,
-                *seat_cols,
-            )
-        )
-    )
-
-    total = 0
-
-    def _iter_tables():
-        """Yield canonicalized parquet tables from discovered shards.
-
-        Returns:
-            An iterator over :class:`pyarrow.Table` objects aligned to the
-            expected schema for the current player count.
-        """
-        nonlocal total
-        for shard_df, shard_path in _iter_shards(
-            row_shards, tuple(wanted)
-        ):  # pyright: ignore[reportGeneralTypeIssues]
-            if shard_df.empty:
-                LOGGER.debug(
-                    "Empty shard skipped",
-                    extra={"stage": "ingest", "path": shard_path.name},
-                )
-                continue
-            LOGGER.debug(
-                "Shard processed",
-                extra={
-                    "stage": "ingest",
-                    "path": shard_path.name,
-                    "rows": len(shard_df),
-                },
-            )
-
-            shard_df = _fix_winner(shard_df)
-            canon_names = canon.names
-            extras = sorted(
-                c for c in shard_df.columns if c not in canon_names and not c.startswith("P")
-            )
-            if extras:
-                LOGGER.error(
-                    "Schema mismatch",
-                    extra={
-                        "stage": "ingest",
-                        "path": str(shard_path),
-                        "unexpected_columns": extras,
-                    },
-                )
-                raise RuntimeError("Schema mismatch")
-            missing_columns = sorted(set(canon_names).difference(shard_df.columns))
-            if missing_columns:
-                raise ValueError(
-                    f"row shard is missing required identity/outcome columns "
-                    f"{missing_columns}: {shard_path}"
-                )
-            shard_df = shard_df[canon_names]
-            table = shard_df
-            total += len(shard_df)
-            yield table
-
-    batches = _iter_tables()
-    first = next(batches, None)
-    if first is None:
-        if raw_out.exists():
-            raw_out.unlink()
-        manifest_candidate = raw_out.with_suffix(".manifest.jsonl")
-        if manifest_candidate.exists():
-            manifest_candidate.unlink()
-        LOGGER.info(
-            "Ingest block produced zero rows",
-            extra={"stage": "ingest", "n_players": n, "path": str(block)},
-        )
-        return 0
-
-    def _all_batches():
-        """Iterate over the first and remaining batches for streaming writes."""
-        yield first
-        yield from batches
-
-    manifest_path = cfg.ingest_manifest(n)
-    sidecar = _ingested_rows_sidecar(
-        cfg,
-        block=block,
-        n_players=n,
-        source_manifest=source_manifest,
-        schema=canon,
-    )
-    run_streaming_shard(
-        out_path=str(raw_out),
-        manifest_path=str(manifest_path),
-        schema=canon,
-        batch_iter=_all_batches(),  # pyright: ignore[reportArgumentType]
-        row_group_size=cfg.row_group_size,
-        compression=cfg.parquet_codec,
-        sidecar=sidecar,
-        manifest_extra={
-            "path": raw_out.name,
-            "n_players": n,
-            "source_block": block.name,
-            "root_seed": cfg.sim.seed,
-            "coordinate_columns": [
-                "root_seed",
-                "k",
-                "shuffle_index",
-                "game_index",
-                "deterministic_batch_id",
-            ],
-        },
-    )
-    _ensure_ingested_rows_sidecar(
-        cfg,
-        block=block,
-        n_players=n,
-        source_manifest=source_manifest,
-    )
-    LOGGER.info(
-        "Ingest block complete",
-        extra={
-            "stage": "ingest",
-            "n_players": n,
-            "rows": total,
-            "path": str(raw_out),
-            "manifest": str(manifest_path),
-        },
-    )
-    return total
-
-
 @dataclass(frozen=True)
 class _IngestUnitWriter:
     """Pickle-safe per-k writer used by the shared partition executor."""
 
     cfg: AppConfig
+    sources: tuple[_SimulationSourceSnapshot, ...]
 
     def __call__(self, unit: PartitionedUnit, staged: Path) -> None:
         n_players = int(unit.key[0])
-        block = self.cfg.results_root / f"{n_players}_players"
-        source_manifest, shards = _canonical_row_shards(block, self.cfg, n_players)
-        del source_manifest
+        snapshot = {source.n_players: source for source in self.sources}[n_players]
         schema = raw_simulation_schema_for(n_players)
         max_bytes = int(self.cfg.resources.stage_batch_bytes["ingest"])
         with ParquetShardWriter(
@@ -819,7 +669,7 @@ class _IngestUnitWriter:
             row_group_size=self.cfg.row_group_size,
         ) as writer:
             for table, _path in _iter_shards_arrow(
-                shards,
+                snapshot.shards,
                 columns=tuple(schema.names),
                 max_batch_bytes=max_bytes,
                 max_batch_rows=max(1, int(self.cfg.ingest.batch_rows)),
@@ -836,26 +686,23 @@ class _IngestUnitPublisher:
     """Publish and validate the canonical output pair beside each completed k unit."""
 
     cfg: AppConfig
+    sources: tuple[_SimulationSourceSnapshot, ...]
+    sidecars: tuple[tuple[int, ArtifactSidecar], ...]
 
-    def _block(self, unit: PartitionedUnit) -> tuple[int, Path]:
+    def _source(self, unit: PartitionedUnit) -> _SimulationSourceSnapshot:
         n_players = int(unit.key[0])
-        return n_players, self.cfg.results_root / f"{n_players}_players"
+        return {source.n_players: source for source in self.sources}[n_players]
 
     def sidecar(self, unit: PartitionedUnit, output: Path) -> ArtifactSidecar:
-        n_players, block = self._block(unit)
+        snapshot = self._source(unit)
+        n_players = snapshot.n_players
         if output != self.cfg.ingested_rows_raw(n_players):
             raise ValueError("ingest partition output does not match the canonical by-k path")
-        source_manifest, _shards = _canonical_row_shards(block, self.cfg, n_players)
-        return _ingested_rows_sidecar(
-            self.cfg,
-            block=block,
-            n_players=n_players,
-            source_manifest=source_manifest,
-            schema=raw_simulation_schema_for(n_players),
-        )
+        return dict(self.sidecars)[n_players]
 
     def publish_manifest(self, unit: PartitionedUnit, output: Path) -> None:
-        n_players, block = self._block(unit)
+        snapshot = self._source(unit)
+        n_players, block = snapshot.n_players, snapshot.block
         manifest = self.cfg.ingest_manifest(n_players)
         rows = int(pq.ParquetFile(output).metadata.num_rows)
         record = {
@@ -898,8 +745,8 @@ class _IngestUnitPublisher:
         write_artifact_with_sidecar_atomic(manifest, metadata, write_manifest)
 
     def validate(self, unit: PartitionedUnit, output: Path) -> bool:
-        n_players, block = self._block(unit)
-        source_manifest, _shards = _canonical_row_shards(block, self.cfg, n_players)
+        snapshot = self._source(unit)
+        n_players, block = snapshot.n_players, snapshot.block
         if output != self.cfg.ingested_rows_raw(n_players):
             return False
         if not pq.read_schema(output).equals(
@@ -920,6 +767,8 @@ class _IngestUnitPublisher:
             expected={"operation": "ingest_simulation_rows_stream_manifest"},
         )
         records = list(iter_manifest(manifest))
+        loaded_output = validate_authenticated_artifact_metadata(output, cfg=self.cfg)
+        captured = dict(self.sidecars)[n_players]._captured_v3_inputs
         return (
             len(records) == 1
             and records[0]
@@ -937,27 +786,24 @@ class _IngestUnitPublisher:
                     "deterministic_batch_id",
                 ],
             }
-            and source_manifest.is_file()
+            and captured is not None
+            and loaded_output.manifest_roots == captured.manifests
+            and all(
+                loaded_output.stage_identity.immutable_design_identities.get(role) == digest
+                for role, digest in captured.designs.items()
+            )
         )
 
 
 def _ingest_partition_identity(
     cfg: AppConfig,
-    blocks: list[Path],
+    sources: tuple[_SimulationSourceSnapshot, ...],
 ) -> PartitionedStageIdentity:
     """Bind every configured simulation manifest to the reusable k units."""
 
     inputs: list[tuple[str, str]] = []
-    for block in blocks:
-        n_players = _n_from_block(block.name)
-        if n_players is None:  # pragma: no cover - callers construct canonical blocks
-            raise ValueError(f"invalid configured block {block}")
-        manifest, _shards = _canonical_row_shards(block, cfg, n_players)
-        completion = block / "simulation.done.json"
-        digest = hashlib.sha256(
-            (sha256_file(manifest) + sha256_file(completion)).encode("ascii")
-        ).hexdigest()
-        inputs.append((f"k{n_players:03d}_simulation_rows", digest))
+    for source in sources:
+        inputs.append((f"k{source.n_players:03d}_simulation_rows", source.identity_sha256))
     return PartitionedStageIdentity(
         stage_name="ingest",
         root_seed=int(cfg.sim.seed),
@@ -984,15 +830,36 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     outputs = [cfg.ingested_rows_raw(k) for k in player_counts]
     manifests = [cfg.ingest_manifest(k) for k in player_counts]
-    upstream_inputs = _ingest_upstream_inputs(cfg.results_root)
-    identity = _ingest_partition_identity(cfg, blocks)
+    sources = tuple(
+        _canonical_row_shards(block, cfg, n_players)
+        for block, n_players in zip(blocks, player_counts, strict=True)
+    )
+    upstream_inputs = [
+        path for source in sources for path in (source.manifest_path, source.completion_path)
+    ]
+    identity = _ingest_partition_identity(cfg, sources)
     guard = ProcessTreeMemoryGuard(
         cfg.resources.aggregate_memory_hard_limit_mb,
         rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
         minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
         sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
-    publisher = _IngestUnitPublisher(cfg)
+    captured_sidecars: list[tuple[int, ArtifactSidecar]] = []
+    for source in sources:
+        template = _ingested_rows_sidecar(
+            cfg,
+            block=source.block,
+            n_players=source.n_players,
+            source_manifest=source.manifest_path,
+            schema=raw_simulation_schema_for(source.n_players),
+        )
+        captured_sidecars.append(
+            (
+                source.n_players,
+                replace(template, _captured_v3_inputs=source.captured_inputs),
+            )
+        )
+    publisher = _IngestUnitPublisher(cfg, sources, tuple(captured_sidecars))
     units = tuple(
         PartitionedUnit((k,), f"{k}p/{cfg.ingested_rows_raw(k).name}") for k in player_counts
     )
@@ -1000,7 +867,7 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
         root=cfg.ingest_stage_dir,
         identity=identity,
         unit_source=lambda: iter(units),
-        writer=_IngestUnitWriter(cfg),
+        writer=_IngestUnitWriter(cfg, sources),
         resources=cfg.resources,
         requested_workers=cfg.ingest.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
@@ -1046,141 +913,9 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
 
 
 def run(cfg: AppConfig) -> None:
-    """Ingest raw game results into curated parquet files and manifests.
+    """Ingest authenticated raw game results into canonical by-k Parquets."""
 
-    Args:
-        cfg: Application configuration containing input/output paths and
-            parallelism controls.
-    """
     _run_partitioned_ingest(cfg)
-    return
-
-    resolved_n_jobs = normalize_n_jobs(cfg.ingest.n_jobs)
-    stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest, resources=cfg.resources)
-    apply_native_thread_limits(stage_policy)
-    pa.set_cpu_count(stage_policy.arrow_threads)
-    pa.set_io_thread_count(stage_policy.arrow_threads)
-    LOGGER.info(
-        "Ingest started",
-        extra={
-            "stage": "ingest",
-            "root": str(cfg.results_root),
-            "data_dir": str(cfg.data_dir),
-            "n_jobs": resolved_n_jobs,
-            "process_workers": stage_policy.process_workers,
-            "python_threads": stage_policy.python_threads,
-            "arrow_threads": stage_policy.arrow_threads,
-        },
-    )
-    cfg.data_dir.mkdir(parents=True, exist_ok=True)
-
-    blocks = sorted(
-        (p for p in cfg.results_root.iterdir() if p.is_dir() and _n_from_block(p.name) is not None),
-        key=lambda p: (_n_from_block(p.name) or sys.maxsize, p.name),
-    )
-
-    done = stage_done_path(cfg.ingest_stage_dir, "ingest")
-    outputs = []
-    manifests = []
-    for block in blocks:
-        n = _n_from_block(block.name)
-        if n is None:  # pragma: no cover - filtered above
-            continue
-        outputs.append(cfg.ingested_rows_raw(n))
-        manifests.append(cfg.ingest_manifest(n))
-    upstream_inputs = _ingest_upstream_inputs(cfg.results_root)
-
-    if stage_is_up_to_date(
-        done,
-        inputs=upstream_inputs,
-        outputs=[*outputs, *manifests],
-        cfg=cfg,
-        stage="ingest",
-        sidecar_artifacts=outputs,
-    ):
-        LOGGER.info(
-            "Ingest up-to-date",
-            extra={"stage": "ingest", "path": str(done)},
-        )
-        return
-
-    if stage_is_up_to_date(
-        done,
-        inputs=upstream_inputs,
-        outputs=[*outputs, *manifests],
-        cfg=cfg,
-        stage="ingest",
-    ):
-        for block in blocks:
-            n = _n_from_block(block.name)
-            if n is None:  # pragma: no cover - filtered above
-                continue
-            source_manifest, _row_shards = _canonical_row_shards(block, cfg, n)
-            _ensure_ingested_rows_sidecar(
-                cfg,
-                block=block,
-                n_players=n,
-                source_manifest=source_manifest,
-            )
-        write_stage_done(
-            done,
-            inputs=upstream_inputs,
-            outputs=[*outputs, *manifests],
-            cfg=cfg,
-            stage="ingest",
-            sidecar_artifacts=outputs,
-        )
-        LOGGER.info("Ingest sidecars backfilled", extra={"stage": "ingest"})
-        return
-
-    mp_context = resolve_mp_context(cfg.analysis.mp_start_method)
-
-    total_rows = 0
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
-    memory_guard.check_before_schedule(force=True)
-    if stage_policy.process_workers <= 1:
-        for block in blocks:
-            memory_guard.check_before_schedule()
-            total_rows += _process_block(block, cfg, parent_process_workers=1)
-    else:
-        worker = partial(
-            _process_block,
-            cfg=cfg,
-            parent_process_workers=stage_policy.process_workers,
-        )
-        total_rows = sum(
-            process_map(
-                worker,
-                blocks,
-                n_jobs=stage_policy.process_workers,
-                window=(stage_policy.process_workers * cfg.resources.max_in_flight_per_worker),
-                mp_context=mp_context,
-                memory_guard=memory_guard,
-            )
-        )
-
-    LOGGER.info(
-        "Ingest finished",
-        extra={
-            "stage": "ingest",
-            "blocks": len(blocks),
-            "rows": total_rows,
-        },
-    )
-    memory_guard.check_before_schedule(force=True)
-    write_stage_done(
-        done,
-        inputs=upstream_inputs,
-        outputs=[*outputs, *manifests],
-        cfg=cfg,
-        stage="ingest",
-        sidecar_artifacts=outputs,
-    )
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper

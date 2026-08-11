@@ -9,7 +9,8 @@ import re
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from itertools import chain, islice
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeAlias
 
@@ -31,6 +32,7 @@ from farkle.utils.parallel import (
     ResourceSafetyError,
     StageParallelPolicy,
     apply_native_thread_limits,
+    classify_resource_exception,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -264,7 +266,12 @@ def _validated_unit_metadata(
         return {}
     try:
         result = validator(unit, output)
-    except Exception:  # noqa: BLE001 - invalid auxiliary evidence is not reusable
+    except Exception as exc:  # noqa: BLE001 - invalid auxiliary evidence is not reusable
+        classification = classify_resource_exception(exc)
+        if classification is not None:
+            if isinstance(exc, ResourceFailureError):
+                raise
+            raise ResourceFailureError(classification, str(exc)) from exc
         return None
     if result is False:
         return None
@@ -646,6 +653,7 @@ def run_partitioned_stage(
         attempt_policy: StageParallelPolicy,
         *,
         honor_force: bool,
+        count_for_result: bool,
     ) -> Iterable[_UnitTask]:
         nonlocal reused, scheduled
         for unit in _iter_ordered_units(unit_source):
@@ -661,10 +669,12 @@ def run_partitioned_stage(
                 )
             )
             if valid is not None:
-                reused += 1
+                if count_for_result:
+                    reused += 1
                 continue
             _quarantine_invalid_unit(root, unit, output_prefix=output_prefix)
-            scheduled += 1
+            if count_for_result:
+                scheduled += 1
             yield _UnitTask(
                 root,
                 unit,
@@ -699,19 +709,42 @@ def run_partitioned_stage(
 
     attempt_policy = policy
     for attempt_index in range(2):
+        task_iterator = iter(
+            pending_tasks(
+                attempt_policy,
+                honor_force=attempt_index == 0,
+                count_for_result=attempt_index == 0,
+            )
+        )
+        task_head = list(islice(task_iterator, attempt_policy.process_workers))
+        effective_workers = len(task_head)
+        execution_policy = replace(
+            attempt_policy,
+            process_workers=max(1, effective_workers),
+        )
+        tasks = chain(
+            (replace(task, policy=execution_policy) for task in task_head),
+            (replace(task, policy=execution_policy) for task in task_iterator),
+        )
         attempt_record: dict[str, Any] = {
             "attempt": attempt_index + 1,
-            "worker_count": attempt_policy.process_workers,
-            "policy": asdict(attempt_policy),
+            "worker_count": effective_workers,
+            "pending_units": (
+                effective_workers if effective_workers < attempt_policy.process_workers else None
+            ),
+            "policy": asdict(execution_policy),
             "retry": attempt_index == 1,
         }
         execution_attempts.append(attempt_record)
         try:
-            window = attempt_policy.process_workers * resources.max_in_flight_per_worker
+            if effective_workers == 0:
+                attempt_record["outcome"] = "complete"
+                break
+            window = effective_workers * resources.max_in_flight_per_worker
             for _completed_key in process_map(
                 _execute_unit,
-                pending_tasks(attempt_policy, honor_force=attempt_index == 0),
-                n_jobs=attempt_policy.process_workers,
+                tasks,
+                n_jobs=effective_workers,
                 window=window,
                 mp_context=resolve_mp_context(mp_start_method),
                 memory_guard=guard,
@@ -731,7 +764,7 @@ def run_partitioned_stage(
             write_execution_telemetry("retrying" if attempt_index == 0 else "resource_failure")
             if attempt_index == 1:
                 raise
-            retry_workers = max(1, attempt_policy.process_workers // 2)
+            retry_workers = max(1, effective_workers // 2)
             attempt_policy = resolve_stage_parallel_policy(
                 resources_stage,
                 policy_cfg,
