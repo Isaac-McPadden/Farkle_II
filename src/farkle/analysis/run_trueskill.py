@@ -1256,8 +1256,9 @@ def run_trueskill(
     apply_native_thread_limits(policy)
     actual_workers = max(1, min(policy.process_workers, len(blocks)))
     memory_guard = ProcessTreeMemoryGuard(
-        effective_resources.hard_memory_limit_mb,
-        rss_warning_mb=effective_resources.target_memory_mb,
+        effective_resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=effective_resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=(effective_resources.minimum_system_available_memory_mb),
         sample_interval_seconds=effective_resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)

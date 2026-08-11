@@ -35,9 +35,9 @@ def _identity() -> PartitionedStageIdentity:
 
 def _resources() -> ResourcesConfig:
     return ResourcesConfig(
-        target_memory_mb=768,
-        parent_reserve_mb=192,
-        logical_cpu_workers=4,
+        scheduler_memory_budget_mb=768,
+        parent_process_memory_mb=192,
+        logical_cpu_budget=4,
         native_threads_per_worker=1,
         estimated_worker_memory_mb={"partitioned_stage": 64},
         stage_batch_bytes={"partitioned_stage": 4096},

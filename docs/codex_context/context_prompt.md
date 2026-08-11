@@ -44,11 +44,15 @@ Preserve these invariants:
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
 - public process-tree execution is launched inside one aggregate Windows Job
-  Object or delegated cgroup-v2 `memory.max` boundary derived from the configured
-  target times safety factor; setup fails closed in strict mode, the 768 MiB
-  scheduler target logs a warning when crossed and the default 3.0x hard RSS
-  stop remains cooperative, worker counts obey CPU/native-thread and
-  per-stage memory caps, and partition manifests publish only after every unit validates;
+  Object or delegated cgroup-v2 `memory.max` boundary using an explicit aggregate
+  hard limit; scheduler admission memory, RSS high-water warning, host-available
+  reserve, parent-process estimate, logical CPU budget, and per-stage worker
+  estimates have separate meanings, and requested/resolved/effective execution
+  policy is authenticated outside statistical freshness; setup fails closed in
+  strict mode, nested pools are suppressed, and partition manifests publish only
+  after every unit validates;
+- byte-bounded streaming, atomic durable units, and exact resume are permanent
+  engineering invariants; a fixed 1 GiB process-tree ceiling is not;
 - curate preserves its authenticated provenance boundary with independent
   copy-on-write reflinks where supported and deterministic bounded physical-copy
   fallback; combine keeps normalized by-k Parquets as its only canonical data

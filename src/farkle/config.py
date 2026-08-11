@@ -60,6 +60,12 @@ class ArtifactScope(str, Enum):
 
 
 RETIRED_CONFIG_KEYS: dict[str, str] = {
+    "resources.target_memory_mb": (
+        "resources.scheduler_memory_budget_mb and " "resources.process_tree_warning_threshold_mb"
+    ),
+    "resources.memory_safety_factor": "resources.aggregate_memory_hard_limit_mb",
+    "resources.parent_reserve_mb": "resources.parent_process_memory_mb",
+    "resources.logical_cpu_workers": "resources.logical_cpu_budget",
     "sim.num_shuffles": "screening.resolution_delta and batching settings",
     "sim.power_method": "screening.resolution_delta",
     "sim.recompute_num_shuffles": "screening.resolution_delta",
@@ -391,13 +397,15 @@ class OrchestrationConfig:
 class ResourcesConfig:
     """Execution-only CPU, native-thread, memory, and streaming budgets."""
 
-    target_memory_mb: int = 768
-    memory_safety_factor: float = 3.0
+    scheduler_memory_budget_mb: int = 768
+    process_tree_warning_threshold_mb: int = 768
+    aggregate_memory_hard_limit_mb: int = 2304
+    minimum_system_available_memory_mb: int = 1024
     os_memory_limit_enabled: bool = True
     os_memory_limit_required: bool = True
     allow_unenforced_memory_fallback: bool = False
-    parent_reserve_mb: int = 192
-    logical_cpu_workers: int = 0
+    parent_process_memory_mb: int = 192
+    logical_cpu_budget: int = 0
     native_threads_per_worker: int = 1
     max_in_flight_per_worker: int = 1
     rss_sample_interval_seconds: float = 0.25
@@ -426,12 +434,6 @@ class ResourcesConfig:
             "partitioned_stage": 16 * 1024 * 1024,
         }
     )
-
-    @property
-    def hard_memory_limit_mb(self) -> int:
-        """Return the process-tree stop threshold derived from the soft target."""
-
-        return math.ceil(self.target_memory_mb * self.memory_safety_factor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1756,7 +1758,15 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
     """Return the config payload used for deterministic cache hashing."""
 
     resolved = effective_config_dict(cfg)
-    for path in ("sim.progress_logging", "analysis.progress_logging", "resources"):
+    for path in (
+        "sim.progress_logging",
+        "analysis.progress_logging",
+        "sim.n_jobs",
+        "analysis.n_jobs",
+        "ingest.n_jobs",
+        "head2head.n_jobs",
+        "resources",
+    ):
         _drop_nested_path(resolved, path)
     return resolved
 
@@ -1800,12 +1810,15 @@ def _project_effective_config(
 
 
 def _validate_resource_contract(resources: ResourcesConfig) -> None:
-    """Validate the soft resource target and its derived hard-stop threshold."""
+    """Validate the explicit execution-resource contract."""
 
     integer_fields = {
-        "target_memory_mb": resources.target_memory_mb,
-        "parent_reserve_mb": resources.parent_reserve_mb,
-        "logical_cpu_workers": resources.logical_cpu_workers,
+        "scheduler_memory_budget_mb": resources.scheduler_memory_budget_mb,
+        "process_tree_warning_threshold_mb": resources.process_tree_warning_threshold_mb,
+        "aggregate_memory_hard_limit_mb": resources.aggregate_memory_hard_limit_mb,
+        "minimum_system_available_memory_mb": resources.minimum_system_available_memory_mb,
+        "parent_process_memory_mb": resources.parent_process_memory_mb,
+        "logical_cpu_budget": resources.logical_cpu_budget,
         "native_threads_per_worker": resources.native_threads_per_worker,
         "max_in_flight_per_worker": resources.max_in_flight_per_worker,
     }
@@ -1813,13 +1826,6 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
         isinstance(value, bool) or not isinstance(value, int) for value in integer_fields.values()
     ):
         raise TypeError("resource memory, CPU, thread, and in-flight controls must be integers")
-    if (
-        isinstance(resources.memory_safety_factor, bool)
-        or not isinstance(resources.memory_safety_factor, (int, float))
-        or not math.isfinite(float(resources.memory_safety_factor))
-        or float(resources.memory_safety_factor) < 1.0
-    ):
-        raise ValueError("resources.memory_safety_factor must be finite and >= 1.0")
     boolean_fields = {
         "os_memory_limit_enabled": resources.os_memory_limit_enabled,
         "os_memory_limit_required": resources.os_memory_limit_required,
@@ -1835,10 +1841,22 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
         raise ValueError(
             "non-strict OS memory enforcement requires an explicit development fallback"
         )
-    if not (0 < resources.parent_reserve_mb < resources.target_memory_mb):
-        raise ValueError("resources must satisfy 0 < parent_reserve_mb < target_memory_mb")
-    if resources.logical_cpu_workers < 0:
-        raise ValueError("resources.logical_cpu_workers must be >= 0")
+    if not (
+        0
+        < resources.parent_process_memory_mb
+        < resources.scheduler_memory_budget_mb
+        <= resources.process_tree_warning_threshold_mb
+        < resources.aggregate_memory_hard_limit_mb
+    ):
+        raise ValueError(
+            "resources must satisfy 0 < parent_process_memory_mb < "
+            "scheduler_memory_budget_mb <= process_tree_warning_threshold_mb < "
+            "aggregate_memory_hard_limit_mb"
+        )
+    if resources.minimum_system_available_memory_mb < 1:
+        raise ValueError("resources.minimum_system_available_memory_mb must be positive")
+    if resources.logical_cpu_budget < 0:
+        raise ValueError("resources.logical_cpu_budget must be >= 0")
     if resources.native_threads_per_worker < 1:
         raise ValueError("resources.native_threads_per_worker must be positive")
     if resources.max_in_flight_per_worker < 1:

@@ -37,12 +37,53 @@ def _supervisor(limit_mb: int, *arguments: str) -> subprocess.CompletedProcess[s
 
 def _resources(*, required: bool, fallback: bool) -> SimpleNamespace:
     return SimpleNamespace(
-        target_memory_mb=128,
-        memory_safety_factor=1.0,
+        scheduler_memory_budget_mb=64,
+        process_tree_warning_threshold_mb=96,
+        aggregate_memory_hard_limit_mb=128,
+        minimum_system_available_memory_mb=1,
+        parent_process_memory_mb=16,
+        logical_cpu_budget=0,
+        native_threads_per_worker=1,
         os_memory_limit_enabled=True,
         os_memory_limit_required=required,
         allow_unenforced_memory_fallback=fallback,
     )
+
+
+def test_supervisor_seam_uses_explicit_hard_limit_without_recomputation() -> None:
+    resources = _resources(required=True, fallback=False)
+    resources.scheduler_memory_budget_mb = 17
+    resources.process_tree_warning_threshold_mb = 31
+
+    assert os_memory._hard_memory_limit_mb(resources) == 128
+    provenance = os_memory.memory_boundary_provenance(resources)
+    assert provenance["requested_hard_limit_mb"] == 128
+    assert provenance["scheduler_memory_budget_mb"] == 17
+    assert provenance["process_tree_warning_threshold_mb"] == 31
+
+
+@pytest.mark.parametrize(
+    ("platform", "backend_name"),
+    [("win32", "_run_windows_job"), ("linux", "_run_cgroup_v2")],
+)
+def test_platform_supervisor_receives_explicit_hard_limit(
+    monkeypatch: pytest.MonkeyPatch, platform: str, backend_name: str
+) -> None:
+    captured: dict[str, int] = {}
+
+    def _backend(_command, resources, *, env):
+        del env
+        captured["hard_limit_mb"] = os_memory._hard_memory_limit_mb(resources)
+        return 0
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(os_memory, backend_name, _backend)
+    resources = _resources(required=True, fallback=False)
+    resources.scheduler_memory_budget_mb = 17
+    resources.process_tree_warning_threshold_mb = 31
+
+    assert os_memory.supervise_process(["analysis"], resources) == 0
+    assert captured == {"hard_limit_mb": 128}
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="live Job Object test")

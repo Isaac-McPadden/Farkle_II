@@ -144,13 +144,16 @@ orchestration:
   parallel_seeds: false
 
 resources:
-  target_memory_mb: 768
-  memory_safety_factor: 3.0
+  # Machine-targeted Ryzen 7 3700X / 32 GiB profile; not a portable default.
+  scheduler_memory_budget_mb: 8192
+  process_tree_warning_threshold_mb: 8192
+  aggregate_memory_hard_limit_mb: 12288
+  minimum_system_available_memory_mb: 8192
   os_memory_limit_enabled: true
   os_memory_limit_required: true
   allow_unenforced_memory_fallback: false
-  parent_reserve_mb: 192
-  logical_cpu_workers: 0
+  parent_process_memory_mb: 512
+  logical_cpu_budget: 15
   native_threads_per_worker: 1
   max_in_flight_per_worker: 1
   rss_sample_interval_seconds: 0.25

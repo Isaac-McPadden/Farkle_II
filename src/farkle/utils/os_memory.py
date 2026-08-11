@@ -14,7 +14,6 @@ import contextlib
 import ctypes
 import json
 import logging
-import math
 import os
 import signal
 import subprocess
@@ -24,6 +23,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
+
+from farkle.utils.parallel import ResourceSafetyError, resolve_resource_policy
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,8 +60,10 @@ class MemoryBoundaryStatus:
     platform: str
     enforced: bool
     requested_hard_limit_mb: int
-    warning_target_mb: int
-    safety_factor: float
+    scheduler_memory_budget_mb: int
+    process_tree_warning_threshold_mb: int
+    minimum_system_available_memory_mb: int
+    parent_process_memory_mb: int
     effective_hard_limit_mb: int | None
     enclosing_hard_limit_mb: int | None
     strict_required: bool
@@ -95,17 +98,21 @@ def memory_boundary_provenance(resources: Any | None = None) -> dict[str, Any]:
     if active is not None:
         return active
     requested = _hard_memory_limit_mb(resources) if resources is not None else 0
-    target = _memory_target_mb(resources) if resources is not None else 0
-    factor = _memory_safety_factor(resources) if resources is not None else 1.0
+    scheduler = _scheduler_memory_budget_mb(resources) if resources is not None else 0
+    warning = _warning_threshold_mb(resources) if resources is not None else 0
+    system_reserve = _minimum_system_available_memory_mb(resources) if resources is not None else 0
+    parent = _parent_process_memory_mb(resources) if resources is not None else 0
     required = bool(getattr(resources, "os_memory_limit_required", False))
     return MemoryBoundaryStatus(
-        contract_version=2,
+        contract_version=3,
         backend="none",
         platform=_platform_label(),
         enforced=False,
         requested_hard_limit_mb=requested,
-        warning_target_mb=target,
-        safety_factor=factor,
+        scheduler_memory_budget_mb=scheduler,
+        process_tree_warning_threshold_mb=warning,
+        minimum_system_available_memory_mb=system_reserve,
+        parent_process_memory_mb=parent,
         effective_hard_limit_mb=None,
         enclosing_hard_limit_mb=None,
         strict_required=required,
@@ -130,28 +137,35 @@ def _platform_label() -> str:
     return sys.platform
 
 
-def _memory_target_mb(resources: Any) -> int:
-    """Return the configured soft memory target for config objects and CLI probes."""
+def _scheduler_memory_budget_mb(resources: Any) -> int:
+    """Return the worker-admission memory budget."""
 
-    return int(getattr(resources, "target_memory_mb", 0))
+    return int(getattr(resources, "scheduler_memory_budget_mb", 0))
 
 
-def _memory_safety_factor(resources: Any) -> float:
-    """Return the configured multiplier, with a one-times probe fallback."""
+def _warning_threshold_mb(resources: Any) -> int:
+    """Return the cooperative process-tree high-water threshold."""
 
-    return float(getattr(resources, "memory_safety_factor", 1.0))
+    return int(getattr(resources, "process_tree_warning_threshold_mb", 0))
+
+
+def _minimum_system_available_memory_mb(resources: Any) -> int:
+    return int(getattr(resources, "minimum_system_available_memory_mb", 0))
+
+
+def _parent_process_memory_mb(resources: Any) -> int:
+    return int(getattr(resources, "parent_process_memory_mb", 0))
 
 
 def _hard_memory_limit_mb(resources: Any) -> int:
-    """Derive the OS boundary from the target and safety factor."""
+    """Return the explicit aggregate OS process-tree boundary."""
 
-    configured = getattr(resources, "hard_memory_limit_mb", None)
-    if configured is not None:
-        return int(configured)
-    target = _memory_target_mb(resources)
-    if target < 1:
-        raise ValueError("memory boundary resources require a positive target_memory_mb")
-    return math.ceil(target * _memory_safety_factor(resources))
+    configured = int(getattr(resources, "aggregate_memory_hard_limit_mb", 0))
+    if configured < 1:
+        raise ValueError(
+            "memory boundary resources require a positive aggregate_memory_hard_limit_mb"
+        )
+    return configured
 
 
 def _status_environment(
@@ -192,13 +206,15 @@ def _run_unenforced(
     detail: str,
 ) -> int:
     status = MemoryBoundaryStatus(
-        contract_version=2,
+        contract_version=3,
         backend="unenforced",
         platform=_platform_label(),
         enforced=False,
         requested_hard_limit_mb=_hard_memory_limit_mb(resources),
-        warning_target_mb=_memory_target_mb(resources),
-        safety_factor=_memory_safety_factor(resources),
+        scheduler_memory_budget_mb=_scheduler_memory_budget_mb(resources),
+        process_tree_warning_threshold_mb=_warning_threshold_mb(resources),
+        minimum_system_available_memory_mb=_minimum_system_available_memory_mb(resources),
+        parent_process_memory_mb=_parent_process_memory_mb(resources),
         effective_hard_limit_mb=None,
         enclosing_hard_limit_mb=None,
         strict_required=bool(resources.os_memory_limit_required),
@@ -219,6 +235,10 @@ def supervise_process(
 
     if not command:
         raise ValueError("protected command cannot be empty")
+    try:
+        resolve_resource_policy(resources, require_available_reserve=True)
+    except ResourceSafetyError as exc:
+        raise MemoryBoundaryError(f"resource preflight failed: {exc}") from exc
     env = _preimport_environment(env, resources)
     enabled = bool(resources.os_memory_limit_enabled)
     required = bool(resources.os_memory_limit_required)
@@ -449,13 +469,15 @@ def _run_windows_job(
                 f"SetInformationJobObject(job memory) failed with WinError {error}"
             )
         status = MemoryBoundaryStatus(
-            contract_version=2,
+            contract_version=3,
             backend="windows_job",
             platform="windows",
             enforced=True,
             requested_hard_limit_mb=requested_limit_mb,
-            warning_target_mb=_memory_target_mb(resources),
-            safety_factor=_memory_safety_factor(resources),
+            scheduler_memory_budget_mb=_scheduler_memory_budget_mb(resources),
+            process_tree_warning_threshold_mb=_warning_threshold_mb(resources),
+            minimum_system_available_memory_mb=_minimum_system_available_memory_mb(resources),
+            parent_process_memory_mb=_parent_process_memory_mb(resources),
             effective_hard_limit_mb=effective_bytes // _MIB,
             enclosing_hard_limit_mb=(
                 enclosing_limit_bytes // _MIB if enclosing_limit_bytes is not None else None
@@ -608,13 +630,15 @@ def _run_cgroup_v2(command: Sequence[str], resources: Any, *, env: Mapping[str, 
         ) from exc
 
     status = MemoryBoundaryStatus(
-        contract_version=2,
+        contract_version=3,
         backend="cgroup_v2",
         platform=_platform_label(),
         enforced=True,
         requested_hard_limit_mb=requested_limit_mb,
-        warning_target_mb=_memory_target_mb(resources),
-        safety_factor=_memory_safety_factor(resources),
+        scheduler_memory_budget_mb=_scheduler_memory_budget_mb(resources),
+        process_tree_warning_threshold_mb=_warning_threshold_mb(resources),
+        minimum_system_available_memory_mb=_minimum_system_available_memory_mb(resources),
+        parent_process_memory_mb=_parent_process_memory_mb(resources),
         effective_hard_limit_mb=effective_bytes // _MIB,
         enclosing_hard_limit_mb=(parent_limit // _MIB if parent_limit is not None else None),
         strict_required=bool(resources.os_memory_limit_required),
@@ -682,8 +706,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not command:
         raise SystemExit("a command is required after --")
     resources = SimpleNamespace(
-        target_memory_mb=int(args.limit_mb),
-        memory_safety_factor=1.0,
+        scheduler_memory_budget_mb=max(2, int(args.limit_mb) - 1),
+        process_tree_warning_threshold_mb=max(2, int(args.limit_mb) - 1),
+        aggregate_memory_hard_limit_mb=int(args.limit_mb),
+        minimum_system_available_memory_mb=1,
+        parent_process_memory_mb=1,
+        logical_cpu_budget=0,
+        native_threads_per_worker=1,
         os_memory_limit_enabled=True,
         os_memory_limit_required=not args.permissive,
         allow_unenforced_memory_fallback=bool(args.permissive),

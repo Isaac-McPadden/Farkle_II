@@ -13,6 +13,7 @@ from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRu
 from farkle.config import AppConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 from farkle.utils.os_memory import memory_boundary_provenance
+from farkle.utils.parallel import resolve_resource_policy
 from farkle.utils.stage_completion import stage_done_path
 
 if TYPE_CHECKING:
@@ -62,11 +63,15 @@ def _optional_import(module: str, *, stage_log: StageLogger | None = None) -> Mo
 
 
 def _manifest_metadata(cfg: AppConfig, *, execution_scope: str) -> dict[str, Any]:
+    boundary = memory_boundary_provenance(cfg.resources)
     payload: dict[str, Any] = {
         "results_dir": str(cfg.results_root),
         "analysis_dir": str(cfg.analysis_dir),
         "execution_scope": execution_scope,
-        "os_memory_boundary": memory_boundary_provenance(cfg.resources),
+        "resource_policy": resolve_resource_policy(cfg.resources).as_metadata(
+            effective_hard_limit_mb=boundary.get("effective_hard_limit_mb")
+        ),
+        "os_memory_boundary": boundary,
     }
     if cfg.config_sha:
         payload["config_sha"] = cfg.config_sha

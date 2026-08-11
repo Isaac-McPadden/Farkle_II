@@ -39,8 +39,9 @@ def _all_player_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> list[Pa
     tasks = [(cfg, int(k)) for k in player_counts]
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
     guard = ProcessTreeMemoryGuard(
-        cfg.resources.hard_memory_limit_mb,
-        rss_warning_mb=cfg.resources.target_memory_mb,
+        cfg.resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
         sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     results = process_map(

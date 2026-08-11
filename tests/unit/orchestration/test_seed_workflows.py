@@ -183,6 +183,17 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     assert context.analysis_root == pair_root / SEED_PAIR_ANALYSIS_DIRNAME
     assert health["status"] == "complete_success"
     assert health["pair_workflow"]["analysis_root"] == str(context.analysis_root)
+    policy = health["resource_telemetry"]["resource_policy"]
+    assert set(policy) == {"requested", "resolved", "effective"}
+    assert policy["requested"]["aggregate_memory_hard_limit_mb"] == 2304
+    assert policy["resolved"]["logical_cpu_budget"] >= 1
+    assert (
+        policy["effective"]["aggregate_memory_hard_limit_mb"]
+        == health["resource_telemetry"]["os_memory_boundary"]["effective_hard_limit_mb"]
+    )
+    worker_policy = health["resource_telemetry"]["worker_policy"]
+    assert worker_policy["simulation"]["requested_n_jobs"] is None
+    assert worker_policy["simulation"]["effective_n_jobs"] == 1
 
 
 def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(

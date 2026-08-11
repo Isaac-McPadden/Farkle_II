@@ -26,6 +26,7 @@ from farkle.config import (
     SimConfig,
     TrueSkillConfig,
     compute_config_sha,
+    effective_config_dict,
     load_app_config,
 )
 from farkle.utils.progress import ProgressLogConfig
@@ -95,6 +96,21 @@ def test_checked_in_config_templates_list_every_public_field(filename: str) -> N
 def test_default_config_materializes_exact_app_config_defaults() -> None:
     config = load_app_config(CONFIG_DIR / "default_config.yaml")
     assert compute_config_sha(config) == compute_config_sha(AppConfig())
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
+)
+def test_runnable_configs_round_trip_under_public_schema(tmp_path: Path, filename: str) -> None:
+    loaded = load_app_config(CONFIG_DIR / filename)
+    round_trip_path = tmp_path / filename
+    round_trip_path.write_text(
+        yaml.safe_dump(effective_config_dict(loaded), sort_keys=False),
+        encoding="utf-8",
+    )
+
+    assert effective_config_dict(load_app_config(round_trip_path)) == effective_config_dict(loaded)
 
 
 def test_public_artifact_contract_defaults_and_freshness_use_exact_release_identity() -> None:

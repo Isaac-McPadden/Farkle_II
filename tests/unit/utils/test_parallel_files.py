@@ -361,9 +361,9 @@ def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
         n_jobs: int | None = 20
 
     resources = ResourcesConfig(
-        target_memory_mb=768,
-        parent_reserve_mb=192,
-        logical_cpu_workers=12,
+        scheduler_memory_budget_mb=768,
+        parent_process_memory_mb=192,
+        logical_cpu_budget=12,
         native_threads_per_worker=2,
         estimated_worker_memory_mb={"analysis": 160},
         stage_batch_bytes={"analysis": 4096},
@@ -378,36 +378,98 @@ def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
     assert policy.native_threads_per_process == 2
 
 
-def test_resource_policy_warns_at_target_and_stops_beyond_safety_factor(
-    caplog: pytest.LogCaptureFixture,
+def test_machine_targeted_policy_resolves_fifteen_workers_on_sixteen_threads(
+    monkeypatch: MonkeyPatch,
 ) -> None:
+    class DummyCfg:
+        n_jobs: int | None = 0
+
+    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 16)
+    resources = ResourcesConfig(
+        scheduler_memory_budget_mb=8192,
+        process_tree_warning_threshold_mb=8192,
+        aggregate_memory_hard_limit_mb=12288,
+        minimum_system_available_memory_mb=8192,
+        parent_process_memory_mb=512,
+        logical_cpu_budget=15,
+        native_threads_per_worker=1,
+        estimated_worker_memory_mb={"analysis": 192},
+        stage_batch_bytes={"analysis": 4096},
+    )
+
+    resolved = parallel.resolve_resource_policy(
+        resources,
+        logical_cpu_count=16,
+        total_memory_mb=32768,
+        available_memory_mb=20000,
+    )
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
+
+    assert resolved.resolved_logical_cpu_budget == 15
+    assert policy.process_workers == 15
+    assert policy.memory_worker_cap == 40
+
+
+def test_native_thread_arithmetic_cannot_oversubscribe_logical_cpu_budget(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class DummyCfg:
+        n_jobs: int | None = 15
+
+    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 16)
+    resources = ResourcesConfig(
+        scheduler_memory_budget_mb=8192,
+        process_tree_warning_threshold_mb=8192,
+        aggregate_memory_hard_limit_mb=12288,
+        minimum_system_available_memory_mb=8192,
+        parent_process_memory_mb=512,
+        logical_cpu_budget=15,
+        native_threads_per_worker=2,
+        estimated_worker_memory_mb={"analysis": 192},
+        stage_batch_bytes={"analysis": 4096},
+    )
+
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
+
+    assert policy.process_workers == 7
+    assert policy.process_workers * policy.native_threads_per_process <= 15
+
+
+def test_explicit_resource_policy_is_validated_against_detected_capacity() -> None:
+    resources = ResourcesConfig(
+        aggregate_memory_hard_limit_mb=12288,
+        minimum_system_available_memory_mb=8192,
+        logical_cpu_budget=15,
+    )
+    with pytest.raises(parallel.ResourceSafetyError, match="requested 15, detected 8"):
+        parallel.resolve_resource_policy(
+            resources,
+            logical_cpu_count=8,
+            total_memory_mb=32768,
+            available_memory_mb=20000,
+        )
+    with pytest.raises(parallel.ResourceSafetyError, match="exceeds detected memory"):
+        parallel.resolve_resource_policy(
+            resources,
+            logical_cpu_count=16,
+            total_memory_mb=16384,
+            available_memory_mb=12000,
+        )
+
+
+def test_resource_policy_rejects_worker_that_cannot_fit_scheduler_share() -> None:
     class DummyCfg:
         n_jobs: int | None = 4
 
-    warning_resources = ResourcesConfig(
-        target_memory_mb=768,
-        parent_reserve_mb=192,
-        logical_cpu_workers=4,
+    resources = ResourcesConfig(
+        scheduler_memory_budget_mb=768,
+        parent_process_memory_mb=192,
+        logical_cpu_budget=4,
         estimated_worker_memory_mb={"analysis": 700},
         stage_batch_bytes={"analysis": 4096},
     )
-    policy = parallel.resolve_stage_parallel_policy(
-        "analysis", DummyCfg(), resources=warning_resources
-    )
-    assert policy.process_workers == 1
-    assert "exceeds its configured target share" in caplog.text
-
-    hard_stop_resources = ResourcesConfig(
-        target_memory_mb=768,
-        parent_reserve_mb=192,
-        logical_cpu_workers=4,
-        estimated_worker_memory_mb={"analysis": 2200},
-        stage_batch_bytes={"analysis": 4096},
-    )
-    with pytest.raises(parallel.ResourceSafetyError, match="safety-factor process-tree share"):
-        parallel.resolve_stage_parallel_policy(
-            "analysis", DummyCfg(), resources=hard_stop_resources
-        )
+    with pytest.raises(parallel.ResourceSafetyError, match="scheduler memory share"):
+        parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
 
 
 def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
@@ -415,7 +477,7 @@ def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
         n_jobs: int | None = 8
 
     resources = ResourcesConfig(
-        logical_cpu_workers=8,
+        logical_cpu_budget=8,
         native_threads_per_worker=1,
         estimated_worker_memory_mb={"analysis": 128},
         stage_batch_bytes={"analysis": 4096},
@@ -423,9 +485,13 @@ def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
     policy = parallel.resolve_stage_parallel_policy(
         "analysis", DummyCfg(), resources=resources, concurrent_roots=2
     )
+    repeated = parallel.resolve_stage_parallel_policy(
+        "analysis", DummyCfg(), resources=resources, concurrent_roots=2
+    )
     assert policy.process_workers == 2
     assert policy.cpu_worker_cap == 4
     assert policy.memory_worker_cap == 2
+    assert repeated == policy
 
 
 def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
@@ -450,7 +516,26 @@ def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
         guard.check_before_schedule(force=True)
 
 
-def test_process_tree_memory_target_warns_before_safety_factor_stop(
+def test_process_tree_guard_enforces_system_available_reserve(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(
+        rss_abort_mb=2304,
+        minimum_system_available_memory_mb=1024,
+    )
+    guard._monitor_started = True
+    monkeypatch.setattr(parallel, "process_tree_rss_bytes", lambda _pid=None: 100)
+    monkeypatch.setattr(
+        parallel.psutil,
+        "virtual_memory",
+        lambda: type("Memory", (), {"available": 1023 * 1024 * 1024})(),
+    )
+
+    with pytest.raises(parallel.ResourceSafetyError, match="reserve would be violated"):
+        guard.check_before_schedule(force=True)
+
+
+def test_process_tree_memory_warning_precedes_explicit_hard_stop(
     monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     guard = parallel.ProcessTreeMemoryGuard(rss_abort_mb=2304, rss_warning_mb=768)
@@ -462,7 +547,7 @@ def test_process_tree_memory_target_warns_before_safety_factor_stop(
     )
 
     assert guard.check_before_schedule(force=True) == 951 * 1024 * 1024
-    assert "exceeded the configured resource target" in caplog.text
+    assert "exceeded the configured high-water threshold" in caplog.text
 
     monkeypatch.setattr(
         parallel,

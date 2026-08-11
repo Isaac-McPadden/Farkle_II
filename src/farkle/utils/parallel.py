@@ -49,13 +49,121 @@ class StageParallelPolicy:
     cpu_worker_cap: int = 1
     memory_worker_cap: int = 1
     estimated_worker_memory_mb: int = 0
-    target_memory_mb: int = 0
-    parent_reserve_mb: int = 0
+    scheduler_memory_budget_mb: int = 0
+    parent_process_memory_mb: int = 0
     concurrent_roots: int = 1
 
 
 class ResourceSafetyError(RuntimeError):
     """Raised before more work is scheduled outside the safe resource envelope."""
+
+
+@dataclass(frozen=True)
+class ResolvedResourcePolicy:
+    """Detected and resolved machine-wide execution policy."""
+
+    detected_logical_cpus: int
+    detected_total_memory_mb: int
+    detected_available_memory_mb: int
+    requested_logical_cpu_budget: int
+    resolved_logical_cpu_budget: int
+    scheduler_memory_budget_mb: int
+    process_tree_warning_threshold_mb: int
+    aggregate_memory_hard_limit_mb: int
+    minimum_system_available_memory_mb: int
+    parent_process_memory_mb: int
+    native_threads_per_worker: int
+
+    def as_metadata(self, *, effective_hard_limit_mb: int | None = None) -> dict[str, Any]:
+        """Return exact requested, resolved, and effective execution provenance."""
+
+        return {
+            "requested": {
+                "logical_cpu_budget": self.requested_logical_cpu_budget,
+                "scheduler_memory_budget_mb": self.scheduler_memory_budget_mb,
+                "process_tree_warning_threshold_mb": self.process_tree_warning_threshold_mb,
+                "aggregate_memory_hard_limit_mb": self.aggregate_memory_hard_limit_mb,
+                "minimum_system_available_memory_mb": self.minimum_system_available_memory_mb,
+                "parent_process_memory_mb": self.parent_process_memory_mb,
+                "native_threads_per_worker": self.native_threads_per_worker,
+            },
+            "resolved": {
+                "detected_logical_cpus": self.detected_logical_cpus,
+                "detected_total_memory_mb": self.detected_total_memory_mb,
+                "detected_available_memory_mb": self.detected_available_memory_mb,
+                "logical_cpu_budget": self.resolved_logical_cpu_budget,
+                "scheduler_memory_budget_mb": self.scheduler_memory_budget_mb,
+                "process_tree_warning_threshold_mb": self.process_tree_warning_threshold_mb,
+                "aggregate_memory_hard_limit_mb": self.aggregate_memory_hard_limit_mb,
+                "minimum_system_available_memory_mb": self.minimum_system_available_memory_mb,
+                "parent_process_memory_mb": self.parent_process_memory_mb,
+                "native_threads_per_worker": self.native_threads_per_worker,
+            },
+            "effective": {
+                "logical_cpu_budget": self.resolved_logical_cpu_budget,
+                "scheduler_memory_budget_mb": self.scheduler_memory_budget_mb,
+                "process_tree_warning_threshold_mb": self.process_tree_warning_threshold_mb,
+                "aggregate_memory_hard_limit_mb": effective_hard_limit_mb,
+                "minimum_system_available_memory_mb": self.minimum_system_available_memory_mb,
+                "parent_process_memory_mb": self.parent_process_memory_mb,
+                "native_threads_per_worker": self.native_threads_per_worker,
+            },
+        }
+
+
+def resolve_resource_policy(
+    resources: Any,
+    *,
+    logical_cpu_count: int | None = None,
+    total_memory_mb: int | None = None,
+    available_memory_mb: int | None = None,
+    require_available_reserve: bool = False,
+) -> ResolvedResourcePolicy:
+    """Resolve and validate explicit resource controls against one detected host."""
+
+    detected_cpus = max(1, int(logical_cpu_count or os.cpu_count() or 1))
+    memory = psutil.virtual_memory()
+    detected_total_mb = (
+        int(memory.total // (1024 * 1024)) if total_memory_mb is None else int(total_memory_mb)
+    )
+    detected_available_mb = (
+        int(memory.available // (1024 * 1024))
+        if available_memory_mb is None
+        else int(available_memory_mb)
+    )
+    requested_cpu = int(resources.logical_cpu_budget)
+    resolved_cpu = detected_cpus if requested_cpu == 0 else requested_cpu
+    if resolved_cpu > detected_cpus:
+        raise ResourceSafetyError(
+            "configured logical CPU budget is impossible on this machine: "
+            f"requested {resolved_cpu}, detected {detected_cpus}"
+        )
+    hard_limit_mb = int(resources.aggregate_memory_hard_limit_mb)
+    system_reserve_mb = int(resources.minimum_system_available_memory_mb)
+    if hard_limit_mb + system_reserve_mb > detected_total_mb:
+        raise ResourceSafetyError(
+            "configured aggregate memory hard limit plus system-available reserve exceeds "
+            f"detected memory: {hard_limit_mb} + {system_reserve_mb} > "
+            f"{detected_total_mb} MiB"
+        )
+    if require_available_reserve and detected_available_mb < system_reserve_mb:
+        raise ResourceSafetyError(
+            "configured system-available memory reserve is not currently available: "
+            f"{detected_available_mb} MiB available < {system_reserve_mb} MiB required"
+        )
+    return ResolvedResourcePolicy(
+        detected_logical_cpus=detected_cpus,
+        detected_total_memory_mb=detected_total_mb,
+        detected_available_memory_mb=detected_available_mb,
+        requested_logical_cpu_budget=requested_cpu,
+        resolved_logical_cpu_budget=resolved_cpu,
+        scheduler_memory_budget_mb=int(resources.scheduler_memory_budget_mb),
+        process_tree_warning_threshold_mb=int(resources.process_tree_warning_threshold_mb),
+        aggregate_memory_hard_limit_mb=hard_limit_mb,
+        minimum_system_available_memory_mb=system_reserve_mb,
+        parent_process_memory_mb=int(resources.parent_process_memory_mb),
+        native_threads_per_worker=int(resources.native_threads_per_worker),
+    )
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -70,6 +178,7 @@ class ProcessTreeMemoryGuard:
 
     rss_abort_mb: int
     rss_warning_mb: int | None = None
+    minimum_system_available_memory_mb: int = 0
     sample_interval_seconds: float = 0.25
     pid: int | None = None
     last_rss_bytes: int = 0
@@ -143,7 +252,7 @@ class ProcessTreeMemoryGuard:
         return rss
 
     def check_before_schedule(self, *, force: bool = False) -> int:
-        """Warn at the target and fail closed at the derived hard threshold."""
+        """Warn at high water and fail closed at explicit process/host thresholds."""
 
         rss = self.sample(force=force)
         with self._lock:
@@ -154,13 +263,13 @@ class ProcessTreeMemoryGuard:
             warning_mb = self.rss_warning_mb
         if warned and warning_mb is not None and not warning_emitted:
             LOGGER.warning(
-                "process-tree RSS exceeded the configured resource target; continuing until "
-                "the safety-factor hard stop",
+                "process-tree RSS exceeded the configured high-water threshold; continuing "
+                "until the explicit aggregate hard limit",
                 extra={
                     "stage": "resource_safety",
                     "rss_mb": warned / (1024 * 1024),
-                    "target_memory_mb": warning_mb,
-                    "hard_memory_limit_mb": self.rss_abort_mb,
+                    "process_tree_warning_threshold_mb": warning_mb,
+                    "aggregate_memory_hard_limit_mb": self.rss_abort_mb,
                 },
             )
             with self._lock:
@@ -174,6 +283,14 @@ class ProcessTreeMemoryGuard:
                 "process-tree RSS safety threshold crossed: "
                 f"{tripped / (1024 * 1024):.1f} MiB >= {self.rss_abort_mb} MiB"
             )
+        if self.minimum_system_available_memory_mb:
+            available_mb = int(psutil.virtual_memory().available // (1024 * 1024))
+            if available_mb < self.minimum_system_available_memory_mb:
+                raise ResourceSafetyError(
+                    "system-available memory reserve would be violated before scheduling: "
+                    f"{available_mb} MiB available < "
+                    f"{self.minimum_system_available_memory_mb} MiB required"
+                )
         return rss
 
 
@@ -304,10 +421,8 @@ def resolve_stage_parallel_policy(
 
     concurrent_roots = max(1, int(concurrent_roots))
     if resources is not None:
-        configured_cpu = int(getattr(resources, "logical_cpu_workers", 0))
-        total_cores = normalize_n_jobs(
-            configured_cpu, cpu_count=detected_cores, default=detected_cores
-        )
+        machine_policy = resolve_resource_policy(resources, logical_cpu_count=detected_cores)
+        total_cores = machine_policy.resolved_logical_cpu_budget
 
     requested_n_jobs = (
         n_jobs_override if n_jobs_override is not None else getattr(cfg, "n_jobs", None)
@@ -318,8 +433,8 @@ def resolve_stage_parallel_policy(
     cpu_worker_cap = configured_cpu_budget
     memory_worker_cap = process_workers
     estimated_worker_memory_mb = 0
-    target_memory_mb = 0
-    parent_reserve_mb = 0
+    scheduler_memory_budget_mb = 0
+    parent_process_memory_mb = 0
     if resources is not None:
         native_threads = max(1, int(resources.native_threads_per_worker))
         cpu_worker_cap = configured_cpu_budget // native_threads
@@ -334,30 +449,16 @@ def resolve_stage_parallel_policy(
             stage,
             fallback,
         )
-        target_memory_mb = int(resources.target_memory_mb)
-        parent_reserve_mb = int(resources.parent_reserve_mb)
-        available_mb = target_memory_mb - parent_reserve_mb
+        scheduler_memory_budget_mb = int(resources.scheduler_memory_budget_mb)
+        parent_process_memory_mb = int(resources.parent_process_memory_mb)
+        available_mb = scheduler_memory_budget_mb - parent_process_memory_mb
         memory_worker_cap = available_mb // (estimated_worker_memory_mb * concurrent_roots)
         if memory_worker_cap < 1:
-            hard_available_mb = int(resources.hard_memory_limit_mb) - parent_reserve_mb
-            hard_worker_cap = hard_available_mb // (estimated_worker_memory_mb * concurrent_roots)
-            if hard_worker_cap < 1:
-                raise ResourceSafetyError(
-                    f"stage {stage!r} estimated worker memory ({estimated_worker_memory_mb} MiB) "
-                    f"exceeds its safety-factor process-tree share "
-                    f"({hard_available_mb // concurrent_roots} MiB)"
-                )
-            LOGGER.warning(
-                "stage estimated worker memory exceeds its configured target share; "
-                "continuing with one worker under the safety-factor hard limit",
-                extra={
-                    "stage": stage,
-                    "estimated_worker_memory_mb": estimated_worker_memory_mb,
-                    "target_share_mb": available_mb // concurrent_roots,
-                    "hard_share_mb": hard_available_mb // concurrent_roots,
-                },
+            raise ResourceSafetyError(
+                f"stage {stage!r} estimated worker memory ({estimated_worker_memory_mb} MiB) "
+                "exceeds its scheduler memory share "
+                f"({available_mb // concurrent_roots} MiB after parent allowance)"
             )
-            memory_worker_cap = 1
         process_workers = min(process_workers, cpu_worker_cap, memory_worker_cap)
     if active_process_executor:
         process_workers = 1
@@ -394,8 +495,8 @@ def resolve_stage_parallel_policy(
         cpu_worker_cap=cpu_worker_cap,
         memory_worker_cap=memory_worker_cap,
         estimated_worker_memory_mb=estimated_worker_memory_mb,
-        target_memory_mb=target_memory_mb,
-        parent_reserve_mb=parent_reserve_mb,
+        scheduler_memory_budget_mb=scheduler_memory_budget_mb,
+        parent_process_memory_mb=parent_process_memory_mb,
         concurrent_roots=concurrent_roots,
     )
 
@@ -480,6 +581,7 @@ __all__ = [
     "ParallelNestingContext",
     "ProcessTreeMemoryGuard",
     "ResourceSafetyError",
+    "ResolvedResourcePolicy",
     "StageParallelPolicy",
     "apply_native_thread_limits",
     "normalize_n_jobs",
@@ -487,5 +589,6 @@ __all__ = [
     "process_tree_native_thread_count",
     "process_tree_rss_bytes",
     "resolve_mp_context",
+    "resolve_resource_policy",
     "resolve_stage_parallel_policy",
 ]

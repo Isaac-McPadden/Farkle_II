@@ -121,8 +121,17 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     payload = load_run_context(context.run_context_path)
 
     assert payload["execution_controls"]["worker_counts"] == worker_counts
-    assert payload["execution_controls"]["resources"]["target_memory_mb"] == 768
-    assert payload["execution_controls"]["resources"]["memory_safety_factor"] == 3.0
+    assert payload["execution_controls"]["resources"]["scheduler_memory_budget_mb"] == 768
+    assert payload["execution_controls"]["resources"]["aggregate_memory_hard_limit_mb"] == 2304
+    assert payload["execution_controls"]["resource_policy"]["requested"] == {
+        "aggregate_memory_hard_limit_mb": 2304,
+        "logical_cpu_budget": 0,
+        "minimum_system_available_memory_mb": 1024,
+        "native_threads_per_worker": 1,
+        "parent_process_memory_mb": 192,
+        "process_tree_warning_threshold_mb": 768,
+        "scheduler_memory_budget_mb": 768,
+    }
     assert payload["execution_controls"]["os_memory_boundary"]["backend"] in {
         "none",
         "windows_job",
@@ -146,7 +155,9 @@ def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -
             dirty_fingerprint_sha256=None,
         ),
     )
-    context.config.resources.logical_cpu_workers = 2
+    original_payload = load_run_context(context.run_context_path)
+    original = original_payload["run_context_sha256"]
+    context.config.resources.logical_cpu_budget = 2
     from farkle.orchestration.seed_utils import write_active_config
 
     write_active_config(context.config)
@@ -155,3 +166,17 @@ def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -
             context.run_context_path,
             active_config_path=context.active_config_path,
         )
+
+    write_run_context_atomic(
+        context,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+    )
+    changed_payload = load_run_context(context.run_context_path)
+    assert changed_payload["run_context_sha256"] != original
+    assert changed_payload["public_config_sha256"] == original_payload["public_config_sha256"]
+    assert changed_payload["resource_config_sha256"] != original_payload["resource_config_sha256"]

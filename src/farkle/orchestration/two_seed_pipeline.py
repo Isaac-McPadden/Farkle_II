@@ -49,6 +49,7 @@ from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
     normalize_n_jobs,
+    resolve_resource_policy,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.stage_completion import CompletionState, freshness_sha256, resolve_stage_state
@@ -97,8 +98,8 @@ class _PerSeedPolicyBundle:
                 "cpu_worker_cap": policy.cpu_worker_cap,
                 "memory_worker_cap": policy.memory_worker_cap,
                 "estimated_worker_memory_mb": policy.estimated_worker_memory_mb,
-                "target_memory_mb": policy.target_memory_mb,
-                "parent_reserve_mb": policy.parent_reserve_mb,
+                "scheduler_memory_budget_mb": policy.scheduler_memory_budget_mb,
+                "parent_process_memory_mb": policy.parent_process_memory_mb,
                 "concurrent_roots": policy.concurrent_roots,
             }
             for name, policy in (
@@ -531,19 +532,25 @@ def run_pipeline(
     validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.hard_memory_limit_mb,
-        rss_warning_mb=cfg.resources.target_memory_mb,
+        cfg.resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
         sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
     boundary_provenance = memory_boundary_provenance(cfg.resources)
+    resource_policy = resolve_resource_policy(cfg.resources).as_metadata(
+        effective_hard_limit_mb=cast(int | None, boundary_provenance.get("effective_hard_limit_mb"))
+    )
     _write_pipeline_health(
         health_path,
         {
             "seed_pair": list(seed_pair),
             "status": "running",
             "config_sha": cfg.config_sha,
+            "resource_policy": resource_policy,
+            "worker_policy": policy_bundle.as_metadata(),
             "os_memory_boundary": boundary_provenance,
             "release_audit": {"status": "not_run"},
         },
@@ -712,12 +719,18 @@ def run_pipeline(
         "status": overall_status,
         "config_sha": cfg.config_sha,
         "resource_telemetry": {
+            "resource_policy": resource_policy,
+            "worker_policy": policy_bundle.as_metadata(),
             "os_memory_boundary": boundary_provenance,
             "peak_sampled_process_tree_rss_mb": memory_guard.peak_rss_bytes / (1024 * 1024),
             "peak_sampled_native_threads": memory_guard.peak_native_threads,
-            "hard_memory_limit_mb": cfg.resources.hard_memory_limit_mb,
-            "normal_target_memory_mb": cfg.resources.target_memory_mb,
-            "memory_safety_factor": cfg.resources.memory_safety_factor,
+            "aggregate_memory_hard_limit_mb": cfg.resources.aggregate_memory_hard_limit_mb,
+            "scheduler_memory_budget_mb": cfg.resources.scheduler_memory_budget_mb,
+            "process_tree_warning_threshold_mb": (cfg.resources.process_tree_warning_threshold_mb),
+            "minimum_system_available_memory_mb": (
+                cfg.resources.minimum_system_available_memory_mb
+            ),
+            "parent_process_memory_mb": cfg.resources.parent_process_memory_mb,
         },
         "pair_public_config_sha256": (
             pair_context.config.config_sha if pair_context is not None else None

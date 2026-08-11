@@ -30,9 +30,11 @@ bounded frontier in memory.
 The second route contains selected observations only. Each independent result
 partition externally sorts its own observations, then processes one group at a
 time with online moments and a fixed NumPy ring per applicable metric up to the
-maximum lag. The shared resource policy caps processes by CPU and estimated
-memory, limits native threads, targets 768 MiB, and aborts before 950 MiB under
-the 1 GiB hard ceiling.
+maximum lag. The shared resource policy caps processes by the central logical-
+CPU budget and per-stage scheduling estimates, limits native threads, and uses
+the configured process-tree warning, explicit aggregate hard limit, and host-
+available reserve. Those execution values do not alter diagnostic estimands or
+freshness.
 
 Completed partitions are reusable across crashes, schedules, and worker counts.
 A final manifest is published only after every planned unit validates. Final

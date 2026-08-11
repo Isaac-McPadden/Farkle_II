@@ -124,14 +124,28 @@ When `orchestration.parallel_seeds` is false (the default), roots remain
 sequential and each root receives the resolved section budget. When it is true,
 each section's own resolved budget is divided across concurrent roots. The
 authenticated run context records requested, resolved, and effective counts.
+All four section-owned `n_jobs` values are execution-only: they are excluded
+from the global compute-config hash and every statistical stage-config hash,
+but remain authenticated in the run context.
 
-`resources.target_memory_mb` is the normal process-tree scheduling target.
-Crossing it logs a warning; the default `resources.memory_safety_factor: 3.0`
-sets the aggregate OS boundary and cooperative RSS stop at 2304 MiB.
-`logical_cpu_workers` (`0` means detected logical CPUs) and
-`native_threads_per_worker` jointly cap processes; per-stage worker estimates
-also cap processes to `(target_memory_mb - parent_reserve_mb) /
-estimated_worker_memory_mb`. Concurrent roots share both envelopes. Native
+The resource memory fields have distinct meanings:
+
+- `scheduler_memory_budget_mb` is used only for worker admission.
+- `process_tree_warning_threshold_mb` is the cooperative RSS high-water warning.
+- `aggregate_memory_hard_limit_mb` is the explicit cooperative abort and
+  Job Object/cgroup boundary.
+- `minimum_system_available_memory_mb` is the host reserve required before
+  launch and before new work is scheduled.
+- `parent_process_memory_mb` is the parent's scheduling estimate inside the
+  scheduler budget; it is not host-reserved memory.
+
+The static ordering is `0 < parent_process_memory_mb <
+scheduler_memory_budget_mb <= process_tree_warning_threshold_mb <
+aggregate_memory_hard_limit_mb`. `logical_cpu_budget` (`0` means detected
+logical CPUs) and `native_threads_per_worker` jointly cap processes; per-stage
+worker estimates cap processes to `(scheduler_memory_budget_mb -
+parent_process_memory_mb) / estimated_worker_memory_mb`. Concurrent roots share
+both the logical-CPU and schedulable-memory envelopes deterministically. Native
 BLAS/OpenMP/Arrow thread settings are capped in executor children, nested
 process pools collapse to one process, and `stage_batch_bytes` bounds projected
 Arrow batches. Resource controls and resolved policies are authenticated in
@@ -141,6 +155,15 @@ The `all_player_metrics` byte budget is applied to the k-dependent wide source
 projection; `performance` bounds mapped-matrix column work, and
 `performance_bootstrap` supplies the per-worker memory estimate for independent
 replicate ranges.
+
+The library/default YAML is a conservative portable profile with automatic CPU
+detection. `fast_config.yaml` and `farkle_mega_config.yaml` are explicitly
+machine-targeted for the Ryzen 7 3700X / 32 GiB production-test host: 15 logical
+CPUs, an 8192 MiB scheduler and warning budget, a 12288 MiB aggregate hard
+limit, an 8192 MiB minimum host reserve, a 512 MiB parent estimate, and one
+native thread per worker. Those values are not universal defaults. Preflight
+rejects an explicit CPU budget above detected logical CPUs or a hard-limit plus
+host-reserve total above detected physical memory.
 
 The two-root preflight log/manifest event also reports a declared upper-envelope
 projection for tournament row shards, H2H pair/root/order blocks, their adjacent

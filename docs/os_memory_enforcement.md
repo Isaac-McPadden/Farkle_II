@@ -3,9 +3,10 @@
 The public `farkle run`, `farkle analyze`, and `farkle two-seed-pipeline`
 surfaces start through a lightweight supervisor. The supervisor establishes one
 aggregate operating-system boundary before the real CLI imports numerical or
-analysis modules. The configured process-tree target is a cooperative warning
-threshold; the OS boundary is the allocation-spike backstop at
-`target_memory_mb * memory_safety_factor`.
+analysis modules. `process_tree_warning_threshold_mb` is the cooperative
+high-water threshold. `aggregate_memory_hard_limit_mb` is passed directly to
+the OS backend as the allocation-spike backstop; it is not derived from a
+multiplier.
 
 ## Backends
 
@@ -31,8 +32,13 @@ Official defaults are strict:
 
 ```yaml
 resources:
-  target_memory_mb: 768
-  memory_safety_factor: 3.0
+  scheduler_memory_budget_mb: 768
+  process_tree_warning_threshold_mb: 768
+  aggregate_memory_hard_limit_mb: 2304
+  minimum_system_available_memory_mb: 1024
+  parent_process_memory_mb: 192
+  logical_cpu_budget: 0
+  native_threads_per_worker: 1
   os_memory_limit_enabled: true
   os_memory_limit_required: true
   allow_unenforced_memory_fallback: false
@@ -43,6 +49,13 @@ Development fallback requires both `os_memory_limit_required: false` and
 records `backend: unenforced`; it never claims that the ceiling was enforced.
 OS settings and the detected backend/effective limit are execution provenance
 and remain excluded from statistical freshness.
+
+Before launch, explicit CPU and memory values are checked against detected
+logical CPUs and physical memory. The configured host reserve must also be
+currently available. The same reserve is checked at cooperative scheduling
+boundaries. Enclosing Job/cgroup limits may reduce the effective hard limit;
+requested, resolved, and effective values are separately recorded in the run
+context and pipeline health metadata.
 
 Strict setup failure exits with code 78 before the real analysis process starts.
 An OS memory event exits the supervisor with code 86 when the backend exposes
@@ -65,3 +78,7 @@ The canary uses two roots, `k=2` and maximum configured `k=12`, tiny authenticat
 game limits/counts, and the real simulation-to-report orchestration. Its final
 stdout and `pipeline_health.json` report the selected backend, effective limit,
 peak sampled aggregate RSS, and peak sampled native-thread count.
+
+The durable engineering invariants are byte-bounded streaming, atomic durable
+units, authenticated manifests, and exact resume after interruption. A fixed
+1 GiB process-tree ceiling is not an artifact-validity or statistical invariant.

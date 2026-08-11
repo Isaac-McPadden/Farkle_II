@@ -92,13 +92,15 @@ orchestration:
   parallel_seeds:  # bool: run two root workflows concurrently
 
 resources:
-  target_memory_mb:  # int: normal process-tree scheduling target
-  memory_safety_factor:  # float: hard-stop multiplier applied to target_memory_mb (default 3.0)
+  scheduler_memory_budget_mb:  # int: worker-admission memory budget
+  process_tree_warning_threshold_mb:  # int: cooperative process-tree RSS high water
+  aggregate_memory_hard_limit_mb:  # int: explicit aggregate Job/cgroup hard limit
+  minimum_system_available_memory_mb:  # int: host memory kept available before scheduling
   os_memory_limit_enabled:  # bool: establish an OS memory boundary
   os_memory_limit_required:  # bool: fail closed if the boundary is unavailable
   allow_unenforced_memory_fallback:  # bool: development-only fallback
-  parent_reserve_mb:  # int: memory reserved for the parent process
-  logical_cpu_workers:  # int: zero means detected logical CPUs
+  parent_process_memory_mb:  # int: parent-process scheduling estimate
+  logical_cpu_budget:  # int: zero means detected logical CPUs
   native_threads_per_worker:  # int: native-library threads per worker
   max_in_flight_per_worker:  # int: bounded task-submission multiplier
   rss_sample_interval_seconds:  # float: cooperative RSS sampling interval

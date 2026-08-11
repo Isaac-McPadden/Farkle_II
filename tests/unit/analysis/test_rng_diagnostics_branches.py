@@ -307,9 +307,11 @@ def test_sparse_high_cardinality_stays_bounded_and_resumes_after_interruption(
     )
     assert summary["total_candidate_group_count"] == 36_000
     assert summary["selected_group_count"] == 0
-    assert summary["peak_sampled_process_tree_rss_mb"] < cfg.resources.hard_memory_limit_mb
-    assert summary["hard_memory_ceiling_mb"] == 2_304
-    assert summary["memory_safety_factor"] == 3.0
+    assert (
+        summary["peak_sampled_process_tree_rss_mb"] < cfg.resources.aggregate_memory_hard_limit_mb
+    )
+    assert summary["aggregate_memory_hard_limit_mb"] == 2_304
+    assert summary["aggregate_memory_hard_limit_mb"] == 2304
     assert (checkpoint_root / "partition_manifest.jsonl").exists()
 
 

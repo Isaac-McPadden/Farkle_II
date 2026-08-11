@@ -345,8 +345,9 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     pa.set_cpu_count(policy.arrow_threads)
     pa.set_io_thread_count(policy.arrow_threads)
     guard = ProcessTreeMemoryGuard(
-        cfg.resources.hard_memory_limit_mb,
-        rss_warning_mb=cfg.resources.target_memory_mb,
+        cfg.resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
         sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     guard.check_before_schedule(force=True)
@@ -1841,9 +1842,11 @@ def _finalize_outputs(
         "validated_partitions": stats_result.required_units,
         "partition_manifest_sha256": stats_result.manifest_sha256,
         "peak_sampled_process_tree_rss_mb": peak_rss_mb,
-        "hard_memory_ceiling_mb": cfg.resources.hard_memory_limit_mb,
-        "memory_safety_factor": cfg.resources.memory_safety_factor,
-        "target_memory_mb": cfg.resources.target_memory_mb,
+        "aggregate_memory_hard_limit_mb": cfg.resources.aggregate_memory_hard_limit_mb,
+        "scheduler_memory_budget_mb": cfg.resources.scheduler_memory_budget_mb,
+        "process_tree_warning_threshold_mb": (cfg.resources.process_tree_warning_threshold_mb),
+        "minimum_system_available_memory_mb": (cfg.resources.minimum_system_available_memory_mb),
+        "parent_process_memory_mb": cfg.resources.parent_process_memory_mb,
     }
     summary_sidecar = make_artifact_sidecar(
         cfg,

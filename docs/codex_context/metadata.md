@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-09`
+- Reconciled date: `2026-08-10`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -56,9 +56,15 @@ changing code or accepting a statistical conclusion.
   cap, while artifact method metadata records the effective cap, normalized
   lags, and tracked/skipped group counts.
   Run-context contract v2 additionally authenticates execution-only resource
-  controls. Shared parallel policy now caps processes by configured logical
-  CPUs/native threads and per-stage memory estimates, samples process-tree RSS,
-  and suppresses nested process pools. The partitioned-stage primitive publishes
+  controls. The recovered resource contract separates scheduler admission
+  memory, process-tree RSS warning high water, explicit aggregate OS hard limit,
+  minimum host-available reserve, parent-process estimate, logical CPU budget,
+  native threads, and per-stage worker estimates. Requested/resolved/effective
+  policy is recorded in run contexts and health telemetry. All section-owned
+  `n_jobs` fields and all resource controls are excluded from statistical/global
+  config identity while remaining authenticated execution provenance. Shared
+  parallel policy samples process-tree RSS and suppresses nested process pools.
+  The partitioned-stage primitive publishes
   exact-byte unit stamps and a final ordered manifest only after all units
   validate. TrueSkill projected reads use byte-bounded Arrow batches instead of
   materializing complete Parquet row groups. TrueSkill screening diagnostic
@@ -104,9 +110,9 @@ changing code or accepting a statistical conclusion.
   the complete range manifest validates; execution worker and chunk controls
   remain outside statistical freshness under explicit invariance tests. Step
   5.5 adds a lightweight public launcher and an aggregate OS-enforced allocation
-  boundary: a Windows Job Object or delegated cgroup-v2 `memory.max`, derived
-  from the configured target and safety factor. Crossing the target logs a
-  warning; the default 3.0x threshold is the cooperative and OS hard stop.
+  boundary: a Windows Job Object or delegated cgroup-v2 `memory.max`. The
+  subsequent resource-contract recovery passes the explicit aggregate hard
+  limit directly, independently of scheduler admission and warning thresholds.
   Strict official execution fails before analysis when setup is unavailable; an
   explicit development fallback is labelled unenforced. Backend/effective-limit
   provenance lives in run contexts and manifests, not statistical freshness.
@@ -115,6 +121,9 @@ changing code or accepting a statistical conclusion.
   field nullability before streamed writes, and release audit excludes
   underscore-prefixed authenticated working directories from the public
   canonical sidecar graph.
+  Byte-bounded streaming, atomic publication, authenticated durable partitions,
+  and exact resume remain the permanent memory-safety invariants; the historical
+  1 GiB process-tree ceiling does not.
   The subsequent curate/combine I/O revision replaces unconditional curated
   copies with independently mutable reflinks plus deterministic bounded-copy
   fallback and records that execution provenance in authenticated manifests.

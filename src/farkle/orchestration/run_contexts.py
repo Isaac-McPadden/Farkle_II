@@ -13,7 +13,11 @@ from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
 from farkle.utils.os_memory import memory_boundary_provenance
-from farkle.utils.parallel import normalize_n_jobs, resolve_stage_parallel_policy
+from farkle.utils.parallel import (
+    normalize_n_jobs,
+    resolve_resource_policy,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.writer import atomic_path
 
 SEED_PAIR_ANALYSIS_DIRNAME = "seed_pair_analysis"
@@ -284,8 +288,12 @@ def write_run_context_atomic(
             "memory_worker_cap": policy.memory_worker_cap,
             "native_threads_per_worker": policy.native_threads_per_process,
             "estimated_worker_memory_mb": policy.estimated_worker_memory_mb,
+            "scheduler_memory_budget_mb": policy.scheduler_memory_budget_mb,
+            "parent_process_memory_mb": policy.parent_process_memory_mb,
         }
 
+    boundary = memory_boundary_provenance(cfg.resources)
+    resolved_resources = resolve_resource_policy(cfg.resources)
     execution = {
         "sim_n_jobs": cfg.sim.n_jobs,
         "sim_mp_start_method": cfg.sim.mp_start_method,
@@ -297,7 +305,10 @@ def write_run_context_atomic(
         "head2head_n_jobs": cfg.head2head.n_jobs,
         "parallel_seeds": cfg.orchestration.parallel_seeds,
         "resources": asdict(cfg.resources),
-        "os_memory_boundary": memory_boundary_provenance(cfg.resources),
+        "resource_policy": resolved_resources.as_metadata(
+            effective_hard_limit_mb=cast(int | None, boundary.get("effective_hard_limit_mb"))
+        ),
+        "os_memory_boundary": boundary,
         "worker_counts": (
             {
                 str(stage): {str(key): value for key, value in counts.items()}

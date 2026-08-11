@@ -1665,8 +1665,9 @@ def execute_h2h_schedule(
     apply_native_thread_limits(policy)
     worker_count = policy.process_workers
     memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.hard_memory_limit_mb,
-        rss_warning_mb=cfg.resources.target_memory_mb,
+        cfg.resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
         sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
     )
     memory_guard.check_before_schedule(force=True)
