@@ -2,7 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir_prefix: "results_post_task16_repaired_fast_20260803"
+  results_dir_prefix: "results_guardrails_cleanup_1-4_fast"
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:
@@ -10,8 +10,8 @@ sim:
   n_players_list: [2, 4, 5]
 
   # Schedule & runtime controls
-  seed: 42                        # primary RNG seed (results_root uses seed suffix)
-  seed_list: [42, 43]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 44                        # primary RNG seed (results_root uses seed suffix)
+  seed_list: [44, 45]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 12                    # null = auto; otherwise an int
   mp_start_method: null          # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
