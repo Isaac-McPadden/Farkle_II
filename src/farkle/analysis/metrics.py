@@ -71,7 +71,11 @@ def run(cfg: AppConfig) -> None:
     _require_paths(per_k_curated, label="curated by_k")
     _require_paths(per_k_combined, label="combined by_k")
 
-    all_player_outputs = [cfg.metrics_all_player_batch_path(k) for k in player_counts]
+    all_player_data = [cfg.metrics_all_player_batch_path(k) for k in player_counts]
+    all_player_outputs = [
+        *all_player_data,
+        *(path.with_suffix(".manifest.jsonl") for path in all_player_data),
+    ]
     performance_outputs = [
         *(cfg.performance_batch_matrix_path(k) for k in player_counts),
         *(cfg.performance_by_k_path(k) for k in player_counts),
@@ -82,6 +86,7 @@ def run(cfg: AppConfig) -> None:
     ]
     seat_outputs = [
         *(cfg.seat_batch_counts_path(k) for k in player_counts),
+        *(cfg.seat_batch_counts_path(k).with_suffix(".manifest.jsonl") for k in player_counts),
         *(cfg.seat_effects_by_k_path(k) for k in player_counts),
         *(cfg.seat_population_by_k_path(k) for k in player_counts),
         cfg.seat_standardized_across_k_path(),
@@ -109,7 +114,12 @@ def run(cfg: AppConfig) -> None:
     # matrices and replicate ranges that remain reusable after interruption.
     performance: PerformanceArtifacts = build_canonical_performance(cfg)
     seats: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg, force=True)
-    emitted = [*all_player_paths, *performance.all_paths, *seats.all_paths]
+    emitted = [
+        *all_player_paths,
+        *(path.with_suffix(".manifest.jsonl") for path in all_player_paths),
+        *performance.all_paths,
+        *seats.publication_paths,
+    ]
     _require_paths(emitted, label="derived artifact")
     _require_paths([sidecar_path(path) for path in emitted], label="derived sidecar")
     write_stage_done(

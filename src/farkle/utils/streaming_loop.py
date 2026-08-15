@@ -20,6 +20,7 @@ from .artifact_contract import (
     ArtifactSidecar,
     sha256_file,
     sidecar_path,
+    write_artifact_with_sidecar_atomic,
 )
 from .authenticated_contract import load_authenticated_sidecar
 from .manifest import append_manifest_line
@@ -39,8 +40,16 @@ def run_streaming_shard(
     compression: Compression = "snappy",
     manifest_extra: Dict[str, Any] | None = None,
     sidecar: ArtifactSidecar | None = None,
+    manifest_sidecar: ArtifactSidecar | None = None,
 ):
-    """Stream batches to parquet and append a manifest entry on success."""
+    """Stream batches to Parquet and publish its manifest entry on success.
+
+    ``manifest_sidecar`` selects a completed single-entry manifest publication:
+    the deterministic JSONL bytes and adjacent sidecar are staged together,
+    then the manifest is replaced before its sidecar is made observable.  The
+    default remains append-only for callers that build a shared live manifest
+    across multiple shard invocations.
+    """
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     writer_kwargs: dict[str, Any] = {
         "out_path": out_path,
@@ -104,7 +113,20 @@ def run_streaming_shard(
                 "schema_fingerprint_sha256": schema_identity.fingerprint_sha256,
             }
         )
-    append_manifest_line(manifest_path, record)
+    if manifest_sidecar is None:
+        append_manifest_line(manifest_path, record)
+        return
+
+    manifest = Path(manifest_path)
+
+    def _write_completed_manifest(staged: Path) -> None:
+        append_manifest_line(staged, record, add_timestamp=False, ensure_dir=False)
+
+    write_artifact_with_sidecar_atomic(
+        manifest,
+        manifest_sidecar,
+        _write_completed_manifest,
+    )
 
 
 def _output_ready(out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None) -> bool:
@@ -172,6 +194,7 @@ def writer_thread(
     compression: Compression,
     manifest_extra: Dict[str, Any] | None,
     sidecar: ArtifactSidecar | None = None,
+    manifest_sidecar: ArtifactSidecar | None = None,
 ):
     """Consume tables from ``pop`` and write them via :func:`run_streaming_shard`."""
 
@@ -192,6 +215,7 @@ def writer_thread(
         compression=compression,
         manifest_extra=manifest_extra,
         sidecar=sidecar,
+        manifest_sidecar=manifest_sidecar,
     )
 
 

@@ -159,6 +159,12 @@ changing code or accepting a statistical conclusion.
   inputs are rechecked metadata-fast at publication without rehashing upstream
   data. The shared partition runner caps workers to pending units and preserves
   recognized Arrow/Parquet allocator errors as resource failures.
+  Metrics streaming now publishes each completed all-player or seat batch
+  Parquet first, then atomically replaces a deterministic single-entry JSONL
+  manifest and its source-bound v3 sidecar, and publishes completion last.
+  Per-k, seat-analysis, and top-level metrics completion inventories include
+  those canonical manifests; live multi-shard simulation manifests retain their
+  append/finalize lifecycle.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

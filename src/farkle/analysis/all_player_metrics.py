@@ -556,12 +556,11 @@ def build_all_player_batch_metrics(
         outputs=[output, manifest],
         cfg=cfg,
         stage="metrics",
-        sidecar_artifacts=[output],
+        sidecar_artifacts=[output, manifest],
     ):
         validate_unconditional_all_player_schema(pq.read_schema(output))
         return output
 
-    manifest.unlink(missing_ok=True)
     sidecar = make_artifact_sidecar(
         cfg,
         output,
@@ -588,6 +587,23 @@ def build_all_player_batch_metrics(
         missing_cell_policy="fail",
         replication_unit="deterministic_shuffle_batch",
         conditioning=ATTEMPT_CONDITIONING,
+    )
+    manifest_sidecar = make_artifact_sidecar(
+        cfg,
+        manifest,
+        producer="metrics",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="publish_all_player_batch_metrics_manifest",
+        weighted_quantity="authenticated_streaming_output_inventory",
+        support_count_role="single_output_identity",
+        uncertainty_method="none",
+        replication_unit="manifest_entry",
+        conditioning="unconditional",
+        source_artifacts=[output],
+        player_counts=[k],
+        required_player_counts=[k],
+        missing_cell_policy="fail",
     )
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
@@ -619,6 +635,7 @@ def build_all_player_batch_metrics(
             "grouping_keys": ["root_seed", "k", "deterministic_batch_id", "strategy"],
         },
         sidecar=sidecar,
+        manifest_sidecar=manifest_sidecar,
     )
     records = list(iter_manifest(manifest))
     if len(records) != 1:
@@ -633,7 +650,7 @@ def build_all_player_batch_metrics(
         outputs=[output, manifest],
         cfg=cfg,
         stage="metrics",
-        sidecar_artifacts=[output],
+        sidecar_artifacts=[output, manifest],
     )
     return output
 

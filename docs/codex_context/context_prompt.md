@@ -76,7 +76,9 @@ Preserve these invariants:
   diagnostics publish an authenticated root/k result and completion stamp
   before deterministic aggregation, using one forward projected scan and a
   bounded reverse replay spool;
-- all-player metrics use k/schema-aware byte-bounded projections and stable
+- all-player and seat batch metrics publish deterministic single-entry stream
+  manifests with source-bound sidecars before per-k or stage completion;
+  all-player metrics use k/schema-aware byte-bounded projections and stable
   row/seat accumulation; canonical performance uses memory-mapped root/k count
   matrices plus authenticated deterministic replicate-range shards, and only
   publishes bootstrap summaries after a complete validated range manifest;

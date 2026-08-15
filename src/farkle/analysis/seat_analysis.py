@@ -141,6 +141,18 @@ class SeatAnalysisArtifacts:
             self.mirrored_diagnostic,
         )
 
+    @property
+    def batch_manifests(self) -> tuple[Path, ...]:
+        """Return canonical streaming manifests in deterministic k order."""
+
+        return tuple(path.with_suffix(".manifest.jsonl") for path in self.batch_counts)
+
+    @property
+    def publication_paths(self) -> tuple[Path, ...]:
+        """Return every canonical artifact owned by seat-analysis completion."""
+
+        return (*self.all_paths, *self.batch_manifests)
+
 
 def _source_columns(k: int) -> list[str]:
     return [
@@ -225,7 +237,6 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
 
 def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> None:
     manifest = output.with_suffix(".manifest.jsonl")
-    manifest.unlink(missing_ok=True)
     sidecar = make_artifact_sidecar(
         cfg,
         output,
@@ -245,6 +256,23 @@ def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> N
         required_player_counts=[k],
         missing_cell_policy="fail",
     )
+    manifest_sidecar = make_artifact_sidecar(
+        cfg,
+        manifest,
+        producer="seat_analysis",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="publish_seat_batch_counts_manifest",
+        weighted_quantity="authenticated_streaming_output_inventory",
+        support_count_role="single_output_identity",
+        uncertainty_method="none",
+        replication_unit="manifest_entry",
+        conditioning="unconditional",
+        source_artifacts=[output],
+        player_counts=[k],
+        required_player_counts=[k],
+        missing_cell_policy="fail",
+    )
     run_streaming_shard(
         out_path=str(output),
         manifest_path=str(manifest),
@@ -254,6 +282,7 @@ def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> N
         compression=cfg.parquet_codec,
         manifest_extra={"root_seed": cfg.sim.seed, "k": k},
         sidecar=sidecar,
+        manifest_sidecar=manifest_sidecar,
     )
 
 
@@ -932,10 +961,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         and stage_is_up_to_date(
             done,
             inputs=list(sources.values()),
-            outputs=list(artifacts.all_paths),
+            outputs=list(artifacts.publication_paths),
             cfg=cfg,
             stage="metrics",
-            sidecar_artifacts=list(artifacts.all_paths),
+            sidecar_artifacts=list(artifacts.publication_paths),
         )
         and mirror_cache_valid
     ):
@@ -1074,10 +1103,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
     write_stage_done(
         done,
         inputs=list(sources.values()),
-        outputs=list(artifacts.all_paths),
+        outputs=list(artifacts.publication_paths),
         cfg=cfg,
         stage="metrics",
-        sidecar_artifacts=list(artifacts.all_paths),
+        sidecar_artifacts=list(artifacts.publication_paths),
     )
     return artifacts
 

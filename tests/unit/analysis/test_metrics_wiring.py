@@ -30,8 +30,9 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
 
     captured: dict[str, Any] = {}
 
-    def _up_to_date(_done: Path, *, inputs, **_kwargs: object) -> bool:
+    def _up_to_date(_done: Path, *, inputs, outputs, **_kwargs: object) -> bool:
         captured["inputs"] = list(inputs)
+        captured["outputs"] = list(outputs)
         return True
 
     monkeypatch.setattr(metrics, "stage_is_up_to_date", _up_to_date)
@@ -45,6 +46,10 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
 
     assert captured["inputs"][0] == cfg.combined_manifest_path()
     assert cfg.curated_dataset not in captured["inputs"]
+    assert (
+        cfg.metrics_all_player_batch_path(2).with_suffix(".manifest.jsonl") in captured["outputs"]
+    )
+    assert cfg.seat_batch_counts_path(2).with_suffix(".manifest.jsonl") in captured["outputs"]
 
 
 def test_stale_metrics_validates_before_building(tmp_path: Path, monkeypatch) -> None:

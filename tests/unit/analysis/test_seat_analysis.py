@@ -11,10 +11,12 @@ from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     make_artifact_sidecar,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -93,6 +95,24 @@ def test_canonical_seat_estimators_and_diagnostics(tmp_path: Path) -> None:
     _write_inputs(cfg)
 
     artifacts = build_canonical_seat_analysis(cfg)
+
+    for manifest in artifacts.batch_manifests:
+        validate_artifact_sidecar(
+            manifest,
+            expected={
+                "scope": "by_k",
+                "operation": "publish_seat_batch_counts_manifest",
+            },
+        )
+        assert sidecar_path(manifest).is_file()
+    assert stage_is_up_to_date(
+        stage_done_path(cfg.metrics_stage_dir, "canonical_seat_analysis"),
+        inputs=[cfg.combined_rows_by_k(k) for k in (2, 4)],
+        outputs=artifacts.publication_paths,
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=artifacts.publication_paths,
+    )
 
     counts_2 = pq.read_table(artifacts.batch_counts[0]).to_pandas()
     cell = counts_2.loc[(counts_2["strategy"] == 10) & (counts_2["seat"] == 1)].iloc[0]

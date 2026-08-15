@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -11,19 +12,39 @@ from tests.helpers.artifact_sidecars import (
     publish_v3_parquet,
 )
 
+import farkle.analysis.all_player_metrics as all_player_module
+import farkle.analysis.metrics as metrics_module
+import farkle.utils.authenticated_contract as authenticated_contract
 from farkle.analysis.all_player_metrics import (
     _execution_batch_limits,
     all_player_batch_schema,
     build_all_player_batch_metrics,
     validate_unconditional_all_player_schema,
 )
-from farkle.config import AppConfig
-from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.config import AppConfig, assign_config_sha
+from farkle.utils.artifact_contract import sha256_file, sidecar_path, validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.stage_completion import (
+    CompletionState,
+    resolve_stage_state,
+    stage_done_path,
+    stage_is_up_to_date,
+    write_stage_done,
+)
 
 
-def _cfg(tmp_path: Path) -> AppConfig:
-    return make_authenticated_v3_config(tmp_path, name="all_player_metrics", root_seed=7)
+def _cfg(
+    tmp_path: Path,
+    *,
+    name: str = "all_player_metrics",
+    player_counts: tuple[int, ...] = (2,),
+) -> AppConfig:
+    return make_authenticated_v3_config(
+        tmp_path,
+        name=name,
+        root_seed=7,
+        player_counts=player_counts,
+    )
 
 
 def _exposure_values(
@@ -83,16 +104,61 @@ def _game_row(
     return row
 
 
-def _write_source(cfg: AppConfig, rows: list[dict[str, object]]) -> Path:
-    path = cfg.ingested_rows_curated(2)
+def _write_source(
+    cfg: AppConfig,
+    rows: list[dict[str, object]],
+    *,
+    k: int = 2,
+) -> Path:
+    path = cfg.ingested_rows_curated(k)
     return publish_v3_parquet(
         cfg,
         path,
-        pa.Table.from_pylist(rows, schema=expected_schema_for(2)),
+        pa.Table.from_pylist(rows, schema=expected_schema_for(k)),
         stage_key="curate",
         producer="curate",
         operation="curate_game_rows",
         source_scope="by_k",
+    )
+
+
+def _game_row_for_k(k: int) -> dict[str, object]:
+    exposures = [
+        _exposure_values(seat * 10, 100 - seat, seat + 1, seat) for seat in range(1, k + 1)
+    ]
+    row: dict[str, object] = {
+        "root_seed": 7,
+        "k": k,
+        "shuffle_index": 0,
+        "game_index": 0,
+        "deterministic_batch_id": 0,
+        "shuffle_seed": 100,
+        "winner_seat": "P1",
+        "winner_strategy": 10,
+        "termination_status": "completed",
+        "outcome_schema_version": 2,
+        "game_seed": 200,
+        "rng_scheme_version": 2,
+        "rng_purpose_namespace": 102,
+        "seat_ranks": [f"P{seat}" for seat in range(1, k + 1)],
+        "winning_score": 99,
+        "n_rounds": k + 1,
+    }
+    for seat, exposure in enumerate(exposures, 1):
+        row.update({f"P{seat}_{name}": value for name, value in exposure.items()})
+    return row
+
+
+def _publication_paths(cfg: AppConfig, k: int) -> tuple[Path, Path]:
+    output = cfg.metrics_all_player_batch_path(k)
+    return output, output.with_suffix(".manifest.jsonl")
+
+
+def _publication_identity(cfg: AppConfig, k: int) -> tuple[str, ...]:
+    output, manifest = _publication_paths(cfg, k)
+    return tuple(
+        sha256_file(path)
+        for path in (output, sidecar_path(output), manifest, sidecar_path(manifest))
     )
 
 
@@ -161,6 +227,175 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
             },
         },
     )
+
+
+def test_manifest_authenticates_before_all_player_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    source = _write_source(cfg, [_game_row_for_k(2)])
+    output, manifest = _publication_paths(cfg, 2)
+    done = stage_done_path(output.parent, "all_player_batch_metrics")
+    real_write_stage_done = all_player_module.write_stage_done
+    observed = False
+
+    def guarded_write_stage_done(done_path: Path, **kwargs: object) -> None:
+        nonlocal observed
+        assert done_path == done
+        assert not done.exists()
+        validate_artifact_sidecar(output)
+        validate_artifact_sidecar(
+            manifest,
+            expected={
+                "scope": "by_k",
+                "operation": "publish_all_player_batch_metrics_manifest",
+                "player_counts": [2],
+                "required_player_counts": [2],
+            },
+        )
+        observed = True
+        real_write_stage_done(done_path, **kwargs)
+
+    monkeypatch.setattr(all_player_module, "write_stage_done", guarded_write_stage_done)
+    assert build_all_player_batch_metrics(cfg, 2) == output
+    assert observed
+    assert done.is_file()
+    assert stage_is_up_to_date(
+        done,
+        inputs=[source],
+        outputs=[output, manifest],
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=[output, manifest],
+    )
+
+
+def test_interruption_before_manifest_sidecar_cannot_publish_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    source = _write_source(cfg, [_game_row_for_k(2)])
+    output, manifest = _publication_paths(cfg, 2)
+    manifest_sidecar = sidecar_path(manifest)
+    done = stage_done_path(output.parent, "all_player_batch_metrics")
+    assert build_all_player_batch_metrics(cfg, 2) == output
+    assert done.is_file()
+    real_replace = authenticated_contract.replace_file_atomic
+
+    def interrupt_manifest_sidecar(source_path: Path, destination: Path) -> None:
+        if Path(destination) == manifest_sidecar:
+            raise OSError("simulated manifest-sidecar interruption")
+        real_replace(source_path, destination)
+
+    monkeypatch.setattr(
+        authenticated_contract,
+        "replace_file_atomic",
+        interrupt_manifest_sidecar,
+    )
+    with pytest.raises(OSError, match="manifest-sidecar interruption"):
+        build_all_player_batch_metrics(cfg, 2, force=True)
+
+    assert output.is_file()
+    assert sidecar_path(output).is_file()
+    assert manifest.is_file()
+    assert not manifest_sidecar.exists()
+    assert done.is_file()
+    assert (
+        resolve_stage_state(
+            done,
+            [source],
+            [output, manifest],
+            cfg=cfg,
+            stage="metrics",
+            sidecar_artifacts=[output, manifest],
+        )
+        is CompletionState.COMPLETE_STALE
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "stale", "altered", "mismatched"])
+def test_all_player_completion_rejects_invalid_manifest_sidecar(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    cfg = _cfg(tmp_path)
+    source = _write_source(cfg, [_game_row_for_k(2)])
+    output = build_all_player_batch_metrics(cfg, 2)
+    manifest = output.with_suffix(".manifest.jsonl")
+    manifest_sidecar = sidecar_path(manifest)
+    done = stage_done_path(output.parent, "all_player_batch_metrics")
+
+    if mutation == "missing":
+        manifest_sidecar.unlink()
+    elif mutation == "stale":
+        manifest.write_bytes(manifest.read_bytes() + b'{"unexpected":true}\n')
+    elif mutation == "altered":
+        payload = json.loads(manifest_sidecar.read_text(encoding="utf-8"))
+        payload["artifact"]["content_sha256"] = "0" * 64
+        manifest_sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        manifest_sidecar.write_bytes(sidecar_path(output).read_bytes())
+
+    assert not stage_is_up_to_date(
+        done,
+        inputs=[source],
+        outputs=[output, manifest],
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=[output, manifest],
+    )
+    with pytest.raises(RuntimeError):
+        write_stage_done(
+            done,
+            inputs=[source],
+            outputs=[output, manifest],
+            cfg=cfg,
+            stage="metrics",
+            sidecar_artifacts=[output, manifest],
+        )
+
+
+def test_all_k_and_worker_topologies_publish_identical_authenticated_outputs(
+    tmp_path: Path,
+) -> None:
+    player_counts = (2, 3)
+    cfg = _cfg(tmp_path, player_counts=player_counts)
+    cfg.analysis.n_jobs = 1
+    assign_config_sha(cfg)
+    for k in player_counts:
+        _write_source(cfg, [_game_row_for_k(k)], k=k)
+
+    assert len(metrics_module._all_player_metrics(cfg, player_counts)) == len(player_counts)
+    single_worker_identities = {k: _publication_identity(cfg, k) for k in player_counts}
+    for k in player_counts:
+        output, manifest = _publication_paths(cfg, k)
+        for path in (
+            output,
+            sidecar_path(output),
+            manifest,
+            sidecar_path(manifest),
+            stage_done_path(output.parent, "all_player_batch_metrics"),
+        ):
+            path.unlink()
+
+    cfg.analysis.n_jobs = 2
+    assign_config_sha(cfg)
+    assert len(metrics_module._all_player_metrics(cfg, player_counts)) == len(player_counts)
+
+    for k in player_counts:
+        assert single_worker_identities[k] == _publication_identity(cfg, k)
+        output, manifest = _publication_paths(cfg, k)
+        done = stage_done_path(output.parent, "all_player_batch_metrics")
+        assert stage_is_up_to_date(
+            done,
+            inputs=[cfg.ingested_rows_curated(k)],
+            outputs=[output, manifest],
+            cfg=cfg,
+            stage="metrics",
+            sidecar_artifacts=[output, manifest],
+        )
 
 
 def test_unconditional_schema_rejects_conditional_fields() -> None:
@@ -273,11 +508,22 @@ def test_all_player_root_k_checkpoint_reuses_and_repairs_corruption(tmp_path: Pa
         ],
     )
     output = build_all_player_batch_metrics(cfg, 2)
+    manifest = output.with_suffix(".manifest.jsonl")
+    done = stage_done_path(output.parent, "all_player_batch_metrics")
     original = output.read_bytes()
-    original_mtime = output.stat().st_mtime_ns
+    publication_mtimes = {
+        path: path.stat().st_mtime_ns
+        for path in (
+            output,
+            sidecar_path(output),
+            manifest,
+            sidecar_path(manifest),
+            done,
+        )
+    }
 
     assert build_all_player_batch_metrics(cfg, 2) == output
-    assert output.stat().st_mtime_ns == original_mtime
+    assert {path: path.stat().st_mtime_ns for path in publication_mtimes} == publication_mtimes
 
     output.write_bytes(b"corrupt")
     repaired = build_all_player_batch_metrics(cfg, 2)

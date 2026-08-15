@@ -45,6 +45,10 @@ counter checkpoints, and auxiliary per-k TrueSkill exports receive the same
 adjacent hash-bound sidecars as final summaries. A no-force resume may publish
 a genuinely missing sidecar for bytes already covered by a valid completion
 stamp; it validates rather than replaces any sidecar that already exists.
+Completed single-entry all-player and seat batch manifests are deterministic
+artifacts: the data/sidecar pair publishes first, then the manifest/sidecar pair,
+then completion. Shared live simulation manifests keep their append-only phase
+and are authenticated only when their producer finalizes the ordered root.
 
 Method tags are `operation`, `h2h`, `trueskill`, `diagnostic_band`,
 `conditional_metrics`, `turn_metrics`, and `root_combination`. The method
