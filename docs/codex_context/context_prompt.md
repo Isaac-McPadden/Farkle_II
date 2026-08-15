@@ -23,9 +23,11 @@ Preserve these invariants:
 - separation of descriptive screening, inference, dominance, and display order;
 - RNG lag diagnostics use authenticated external partitions: strategy seat
   exposures follow the full RNG-v2 tournament-player coordinate, matchup games
-  follow the game coordinate without participant expansion, eligibility precedes
-  fixed-ring allocation, deterministic cap exhaustion is blocked-by-cap, and
-  zero-centered descriptive reference bands make no independence claim;
+  follow the game coordinate without participant expansion, the compact matchup
+  digest is only a partition/display accelerator and every identity comparison
+  includes the sorted padded participant key, eligibility precedes fixed-ring
+  allocation, deterministic cap exhaustion is blocked-by-cap, and zero-centered
+  descriptive reference bands make no independence claim;
 - two-root stability is fixed-design descriptive reproducibility: intervals are
   Monte Carlo precision, practical threshold positions are not tests, and joint
   discrepancy reference quantiles/frequencies are not multiple-testing inference;

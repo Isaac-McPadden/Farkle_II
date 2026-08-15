@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-11`
+- Reconciled date: `2026-08-15`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -77,6 +77,11 @@ changing code or accepting a statistical conclusion.
   lag reduction, then publishes a partition manifest only after all units
   validate. Output adds compact matchup IDs, participant-ID lists, explicit
   estimability status, exact exclusions/support, and blocked-by-cap completion.
+  The compact 64-bit matchup digest is never sufficient identity: count,
+  selection membership, priority tie-breaking, observation grouping, and final
+  artifact keys retain the full sorted, padded participant vector. External
+  merge memmaps/readers close explicitly before temporary workspace cleanup,
+  and cleanup failure cannot mask an active unit-processing exception.
   Final pipeline health rechecks the current diagnostic-stage lifecycle state.
   Task 14's raw oracle adds an authenticated, immutable limit-only game profile:
   its canonical hash extends run lineage and simulation freshness while an

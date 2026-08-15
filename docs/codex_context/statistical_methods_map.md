@@ -52,8 +52,10 @@ modules and use hand-checkable tests before accepting a claim.
   through stable authenticated external partitions. Strategy groups use seat
   exposures ordered by the RNG-v2 tournament-player coordinate and report win
   and rounds. Matchup groups use one game per sorted participant-ID multiset,
-  ordered by the game coordinate, and report rounds only. Fixed max-lag rings
-  are allocated only after eligibility. Cap selection uses semantic priority;
+  ordered by the game coordinate, and report rounds only. Their compact digest
+  controls partitioning and display, while the full sorted participant vector
+  controls identity, membership, merge, and grouping. Fixed max-lag rings are
+  allocated only after eligibility. Cap selection uses semantic priority;
   exhaustion is `blocked_by_cap`. Zero-centered descriptive references use
   lagged-pair support and make no independence conclusion.
 - `analysis/roll_enumeration.py`: exact enumeration of all `6**d` ordered

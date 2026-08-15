@@ -25,7 +25,8 @@ import heapq
 import json
 import logging
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -168,7 +169,25 @@ class _BatchArrays:
     n_rounds: np.ndarray
     winner_strategy: np.ndarray
     seats: np.ndarray
+    canonical_matchup: np.ndarray
     matchup_id: np.ndarray
+
+
+@contextmanager
+def _temporary_workspace(*, prefix: str) -> Iterator[Path]:
+    """Clean a worker workspace without masking an active processing error."""
+
+    directory = TemporaryDirectory(prefix=prefix)
+    try:
+        yield Path(directory.name)
+    except BaseException:
+        try:
+            directory.cleanup()
+        except BaseException:
+            LOGGER.exception("RNG diagnostic temporary-workspace cleanup also failed")
+        raise
+    else:
+        directory.cleanup()
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,25 +205,27 @@ class _CountRouteWriter:
         source, row_group = source_map[int(unit.key[0])]
         schema = _count_arrow_schema(len(self.strat_cols))
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            for batch in _iter_row_group_batches(
+            batches = _iter_row_group_batches(
                 Path(source),
                 row_group,
                 columns=self.columns,
                 batch_bytes=self.batch_bytes,
                 expansion=max(2, len(self.strat_cols) + 1),
-            ):
-                arrays = _extract_batch_arrays(
-                    batch,
-                    winner_col=self.winner_col,
-                    strat_cols=self.strat_cols,
-                    expected_root_seed=self.expected_root_seed,
-                )
-                records = _count_records(arrays)
-                partitions = _stable_partitions(records, self.partition_count)
-                for partition in range(self.partition_count):
-                    writer.write_batch(
-                        _count_records_to_batch(records[partitions == partition], schema)
+            )
+            with closing(batches):
+                for batch in batches:
+                    arrays = _extract_batch_arrays(
+                        batch,
+                        winner_col=self.winner_col,
+                        strat_cols=self.strat_cols,
+                        expected_root_seed=self.expected_root_seed,
                     )
+                    records = _count_records(arrays)
+                    partitions = _stable_partitions(records, self.partition_count)
+                    for partition in range(self.partition_count):
+                        writer.write_batch(
+                            _count_records_to_batch(records[partitions == partition], schema)
+                        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,15 +241,13 @@ class _EligibilityWriter:
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
         partition = int(unit.key[0])
         dtype = _count_dtype(self.max_players)
-        with TemporaryDirectory(prefix=f"farkle_rng_count_p{partition:03d}_") as temp_name:
-            temp = Path(temp_name)
+        with _temporary_workspace(prefix=f"farkle_rng_count_p{partition:03d}_") as temp:
             runs: list[Path] = []
             for source_unit in range(self.count_route_units):
                 route_path = (
                     Path(self.count_route_root) / "units" / f"row-group-{source_unit:05d}.arrow"
                 )
-                with route_path.open("rb") as handle:
-                    reader = ipc.open_file(handle)
+                with route_path.open("rb") as handle, ipc.open_file(handle) as reader:
                     for batch_index in range(
                         partition, reader.num_record_batches, self.partition_count
                     ):
@@ -266,32 +285,35 @@ class _StatsRouteWriter:
         memberships = _load_selection_memberships(
             Path(self.selection),
             partition_count=self.partition_count,
+            max_players=len(self.strat_cols),
             max_bytes=self.selection_memory_bytes,
         )
         source_map = {ordinal: (source, row_group) for ordinal, source, row_group in self.sources}
         source, row_group = source_map[int(unit.key[0])]
         schema = _observation_arrow_schema(len(self.strat_cols))
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            for batch in _iter_row_group_batches(
+            batches = _iter_row_group_batches(
                 Path(source),
                 row_group,
                 columns=self.columns,
                 batch_bytes=self.batch_bytes,
                 expansion=max(2, len(self.strat_cols) + 1),
-            ):
-                arrays = _extract_batch_arrays(
-                    batch,
-                    winner_col=self.winner_col,
-                    strat_cols=self.strat_cols,
-                    expected_root_seed=self.expected_root_seed,
-                )
-                records = _observation_records(arrays)
-                partitions = _stable_partitions(records, self.partition_count)
-                for partition in range(self.partition_count):
-                    subset = records[partitions == partition]
-                    if subset.size:
-                        subset = subset[_membership_mask(subset, memberships[partition])]
-                    writer.write_batch(_observation_records_to_batch(subset, schema))
+            )
+            with closing(batches):
+                for batch in batches:
+                    arrays = _extract_batch_arrays(
+                        batch,
+                        winner_col=self.winner_col,
+                        strat_cols=self.strat_cols,
+                        expected_root_seed=self.expected_root_seed,
+                    )
+                    records = _observation_records(arrays)
+                    partitions = _stable_partitions(records, self.partition_count)
+                    for partition in range(self.partition_count):
+                        subset = records[partitions == partition]
+                        if subset.size:
+                            subset = subset[_membership_mask(subset, memberships[partition])]
+                        writer.write_batch(_observation_records_to_batch(subset, schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,15 +328,13 @@ class _StatsPartitionWriter:
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
         partition = int(unit.key[0])
         dtype = _observation_dtype(self.max_players)
-        with TemporaryDirectory(prefix=f"farkle_rng_stats_p{partition:03d}_") as temp_name:
-            temp = Path(temp_name)
+        with _temporary_workspace(prefix=f"farkle_rng_stats_p{partition:03d}_") as temp:
             runs: list[Path] = []
             for source_unit in range(self.stats_route_units):
                 route_path = (
                     Path(self.stats_route_root) / "units" / f"row-group-{source_unit:05d}.arrow"
                 )
-                with route_path.open("rb") as handle:
-                    reader = ipc.open_file(handle)
+                with route_path.open("rb") as handle, ipc.open_file(handle) as reader:
                     for batch_index in range(
                         partition, reader.num_record_batches, self.partition_count
                     ):
@@ -393,9 +413,9 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         )
         return
 
-    parquet = pq.ParquetFile(data_partitions[0])
-    schema_names = set(parquet.schema_arrow.names)
-    strat_cols = tuple(_seat_strategy_columns(cfg, parquet.schema_arrow.names))
+    with pq.ParquetFile(data_partitions[0]) as parquet:
+        schema_names = set(parquet.schema_arrow.names)
+        strat_cols = tuple(_seat_strategy_columns(cfg, parquet.schema_arrow.names))
     winner_col = _winner_column(schema_names)
     required = {
         *_GAME_COORDINATE_COLUMNS,
@@ -425,7 +445,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         for ordinal, (path, row_group) in enumerate(
             (path, row_group)
             for path in data_partitions
-            for row_group in range(pq.ParquetFile(path).num_row_groups)
+            for row_group in range(_parquet_num_row_groups(path))
         )
     )
     row_groups = len(row_group_sources)
@@ -675,29 +695,34 @@ def _iter_row_group_batches(
     columns: Sequence[str],
     batch_bytes: int,
     expansion: int,
-) -> Iterator[pa.RecordBatch]:
+) -> Generator[pa.RecordBatch, None, None]:
     """Yield projected batches whose Arrow bytes are bounded before expansion."""
 
     if batch_bytes < 1:
         raise ValueError("RNG diagnostic batch budget must be positive")
-    parquet = pq.ParquetFile(path)
     projected_width = 8 * 4 + 8 + 4 * max(1, len(columns) - 5)
     batch_rows = max(1, min(65_536, batch_bytes // max(1, projected_width * expansion)))
-    for batch in parquet.iter_batches(
-        batch_size=batch_rows,
-        row_groups=[row_group],
-        columns=list(columns),
-        use_threads=False,
-    ):
-        if batch.nbytes <= batch_bytes:
-            yield batch
-            continue
-        rows_per_slice = max(1, int(batch.num_rows * batch_bytes / batch.nbytes))
-        for offset in range(0, batch.num_rows, rows_per_slice):
-            piece = batch.slice(offset, rows_per_slice)
-            if piece.nbytes > batch_bytes and piece.num_rows > 1:
-                raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
-            yield piece
+    with pq.ParquetFile(path) as parquet:
+        for batch in parquet.iter_batches(
+            batch_size=batch_rows,
+            row_groups=[row_group],
+            columns=list(columns),
+            use_threads=False,
+        ):
+            if batch.nbytes <= batch_bytes:
+                yield batch
+                continue
+            rows_per_slice = max(1, int(batch.num_rows * batch_bytes / batch.nbytes))
+            for offset in range(0, batch.num_rows, rows_per_slice):
+                piece = batch.slice(offset, rows_per_slice)
+                if piece.nbytes > batch_bytes and piece.num_rows > 1:
+                    raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
+                yield piece
+
+
+def _parquet_num_row_groups(path: Path) -> int:
+    with pq.ParquetFile(path) as parquet:
+        return parquet.num_row_groups
 
 
 def _column_numpy(batch: pa.RecordBatch, name: str, dtype: np.dtype[Any]) -> np.ndarray:
@@ -762,7 +787,7 @@ def _extract_batch_arrays(
     sorted_seats.sort(axis=1)
     sorted_seats[sorted_seats == np.iinfo(np.int32).max] = _MISSING_STRATEGY
     matchup_id = _matchup_ids(k, sorted_seats)
-    return _BatchArrays(root, k, shuffle, game, rounds, winner, seats, matchup_id)
+    return _BatchArrays(root, k, shuffle, game, rounds, winner, seats, sorted_seats, matchup_id)
 
 
 def _winner_from_seat_strings(
@@ -855,7 +880,7 @@ def _count_records(arrays: _BatchArrays) -> np.ndarray:
     records["group_id"][active_rows.size :] = arrays.matchup_id
     for index in range(max_players):
         records[f"p{index}"][: active_rows.size] = _MISSING_STRATEGY
-        records[f"p{index}"][active_rows.size :] = arrays.seats[:, index]
+        records[f"p{index}"][active_rows.size :] = arrays.canonical_matchup[:, index]
     records["count"] = 1
     return _reduce_count_array(records)
 
@@ -933,48 +958,59 @@ def _memmap_records(path: Path, dtype: np.dtype[Any]) -> np.memmap:
     return np.memmap(path, dtype=dtype, mode="r", shape=(size,))
 
 
+def _close_memmap(array: np.ndarray) -> None:
+    mapping = getattr(array, "_mmap", None)
+    if mapping is not None:
+        mapping.close()
+
+
 def _merge_count_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:
     fields = _count_key_fields(dtype)
-    arrays = [_memmap_records(path, dtype) for path in inputs]
-    heap: list[tuple[tuple[int, ...], int, int]] = []
-    for source, array in enumerate(arrays):
-        if array.size:
-            heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
-    buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
-    used = 0
-    with output.open("wb") as handle:
-        current_key: tuple[int, ...] | None = None
-        current: np.void | None = None
-        current_count = 0
-        while heap:
-            key, source, index = heapq.heappop(heap)
-            record = arrays[source][index]
-            if current_key is not None and key != current_key:
+    arrays: list[np.memmap] = []
+    try:
+        arrays = [_memmap_records(path, dtype) for path in inputs]
+        heap: list[tuple[tuple[int, ...], int, int]] = []
+        for source, array in enumerate(arrays):
+            if array.size:
+                heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
+        buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
+        used = 0
+        with output.open("wb") as handle:
+            current_key: tuple[int, ...] | None = None
+            current: np.void | None = None
+            current_count = 0
+            while heap:
+                key, source, index = heapq.heappop(heap)
+                record = arrays[source][index]
+                if current_key is not None and key != current_key:
+                    assert current is not None
+                    buffer[used] = current
+                    buffer["count"][used] = current_count
+                    used += 1
+                    if used == buffer.size:
+                        buffer.tofile(handle)
+                        used = 0
+                if key != current_key:
+                    current_key = key
+                    current = record.copy()
+                    current_count = 0
+                current_count += int(record["count"])
+                next_index = index + 1
+                if next_index < arrays[source].size:
+                    heapq.heappush(
+                        heap,
+                        (_record_key(arrays[source][next_index], fields), source, next_index),
+                    )
+            if current_key is not None:
                 assert current is not None
                 buffer[used] = current
                 buffer["count"][used] = current_count
                 used += 1
-                if used == buffer.size:
-                    buffer.tofile(handle)
-                    used = 0
-            if key != current_key:
-                current_key = key
-                current = record.copy()
-                current_count = 0
-            current_count += int(record["count"])
-            next_index = index + 1
-            if next_index < arrays[source].size:
-                heapq.heappush(
-                    heap,
-                    (_record_key(arrays[source][next_index], fields), source, next_index),
-                )
-        if current_key is not None:
-            assert current is not None
-            buffer[used] = current
-            buffer["count"][used] = current_count
-            used += 1
-        if used:
-            buffer[:used].tofile(handle)
+            if used:
+                buffer[:used].tofile(handle)
+    finally:
+        for array in arrays:
+            _close_memmap(array)
 
 
 def _collapse_count_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype[Any]) -> Path:
@@ -1013,6 +1049,46 @@ def _eligibility_schema(max_players: int) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _participant_fields(dtype: np.dtype[Any]) -> tuple[str, ...]:
+    return tuple(name for name in dtype.names or () if name.startswith("p"))
+
+
+def _validate_group_records(records: np.ndarray, dtype: np.dtype[Any]) -> None:
+    """Validate the complete semantic key carried beside the compact digest."""
+
+    if not records.size:
+        return
+    participant_fields = _participant_fields(dtype)
+    participants = np.column_stack([records[name] for name in participant_fields])
+    group_type = records["group_type"]
+    strategy = group_type == _GROUP_STRATEGY
+    matchup = group_type == _GROUP_MATCHUP
+    if np.any(~(strategy | matchup)):
+        raise ValueError("invalid RNG diagnostic group type")
+    if np.any(participants[strategy] != _MISSING_STRATEGY):
+        raise ValueError("strategy RNG diagnostic key contains matchup participants")
+    if np.any(records["group_id"][strategy] > np.iinfo(np.int32).max):
+        raise ValueError("strategy RNG diagnostic identifier is outside the source domain")
+    if not np.any(matchup):
+        return
+    matchup_k = records["k"][matchup]
+    matchup_participants = participants[matchup]
+    if np.any((matchup_k < 1) | (matchup_k > len(participant_fields))):
+        raise ValueError("matchup RNG diagnostic key has invalid player count")
+    positions = np.arange(len(participant_fields))
+    active = positions < matchup_k[:, None]
+    if np.any(matchup_participants[active] < 0) or np.any(
+        matchup_participants[~active] != _MISSING_STRATEGY
+    ):
+        raise ValueError("matchup RNG diagnostic key has inconsistent participant padding")
+    adjacent_active = positions[1:] < matchup_k[:, None]
+    if np.any((matchup_participants[:, 1:] < matchup_participants[:, :-1]) & adjacent_active):
+        raise ValueError("matchup RNG diagnostic key is not canonically ordered")
+    expected_ids = _matchup_ids(matchup_k, matchup_participants)
+    if np.any(records["group_id"][matchup] != expected_ids):
+        raise ValueError("matchup RNG diagnostic digest does not match its canonical key")
+
+
 def _write_eligibility_partition(
     merged: Path,
     output: Path,
@@ -1026,42 +1102,30 @@ def _write_eligibility_partition(
     del root_seed
     schema = _eligibility_schema(len([name for name in dtype.names or () if name.startswith("p")]))
     records = _memmap_records(merged, dtype) if merged.stat().st_size else np.empty(0, dtype=dtype)
-    previous_identity: tuple[int, int, int] | None = None
-    previous_participants: tuple[int, ...] | None = None
-    with pq.ParquetWriter(output, schema, compression="snappy", use_dictionary=True) as writer:
-        for start in range(0, records.size, max(1, batch_rows)):
-            chunk = np.asarray(records[start : start + batch_rows])
-            if chunk.size:
-                for record in chunk:
-                    identity = (
-                        int(record["group_type"]),
-                        int(record["k"]),
-                        int(record["group_id"]),
-                    )
-                    participants = tuple(
-                        int(record[name]) for name in dtype.names or () if name.startswith("p")
-                    )
-                    if identity == previous_identity and participants != previous_participants:
-                        raise ValueError("stable matchup identifier collision detected")
-                    previous_identity = identity
-                    previous_participants = participants
-            arrays: list[pa.Array] = [
-                pa.array(np.full(chunk.size, partition, dtype=np.int16)),
-                pa.array(chunk["group_type"]),
-                pa.array(chunk["k"]),
-                pa.array(chunk["group_id"]),
-            ]
-            arrays.extend(
-                pa.array(chunk[name]) for name in dtype.names or () if name.startswith("p")
-            )
-            arrays.extend(
-                [
-                    pa.array(chunk["count"]),
-                    pa.array(_priority(chunk)),
-                    pa.array(chunk["count"] >= minimum_observations),
+    try:
+        with pq.ParquetWriter(output, schema, compression="snappy", use_dictionary=True) as writer:
+            for start in range(0, records.size, max(1, batch_rows)):
+                chunk = np.asarray(records[start : start + batch_rows])
+                _validate_group_records(chunk, dtype)
+                arrays: list[pa.Array] = [
+                    pa.array(np.full(chunk.size, partition, dtype=np.int16)),
+                    pa.array(chunk["group_type"]),
+                    pa.array(chunk["k"]),
+                    pa.array(chunk["group_id"]),
                 ]
-            )
-            writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
+                arrays.extend(
+                    pa.array(chunk[name]) for name in dtype.names or () if name.startswith("p")
+                )
+                arrays.extend(
+                    [
+                        pa.array(chunk["count"]),
+                        pa.array(_priority(chunk)),
+                        pa.array(chunk["count"] >= minimum_observations),
+                    ]
+                )
+                writer.write_batch(pa.RecordBatch.from_arrays(arrays, schema=schema))
+    finally:
+        _close_memmap(records)
 
 
 def _selection_schema(max_players: int) -> pa.Schema:
@@ -1140,33 +1204,36 @@ def _write_or_reuse_selection(
     histogram: dict[tuple[str, int], int] = {}
     for partition in range(partition_count):
         path = eligibility_root / "units" / f"part-{partition:03d}.parquet"
-        parquet = pq.ParquetFile(path)
-        for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
-            guard.check_before_schedule()
-            group_type = _column_numpy(batch, "group_type", np.dtype(np.uint8))
-            observations = _column_numpy(batch, "observations", np.dtype(np.uint64))
-            eligible = _column_numpy(batch, "eligible", np.dtype(bool))
-            for value, label in ((_GROUP_STRATEGY, "strategy"), (_GROUP_MATCHUP, "matchup")):
-                mask = group_type == value
-                totals[label] += int(np.count_nonzero(mask))
-                eligible_totals[label] += int(np.count_nonzero(mask & eligible))
-                bins = _observation_histogram_bin(observations[mask], minimum_observations)
-                unique_bins, bin_counts = np.unique(bins, return_counts=True)
-                for bin_value, bin_count in zip(unique_bins, bin_counts, strict=True):
-                    histogram[(label, int(bin_value))] = histogram.get(
-                        (label, int(bin_value)), 0
-                    ) + int(bin_count)
-            if cap is not None:
-                mask = (group_type == _GROUP_MATCHUP) & eligible
-                if np.any(mask):
-                    candidates = np.empty(int(np.count_nonzero(mask)), dtype=top_dtype)
-                    for name in top_dtype.names or ():
-                        candidates[name] = _column_numpy(
-                            batch, name, top_dtype.fields[name][0]  # type: ignore[index]
-                        )[mask]
-                    top = np.concatenate((top, candidates))
-                    if top.size > cap:
-                        top = top[_priority_sort_order(top)[:cap]].copy()
+        with pq.ParquetFile(path) as parquet:
+            for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
+                guard.check_before_schedule()
+                group_type = _column_numpy(batch, "group_type", np.dtype(np.uint8))
+                observations = _column_numpy(batch, "observations", np.dtype(np.uint64))
+                eligible = _column_numpy(batch, "eligible", np.dtype(bool))
+                for value, label in (
+                    (_GROUP_STRATEGY, "strategy"),
+                    (_GROUP_MATCHUP, "matchup"),
+                ):
+                    mask = group_type == value
+                    totals[label] += int(np.count_nonzero(mask))
+                    eligible_totals[label] += int(np.count_nonzero(mask & eligible))
+                    bins = _observation_histogram_bin(observations[mask], minimum_observations)
+                    unique_bins, bin_counts = np.unique(bins, return_counts=True)
+                    for bin_value, bin_count in zip(unique_bins, bin_counts, strict=True):
+                        histogram[(label, int(bin_value))] = histogram.get(
+                            (label, int(bin_value)), 0
+                        ) + int(bin_count)
+                if cap is not None:
+                    mask = (group_type == _GROUP_MATCHUP) & eligible
+                    if np.any(mask):
+                        candidates = np.empty(int(np.count_nonzero(mask)), dtype=top_dtype)
+                        for name in top_dtype.names or ():
+                            candidates[name] = _column_numpy(
+                                batch, name, top_dtype.fields[name][0]  # type: ignore[index]
+                            )[mask]
+                        top = np.concatenate((top, candidates))
+                        if top.size > cap:
+                            top = top[_priority_sort_order(top)[:cap]].copy()
     cutoff: tuple[int, ...] | None = None
     capped = 0
     if cap is not None and eligible_totals["matchup"] > cap:
@@ -1226,7 +1293,7 @@ def _write_or_reuse_selection(
         "method_version": _DIAGNOSTIC_METHOD_VERSION,
         "partition_count": partition_count,
         "minimum_usable_observations": minimum_observations,
-        "stable_priority": "splitmix64_semantic_group_identity",
+        "stable_priority": "splitmix64_compact_digest_then_full_canonical_key",
         "effective_matchup_group_cap": cap,
     }
     sidecar = make_artifact_sidecar(
@@ -1249,7 +1316,12 @@ def _write_or_reuse_selection(
         consistency_columns=selection_schema.names,
         source_artifacts=[source],
         input_manifests=[eligibility_manifest],
-        grouping_keys=["group_type", "k", "group_id"],
+        grouping_keys=[
+            "group_type",
+            "k",
+            "group_id",
+            *(f"p{index}" for index in range(max_players)),
+        ],
         player_counts=cfg.sim.n_players_list,
         required_player_counts=cfg.sim.n_players_list,
     )
@@ -1262,22 +1334,22 @@ def _write_or_reuse_selection(
     ) as writer:
         for partition in range(partition_count):
             path = eligibility_root / "units" / f"part-{partition:03d}.parquet"
-            parquet = pq.ParquetFile(path)
-            for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
-                eligible = _column_numpy(batch, "eligible", np.dtype(bool))
-                group_type = _column_numpy(batch, "group_type", np.dtype(np.uint8))
-                keep = eligible.copy()
-                if cutoff is not None:
-                    candidates = np.empty(batch.num_rows, dtype=top_dtype)
-                    for name in top_dtype.names or ():
-                        candidates[name] = _column_numpy(
-                            batch, name, top_dtype.fields[name][0]  # type: ignore[index]
+            with pq.ParquetFile(path) as parquet:
+                for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
+                    eligible = _column_numpy(batch, "eligible", np.dtype(bool))
+                    group_type = _column_numpy(batch, "group_type", np.dtype(np.uint8))
+                    keep = eligible.copy()
+                    if cutoff is not None:
+                        candidates = np.empty(batch.num_rows, dtype=top_dtype)
+                        for name in top_dtype.names or ():
+                            candidates[name] = _column_numpy(
+                                batch, name, top_dtype.fields[name][0]  # type: ignore[index]
+                            )
+                        keep &= (group_type == _GROUP_STRATEGY) | _priority_at_or_below(
+                            candidates, cutoff
                         )
-                    keep &= (group_type == _GROUP_STRATEGY) | _priority_at_or_below(
-                        candidates, cutoff
-                    )
-                if np.any(keep):
-                    writer.write_batch(pa.Table.from_batches([batch.filter(pa.array(keep))]))
+                    if np.any(keep):
+                        writer.write_batch(pa.Table.from_batches([batch.filter(pa.array(keep))]))
         if writer.rows_written == 0:
             writer.write_batch(pa.Table.from_batches([], schema=selection_schema))
 
@@ -1336,33 +1408,42 @@ def _priority_at_or_below(records: np.ndarray, cutoff: tuple[int, ...]) -> np.nd
     return less | equal
 
 
-def _selection_key_dtype() -> np.dtype[Any]:
-    return np.dtype([("group_type", "u1"), ("k", "<i2"), ("group_id", "<u8")])
+def _selection_key_dtype(max_players: int) -> np.dtype[Any]:
+    return np.dtype(
+        [
+            ("group_type", "u1"),
+            ("k", "<i2"),
+            ("group_id", "<u8"),
+            *((f"p{index}", "<i4") for index in range(max_players)),
+        ]
+    )
 
 
 def _load_selection_memberships(
-    path: Path, *, partition_count: int, max_bytes: int
+    path: Path, *, partition_count: int, max_players: int, max_bytes: int
 ) -> tuple[np.ndarray, ...]:
-    dtype = _selection_key_dtype()
+    dtype = _selection_key_dtype(max_players)
     chunks: list[list[np.ndarray]] = [[] for _ in range(partition_count)]
     total_bytes = 0
-    parquet = pq.ParquetFile(path)
-    for batch in parquet.iter_batches(
-        batch_size=32_768,
-        columns=["partition", "group_type", "k", "group_id"],
-        use_threads=False,
-    ):
-        partition = _column_numpy(batch, "partition", np.dtype(np.int16))
-        records = np.empty(batch.num_rows, dtype=dtype)
-        for name in dtype.names or ():
-            records[name] = _column_numpy(batch, name, dtype.fields[name][0])  # type: ignore[index]
-        total_bytes += records.nbytes
-        if total_bytes > max_bytes:
-            raise ResourceSafetyError(
-                f"selected RNG group membership exceeds worker budget: {total_bytes} > {max_bytes}"
-            )
-        for value in np.unique(partition):
-            chunks[int(value)].append(records[partition == value].copy())
+    with pq.ParquetFile(path) as parquet:
+        for batch in parquet.iter_batches(
+            batch_size=32_768,
+            columns=["partition", *(dtype.names or ())],
+            use_threads=False,
+        ):
+            partition = _column_numpy(batch, "partition", np.dtype(np.int16))
+            records = np.empty(batch.num_rows, dtype=dtype)
+            for name in dtype.names or ():
+                records[name] = _column_numpy(
+                    batch, name, dtype.fields[name][0]  # type: ignore[index]
+                )
+            total_bytes += records.nbytes
+            if total_bytes > max_bytes:
+                raise ResourceSafetyError(
+                    f"selected RNG group membership exceeds worker budget: {total_bytes} > {max_bytes}"
+                )
+            for value in np.unique(partition):
+                chunks[int(value)].append(records[partition == value].copy())
     memberships: list[np.ndarray] = []
     for partition_chunks in chunks:
         combined = (
@@ -1389,7 +1470,7 @@ def _observation_records(arrays: _BatchArrays) -> np.ndarray:
     records["group_id"][strategy_count:] = arrays.matchup_id
     for index in range(max_players):
         records[f"p{index}"][:strategy_count] = _MISSING_STRATEGY
-        records[f"p{index}"][strategy_count:] = arrays.seats[:, index]
+        records[f"p{index}"][strategy_count:] = arrays.canonical_matchup[:, index]
     records["root_seed"][:strategy_count] = arrays.root_seed[active_rows]
     records["root_seed"][strategy_count:] = arrays.root_seed
     records["shuffle_index"][:strategy_count] = arrays.shuffle_index[active_rows]
@@ -1410,7 +1491,7 @@ def _observation_records(arrays: _BatchArrays) -> np.ndarray:
 def _membership_mask(records: np.ndarray, membership: np.ndarray) -> np.ndarray:
     if records.size == 0 or membership.size == 0:
         return np.zeros(records.size, dtype=bool)
-    dtype = _selection_key_dtype()
+    dtype = membership.dtype
     keys = np.empty(records.size, dtype=dtype)
     for name in dtype.names or ():
         keys[name] = records[name]
@@ -1475,33 +1556,38 @@ def _observation_sort_order(records: np.ndarray) -> np.ndarray:
 
 def _merge_observation_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:
     fields = _observation_sort_fields(dtype)
-    arrays = [_memmap_records(path, dtype) for path in inputs]
-    heap: list[tuple[tuple[int, ...], int, int]] = []
-    for source, array in enumerate(arrays):
-        if array.size:
-            heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
-    buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
-    used = 0
-    previous: tuple[int, ...] | None = None
-    with output.open("wb") as handle:
-        while heap:
-            key, source, index = heapq.heappop(heap)
-            if key == previous:
-                raise ValueError("duplicate RNG diagnostic semantic observation coordinate")
-            previous = key
-            buffer[used] = arrays[source][index]
-            used += 1
-            if used == buffer.size:
-                buffer.tofile(handle)
-                used = 0
-            next_index = index + 1
-            if next_index < arrays[source].size:
-                heapq.heappush(
-                    heap,
-                    (_record_key(arrays[source][next_index], fields), source, next_index),
-                )
-        if used:
-            buffer[:used].tofile(handle)
+    arrays: list[np.memmap] = []
+    try:
+        arrays = [_memmap_records(path, dtype) for path in inputs]
+        heap: list[tuple[tuple[int, ...], int, int]] = []
+        for source, array in enumerate(arrays):
+            if array.size:
+                heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
+        buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
+        used = 0
+        previous: tuple[int, ...] | None = None
+        with output.open("wb") as handle:
+            while heap:
+                key, source, index = heapq.heappop(heap)
+                if key == previous:
+                    raise ValueError("duplicate RNG diagnostic semantic observation coordinate")
+                previous = key
+                buffer[used] = arrays[source][index]
+                used += 1
+                if used == buffer.size:
+                    buffer.tofile(handle)
+                    used = 0
+                next_index = index + 1
+                if next_index < arrays[source].size:
+                    heapq.heappush(
+                        heap,
+                        (_record_key(arrays[source][next_index], fields), source, next_index),
+                    )
+            if used:
+                buffer[:used].tofile(handle)
+    finally:
+        for array in arrays:
+            _close_memmap(array)
 
 
 def _collapse_observation_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype[Any]) -> Path:
@@ -1663,38 +1749,41 @@ def _write_stats_partition(
 ) -> None:
     schema = _stats_schema()
     records = _memmap_records(merged, dtype) if merged.stat().st_size else np.empty(0, dtype=dtype)
-    buffered: list[dict[str, Any]] = []
-    current_identity: tuple[int, ...] | None = None
-    rounds: _OnlineMetric | None = None
-    wins: _OnlineMetric | None = None
-    with pq.ParquetWriter(output, schema, compression="snappy", use_dictionary=True) as writer:
-        for record in records:
-            identity = _group_identity(record, dtype)
-            if identity != current_identity:
-                if current_identity is not None:
-                    assert rounds is not None
-                    buffered.extend(
-                        _rows_for_online_group(
-                            current_identity, lags=lags, rounds=rounds, wins=wins
+    try:
+        buffered: list[dict[str, Any]] = []
+        current_identity: tuple[int, ...] | None = None
+        rounds: _OnlineMetric | None = None
+        wins: _OnlineMetric | None = None
+        with pq.ParquetWriter(output, schema, compression="snappy", use_dictionary=True) as writer:
+            for record in records:
+                identity = _group_identity(record, dtype)
+                if identity != current_identity:
+                    if current_identity is not None:
+                        assert rounds is not None
+                        buffered.extend(
+                            _rows_for_online_group(
+                                current_identity, lags=lags, rounds=rounds, wins=wins
+                            )
                         )
-                    )
-                    if len(buffered) >= batch_rows:
-                        writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
-                        buffered.clear()
-                current_identity = identity
-                rounds = _OnlineMetric(lags)
-                wins = _OnlineMetric(lags) if identity[0] == _GROUP_STRATEGY else None
-            assert rounds is not None
-            rounds.push(float(record["n_rounds"]))
-            if wins is not None:
-                wins.push(float(record["win_indicator"]))
-        if current_identity is not None:
-            assert rounds is not None
-            buffered.extend(
-                _rows_for_online_group(current_identity, lags=lags, rounds=rounds, wins=wins)
-            )
-        if buffered:
-            writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
+                        if len(buffered) >= batch_rows:
+                            writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
+                            buffered.clear()
+                    current_identity = identity
+                    rounds = _OnlineMetric(lags)
+                    wins = _OnlineMetric(lags) if identity[0] == _GROUP_STRATEGY else None
+                assert rounds is not None
+                rounds.push(float(record["n_rounds"]))
+                if wins is not None:
+                    wins.push(float(record["win_indicator"]))
+            if current_identity is not None:
+                assert rounds is not None
+                buffered.extend(
+                    _rows_for_online_group(current_identity, lags=lags, rounds=rounds, wins=wins)
+                )
+            if buffered:
+                writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
+    finally:
+        _close_memmap(records)
 
 
 def _finalize_outputs(
@@ -1716,33 +1805,37 @@ def _finalize_outputs(
     result_rows = 0
     for partition in range(partition_count):
         path = stats_root / "units" / f"part-{partition:03d}.parquet"
-        parquet = pq.ParquetFile(path)
-        result_rows += parquet.metadata.num_rows
-        for batch in parquet.iter_batches(
-            batch_size=32_768,
-            columns=["summary_level", "metric", "lag", "estimability_status"],
-            use_threads=False,
-        ):
-            table = pa.Table.from_batches([batch])
-            for summary_level in ("strategy", "matchup"):
-                for metric in ("win_indicator", "n_rounds"):
-                    for lag in lags:
-                        for status in ("estimated", "insufficient_pairs", "zero_variance"):
-                            mask = pc.and_(
-                                pc.and_(
-                                    pc.equal(table["summary_level"], pa.scalar(summary_level)),
-                                    pc.equal(table["metric"], pa.scalar(metric)),
-                                ),
-                                pc.and_(
-                                    pc.equal(table["lag"], pa.scalar(lag)),
-                                    pc.equal(table["estimability_status"], pa.scalar(status)),
-                                ),
-                            )
-                            count = int(pc.sum(pc.cast(mask, pa.int64())).as_py() or 0)
-                            if count:
-                                usable[(summary_level, metric, lag, status)] = (
-                                    usable.get((summary_level, metric, lag, status), 0) + count
+        with pq.ParquetFile(path) as parquet:
+            result_rows += parquet.metadata.num_rows
+            for batch in parquet.iter_batches(
+                batch_size=32_768,
+                columns=["summary_level", "metric", "lag", "estimability_status"],
+                use_threads=False,
+            ):
+                table = pa.Table.from_batches([batch])
+                for summary_level in ("strategy", "matchup"):
+                    for metric in ("win_indicator", "n_rounds"):
+                        for lag in lags:
+                            for status in (
+                                "estimated",
+                                "insufficient_pairs",
+                                "zero_variance",
+                            ):
+                                mask = pc.and_(
+                                    pc.and_(
+                                        pc.equal(table["summary_level"], pa.scalar(summary_level)),
+                                        pc.equal(table["metric"], pa.scalar(metric)),
+                                    ),
+                                    pc.and_(
+                                        pc.equal(table["lag"], pa.scalar(lag)),
+                                        pc.equal(table["estimability_status"], pa.scalar(status)),
+                                    ),
                                 )
+                                count = int(pc.sum(pc.cast(mask, pa.int64())).as_py() or 0)
+                                if count:
+                                    usable[(summary_level, metric, lag, status)] = (
+                                        usable.get((summary_level, metric, lag, status), 0) + count
+                                    )
     status_rows: tuple[dict[str, int | str], ...] = tuple(
         {
             "summary_level": key[0],
@@ -1812,7 +1905,15 @@ def _finalize_outputs(
         ),
         consistency_columns=_stats_schema().names,
         source_artifacts=[data_file],
-        grouping_keys=["summary_level", "strategy", "matchup_id", "n_players", "lag", "metric"],
+        grouping_keys=[
+            "summary_level",
+            "strategy",
+            "matchup_id",
+            "participant_strategy_ids",
+            "n_players",
+            "lag",
+            "metric",
+        ],
         player_counts=cfg.sim.n_players_list,
         required_player_counts=cfg.sim.n_players_list,
         input_manifests=[stats_result.manifest_path],
@@ -1826,9 +1927,9 @@ def _finalize_outputs(
     ) as writer:
         for partition in range(partition_count):
             path = stats_root / "units" / f"part-{partition:03d}.parquet"
-            parquet = pq.ParquetFile(path)
-            for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
-                writer.write_batch(pa.Table.from_batches([batch]))
+            with pq.ParquetFile(path) as parquet:
+                for batch in parquet.iter_batches(batch_size=32_768, use_threads=False):
+                    writer.write_batch(pa.Table.from_batches([batch]))
         if writer.rows_written == 0:
             writer.write_batch(pa.Table.from_batches([], schema=_stats_schema()))
 

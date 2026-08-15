@@ -27,6 +27,13 @@ sort/reduction before lag state exists. A deterministic semantic priority
 selects eligible matchups under the configured cap while retaining only a
 bounded frontier in memory.
 
+The 64-bit BLAKE2 matchup digest is a compact deterministic partition and
+display value, not a complete identity. Every count, eligibility, selection,
+observation, merge, and output grouping comparison also carries the full
+canonical key: `k` plus the sorted participant-ID multiset padded to the fixed
+stage width. Digest equality therefore cannot merge distinct matchups, while
+different seat orders of the same matchup aggregate into one group.
+
 The second route contains selected observations only. Each independent result
 partition externally sorts its own observations, then processes one group at a
 time with online moments and a fixed NumPy ring per applicable metric up to the
@@ -39,7 +46,10 @@ freshness.
 Completed partitions are reusable across crashes, schedules, and worker counts.
 A final manifest is published only after every planned unit validates. Final
 Parquet/JSON artifacts have canonical authenticated-v3 sidecars, and stage
-completion is published last.
+completion is published last. Arrow readers and external-merge memmaps are
+closed explicitly before worker temporary directories are removed; if cleanup
+also fails during exception unwinding, the processing exception remains the
+reported failure.
 
 ## Output and completion migration
 

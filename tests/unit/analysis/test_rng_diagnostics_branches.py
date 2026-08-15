@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
 import pytest
 from tests.helpers.artifact_sidecars import make_authenticated_v3_config, publish_v3_parquet
@@ -16,6 +19,7 @@ from farkle.utils.artifact_contract import sidecar_path
 from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.release_identity import _typed_method
+from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.stage_completion import CompletionState, resolve_stage_state
 
 
@@ -32,21 +36,23 @@ def _curated_table(
     n = len(order)
     winners = [p1[index] if index % 3 else p2[index] for index in range(n)]
     rounds = [2 + (index * 7) % 13 for index in range(n)]
-    return pa.table(
-        {
-            "root_seed": pa.array([root_seed] * n, type=pa.int64()),
-            "k": pa.array([2] * n, type=pa.int16()),
-            "shuffle_index": pa.array(order, type=pa.int64()),
-            "game_index": pa.array([0] * n, type=pa.int64()),
-            "rng_scheme_version": pa.array([RNG_SCHEME_VERSION] * n, type=pa.int16()),
-            "rng_purpose_namespace": pa.array(
-                [int(RandomPurpose.TOURNAMENT_GAME)] * n, type=pa.int16()
-            ),
-            "n_rounds": pa.array(rounds, type=pa.int32()),
-            "winner_strategy": pa.array(winners, type=pa.int32()),
-            "P1_strategy": pa.array(p1, type=pa.int32()),
-            "P2_strategy": pa.array(p2, type=pa.int32()),
-        }
+    return pa.Table.from_pylist(
+        [
+            {
+                "root_seed": root_seed,
+                "k": 2,
+                "shuffle_index": order[index],
+                "game_index": 0,
+                "rng_scheme_version": RNG_SCHEME_VERSION,
+                "rng_purpose_namespace": int(RandomPurpose.TOURNAMENT_GAME),
+                "n_rounds": rounds[index],
+                "winner_strategy": winners[index],
+                "P1_strategy": p1[index],
+                "P2_strategy": p2[index],
+            }
+            for index in range(n)
+        ],
+        schema=expected_schema_for(2),
     )
 
 
@@ -119,6 +125,152 @@ def test_compact_group_records_and_shared_ring_accumulator() -> None:
     assert metric.result(2) == (None, "insufficient_pairs")
 
 
+def test_seed_46_matchup_is_canonicalized_and_repeated_observations_aggregate() -> None:
+    matchups = [(13, 31)] * 26 + [(31, 13)] * 28
+    table = _curated_table(root_seed=46, matchups=matchups)
+    for seat in range(3, 13):
+        table = table.append_column(f"P{seat}_strategy", pa.nulls(len(matchups), pa.int32()))
+    strat_cols = tuple(f"P{seat}_strategy" for seat in range(1, 13))
+    arrays = rng_diagnostics._extract_batch_arrays(
+        table.to_batches()[0],
+        winner_col="winner_strategy",
+        strat_cols=strat_cols,
+        expected_root_seed=46,
+    )
+
+    counts = rng_diagnostics._count_records(arrays)
+    matchup = counts[counts["group_type"] == rng_diagnostics._GROUP_MATCHUP]
+    assert matchup.size == 1
+    assert int(matchup["group_id"][0]) == 110_276_747_336_793_579
+    assert int(matchup["count"][0]) == 54
+    assert tuple(int(matchup[f"p{index}"][0]) for index in range(12)) == (
+        13,
+        31,
+        *([-1] * 10),
+    )
+
+    observations = rng_diagnostics._observation_records(arrays)
+    matchup_observations = observations[
+        observations["group_type"] == rng_diagnostics._GROUP_MATCHUP
+    ]
+    assert set(zip(matchup_observations["p0"], matchup_observations["p1"], strict=True)) == {
+        (13, 31)
+    }
+
+
+def test_full_canonical_key_distinguishes_an_injected_digest_collision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    collision_id = np.uint64(0x0123456789ABCDEF)
+
+    def collide(k: np.ndarray, sorted_seats: np.ndarray) -> np.ndarray:
+        del sorted_seats
+        return np.full(k.size, collision_id, dtype=np.uint64)
+
+    monkeypatch.setattr(rng_diagnostics, "_matchup_ids", collide)
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 3 + [(1, 3)] * 3)
+    arrays = rng_diagnostics._extract_batch_arrays(
+        table.to_batches()[0],
+        winner_col="winner_strategy",
+        strat_cols=("P1_strategy", "P2_strategy"),
+        expected_root_seed=9,
+    )
+    counts = rng_diagnostics._count_records(arrays)
+    matchups = counts[counts["group_type"] == rng_diagnostics._GROUP_MATCHUP]
+    assert matchups.size == 2
+    assert {int(value) for value in matchups["group_id"]} == {int(collision_id)}
+
+    merged = tmp_path / "collision.bin"
+    output = tmp_path / "eligibility.parquet"
+    counts.tofile(merged)
+    rng_diagnostics._write_eligibility_partition(
+        merged,
+        output,
+        dtype=counts.dtype,
+        partition=0,
+        minimum_observations=3,
+        root_seed=9,
+        batch_rows=16,
+    )
+    eligible = pq.read_table(output).to_pandas()
+    eligible = eligible.loc[eligible["group_type"] == rng_diagnostics._GROUP_MATCHUP]
+    assert {tuple(row) for row in eligible[["p0", "p1"]].to_numpy()} == {(1, 2), (1, 3)}
+
+    membership_dtype = rng_diagnostics._selection_key_dtype(2)
+    membership = np.empty(1, dtype=membership_dtype)
+    selected = matchups[matchups["p1"] == 2][0]
+    for name in membership_dtype.names or ():
+        membership[name] = selected[name]
+    membership.sort(order=list(membership_dtype.names or ()), kind="stable")
+    observations = rng_diagnostics._observation_records(arrays)
+    matchup_observations = observations[
+        observations["group_type"] == rng_diagnostics._GROUP_MATCHUP
+    ]
+    kept = matchup_observations[rng_diagnostics._membership_mask(matchup_observations, membership)]
+    assert kept.size == 3
+    assert set(zip(kept["p0"], kept["p1"], strict=True)) == {(1, 2)}
+
+
+def test_eligibility_error_preserves_primary_exception_and_removes_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    route_root = tmp_path / "route"
+    units = route_root / "units"
+    units.mkdir(parents=True)
+    dtype = rng_diagnostics._count_dtype(2)
+    record = np.zeros(1, dtype=dtype)
+    record["group_type"] = rng_diagnostics._GROUP_MATCHUP
+    record["k"] = 2
+    record["p0"] = 31
+    record["p1"] = 13
+    record["group_id"] = rng_diagnostics._matchup_ids(
+        np.array([2], dtype=np.int16), np.array([[13, 31]], dtype=np.int32)
+    )
+    record["count"] = 1
+    schema = rng_diagnostics._count_arrow_schema(2)
+    route_path = units / "row-group-00000.arrow"
+    with route_path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
+        writer.write_batch(rng_diagnostics._count_records_to_batch(record, schema))
+
+    created: list[Path] = []
+    real_temporary_directory = TemporaryDirectory
+
+    class TrackingTemporaryDirectory(TemporaryDirectory[str]):
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            super().__init__(*args, **kwargs)
+            created.append(Path(self.name))
+
+    monkeypatch.setattr(rng_diagnostics, "TemporaryDirectory", TrackingTemporaryDirectory)
+    writer = rng_diagnostics._EligibilityWriter(str(route_root), 1, 1, 2, 3, 9, 16)
+    failed_output = tmp_path / "failed-output.parquet"
+    with pytest.raises(ValueError, match="not canonically ordered"):
+        writer(rng_diagnostics.PartitionedUnit((0,), "part-000.parquet"), failed_output)
+    failed_output.unlink()
+    assert created and all(not path.exists() for path in created)
+
+    record["p0"] = 13
+    record["p1"] = 31
+    with route_path.open("wb") as handle, ipc.new_file(handle, schema) as route_writer:
+        route_writer.write_batch(rng_diagnostics._count_records_to_batch(record, schema))
+    success_output = tmp_path / "success-output.parquet"
+    writer(rng_diagnostics.PartitionedUnit((0,), "part-000.parquet"), success_output)
+    assert pq.read_metadata(success_output).num_rows == 1
+    success_output.unlink()
+    assert all(not path.exists() for path in created)
+
+    class CleanupFailsAfterRemoval(real_temporary_directory[str]):
+        def cleanup(self) -> None:
+            super().cleanup()
+            raise PermissionError("synthetic cleanup failure")
+
+    monkeypatch.setattr(rng_diagnostics, "TemporaryDirectory", CleanupFailsAfterRemoval)
+    with (
+        pytest.raises(ValueError, match="primary eligibility error"),
+        rng_diagnostics._temporary_workspace(prefix="rng-primary-error-"),
+    ):
+        raise ValueError("primary eligibility error")
+
+
 def test_small_fixture_matches_legacy_statistics_where_semantics_are_retained(
     tmp_path: Path,
 ) -> None:
@@ -159,11 +311,15 @@ def test_small_fixture_matches_legacy_statistics_where_semantics_are_retained(
     assert matchup["strategy"].isna().all()
     assert set(matchup["metric"]) == {"n_rounds"}
     assert len(matchup) == 2
+    sidecar = json.loads(
+        sidecar_path(cfg.rng_output_path("rng_diagnostics.parquet")).read_text(encoding="utf-8")
+    )
+    assert "participant_strategy_ids" in sidecar["method_contract"]["grouping_keys"]
 
 
 def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path) -> None:
     table = _curated_table(root_seed=9, matchups=[(1, 2)] * 9 + [(1, 3)] * 9)
-    serial = _config_with_input(tmp_path, name="serial", table=table, partitions=2, workers=1)
+    serial = _config_with_input(tmp_path, name="serial", table=table, partitions=4, workers=1)
     parallel = _config_with_input(tmp_path, name="parallel", table=table, partitions=4, workers=2)
 
     rng_diagnostics.run(serial)
@@ -176,6 +332,51 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
         rtol=1e-15,
         atol=1e-15,
     )
+    assert (
+        serial.rng_output_path("rng_diagnostics.parquet").read_bytes()
+        == parallel.rng_output_path("rng_diagnostics.parquet").read_bytes()
+    )
+    assert (
+        serial.rng_output_path("rng_group_selection.parquet").read_bytes()
+        == parallel.rng_output_path("rng_group_selection.parquet").read_bytes()
+    )
+
+
+def test_merge_memmaps_are_closed_after_success_and_failure(tmp_path: Path) -> None:
+    count_dtype = rng_diagnostics._count_dtype(2)
+    count_input = tmp_path / "count-input.bin"
+    count_output = tmp_path / "count-output.bin"
+    counts = np.zeros(2, dtype=count_dtype)
+    counts["group_type"] = rng_diagnostics._GROUP_STRATEGY
+    counts["k"] = 2
+    counts["group_id"] = [1, 2]
+    counts["p0"] = -1
+    counts["p1"] = -1
+    counts["count"] = 1
+    counts.tofile(count_input)
+    rng_diagnostics._merge_count_files([count_input], count_output, count_dtype)
+    count_input.unlink()
+    count_output.unlink()
+
+    observation_dtype = rng_diagnostics._observation_dtype(2)
+    observation_input_a = tmp_path / "observation-a.bin"
+    observation_input_b = tmp_path / "observation-b.bin"
+    observation_output = tmp_path / "observation-output.bin"
+    observation = np.zeros(1, dtype=observation_dtype)
+    observation["group_type"] = rng_diagnostics._GROUP_STRATEGY
+    observation["k"] = 2
+    observation["group_id"] = 1
+    observation["p0"] = -1
+    observation["p1"] = -1
+    observation.tofile(observation_input_a)
+    observation.tofile(observation_input_b)
+    with pytest.raises(ValueError, match="duplicate RNG diagnostic semantic observation"):
+        rng_diagnostics._merge_observation_files(
+            [observation_input_a, observation_input_b], observation_output, observation_dtype
+        )
+    observation_input_a.unlink()
+    observation_input_b.unlink()
+    observation_output.unlink()
 
 
 def test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion(
@@ -298,6 +499,15 @@ def test_sparse_high_cardinality_stays_bounded_and_resumes_after_interruption(
     checkpoint_root = next((cfg.rng_stage_dir / "checkpoints").iterdir()) / "02_eligibility"
     completed_before_resume = list((checkpoint_root / "units").glob("*.unit.done.json"))
     assert completed_before_resume
+    assert not (checkpoint_root / "units" / "part-003.parquet.unit.done.json").exists()
+    completed_mtimes = {
+        stamp.name.removesuffix(".unit.done.json"): (
+            checkpoint_root / "units" / stamp.name.removesuffix(".unit.done.json")
+        )
+        .stat()
+        .st_mtime_ns
+        for stamp in completed_before_resume
+    }
     assert not (checkpoint_root / "partition_manifest.jsonl").exists()
 
     monkeypatch.setattr(rng_diagnostics._EligibilityWriter, "__call__", original)
@@ -307,6 +517,10 @@ def test_sparse_high_cardinality_stays_bounded_and_resumes_after_interruption(
     )
     assert summary["total_candidate_group_count"] == 36_000
     assert summary["selected_group_count"] == 0
+    assert all(
+        (checkpoint_root / "units" / name).stat().st_mtime_ns == modified
+        for name, modified in completed_mtimes.items()
+    )
     assert (
         summary["peak_sampled_process_tree_rss_mb"] < cfg.resources.aggregate_memory_hard_limit_mb
     )
