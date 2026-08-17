@@ -197,6 +197,104 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     worker_policy = health["resource_telemetry"]["worker_policy"]
     assert worker_policy["simulation"]["requested_n_jobs"] is None
     assert worker_policy["simulation"]["effective_n_jobs"] == 1
+    timing = health["timing_summary"]
+    assert timing["schema_version"] == 1
+    assert timing["heartbeat_interval_seconds"] == 45.0
+    phase_names = {phase["stage"] for phase in timing["pair"]["finalization_phases"]}
+    assert {
+        "pair_analysis",
+        "pair_state_recheck",
+        "root_11_lifecycle_recheck",
+        "root_22_lifecycle_recheck",
+        "resource_final_check",
+    }.issubset(phase_names)
+    assert timing["pair"]["post_summary_phases"] == [
+        "pipeline_health_publish",
+        "run_end_manifest_publish",
+    ]
+
+
+def test_pipeline_health_is_not_rewritten_for_heartbeats(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda *_args, **_kwargs: None,
+    )
+    writes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_write_pipeline_health",
+        lambda _path, payload: writes.append(dict(payload)),
+    )
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert len(writes) == 2
+    assert writes[0]["status"] == "running"
+    assert "timing_summary" not in writes[0]
+    assert writes[1]["status"] == "complete_success"
+    assert "timing_summary" in writes[1]
+
+
+def test_final_release_gate_names_each_context_and_graph_audit_phase(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first = _context(tmp_path, 11)
+    second = _context(tmp_path, 22)
+    pair = RootPairRunContext.from_root_contexts(
+        (first, second),
+        pair_root=tmp_path / "pair",
+    )
+    for context in (first, second, pair):
+        context.run_context_path.parent.mkdir(parents=True, exist_ok=True)
+        context.run_context_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "load_run_context",
+        lambda *_args, **_kwargs: {"run_context_sha256": "b" * 64},
+    )
+    monkeypatch.setattr(two_seed_pipeline, "audit_sidecar_completeness", lambda _root: [])
+    phases: list[str] = []
+
+    def run_phase(name: str, action):
+        phases.append(name)
+        return action()
+
+    result = two_seed_pipeline._final_release_gate(
+        {
+            11: two_seed_pipeline._SeedRunStatus(11, first, True, True),
+            22: two_seed_pipeline._SeedRunStatus(22, second, True, True),
+        },
+        pair,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+        allow_oracle_code_identity=False,
+        phase_runner=run_phase,
+    )
+
+    assert result["status"] == "passed"
+    assert phases == [
+        "run_context_authenticate_root_11",
+        "graph_audit_root_11",
+        "run_context_authenticate_root_22",
+        "graph_audit_root_22",
+        "run_context_authenticate_pair",
+        "graph_audit_pair",
+    ]
 
 
 def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(

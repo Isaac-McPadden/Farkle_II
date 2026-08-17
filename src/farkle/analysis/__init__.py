@@ -9,12 +9,18 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Sequence
 
-from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+from farkle.analysis.stage_runner import (
+    StagePlanItem,
+    StageRunContext,
+    StageRunner,
+    StageRunResult,
+)
 from farkle.config import AppConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import resolve_resource_policy
 from farkle.utils.stage_completion import stage_done_path
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder
 
 if TYPE_CHECKING:
     from farkle.simulation.game_profile import GameProfile
@@ -386,10 +392,11 @@ def _run_plan(
     run_label: str,
     execution_scope: str,
     manifest_path: Path | None = None,
-) -> None:
+    telemetry: SupervisorHeartbeatRecorder | None = None,
+) -> StageRunResult:
     path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
     metadata = _manifest_metadata(cfg, execution_scope=execution_scope)
-    StageRunner.run(
+    return StageRunner.run(
         plan,
         StageRunContext(
             config=cfg,
@@ -399,6 +406,7 @@ def _run_plan(
             run_end_metadata=metadata,
             continue_on_error=False,
             logger=LOGGER,
+            telemetry=telemetry,
         ),
         raise_on_failure=True,
     )
@@ -411,10 +419,11 @@ def run_root_analysis(
     manifest_path: Path | None = None,
     rng_lags: Sequence[int] | None = None,
     run_rng_diagnostics: bool | None = None,
-) -> None:
+    telemetry: SupervisorHeartbeatRecorder | None = None,
+) -> StageRunResult:
     """Run one root through screening and diagnostics, then stop."""
 
-    _run_plan(
+    return _run_plan(
         cfg,
         build_root_stage_plan(
             cfg,
@@ -425,6 +434,7 @@ def run_root_analysis(
         run_label=f"root_workflow_{cfg.sim.seed}",
         execution_scope="root",
         manifest_path=manifest_path,
+        telemetry=telemetry,
     )
 
 
@@ -465,10 +475,11 @@ def run_root_pair_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
     oracle_game_profile: GameProfile | None = None,
-) -> None:
+    telemetry: SupervisorHeartbeatRecorder | None = None,
+) -> StageRunResult:
     """Run the root-pair workflow exactly once at the pair analysis root."""
 
-    _run_plan(
+    return _run_plan(
         context.config,
         build_root_pair_stage_plan(
             context,
@@ -478,6 +489,7 @@ def run_root_pair_analysis(
         run_label=f"root_pair_workflow_{context.root_pair[0]}_{context.root_pair[1]}",
         execution_scope="root_pair",
         manifest_path=manifest_path,
+        telemetry=telemetry,
     )
 
 

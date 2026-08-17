@@ -480,6 +480,44 @@ class ProcessTreeMemoryGuard:
             time.sleep(min(self.sample_interval_seconds, self.high_water_timeout_seconds - elapsed))
             force = True
 
+    def snapshot(self) -> dict[str, object]:
+        """Return current resource telemetry without changing admission state."""
+
+        with self._lock:
+            rss = self.last_rss_bytes
+            peak_rss = self.peak_rss_bytes
+            native_threads = self.last_native_threads
+            peak_native_threads = self.peak_native_threads
+            aggregate_memory = self.last_aggregate_memory_bytes
+            peak_aggregate_memory = self.peak_aggregate_memory_bytes
+            aggregate_source = self.aggregate_memory_source
+            aggregate_limit = (
+                self.aggregate_hard_limit_bytes
+                or self.aggregate_hard_limit_mb * 1024 * 1024
+            )
+            warning_crossings = self.warning_crossings
+            backpressure_seconds = self.backpressure_seconds
+            monitoring_error = self.monitoring_error
+        return {
+            "process_tree_rss_bytes": int(rss),
+            "peak_process_tree_rss_bytes": int(peak_rss),
+            "native_threads": int(native_threads),
+            "peak_native_threads": int(peak_native_threads),
+            "aggregate_memory_bytes": int(aggregate_memory),
+            "peak_aggregate_memory_bytes": int(peak_aggregate_memory),
+            "aggregate_memory_hard_limit_bytes": int(aggregate_limit),
+            "aggregate_memory_source": aggregate_source,
+            "host_available_memory_bytes": int(psutil.virtual_memory().available),
+            "warning_crossings": int(warning_crossings),
+            "backpressure_seconds": float(backpressure_seconds),
+            "near_hard_boundary": bool(
+                aggregate_limit
+                and aggregate_memory
+                and aggregate_memory >= int(aggregate_limit * 0.95)
+            ),
+            "monitoring_error": monitoring_error,
+        }
+
 
 def process_tree_rss_bytes(pid: int | None = None) -> int:
     """Return RSS for one process and all recursively reachable children."""

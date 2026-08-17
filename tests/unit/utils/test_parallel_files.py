@@ -574,6 +574,45 @@ def test_process_tree_guard_enforces_system_available_reserve(
         guard.check_before_schedule(force=True)
 
 
+def test_process_tree_guard_snapshot_is_read_only(monkeypatch: MonkeyPatch) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(aggregate_hard_limit_mb=2304, rss_warning_mb=768)
+    guard.last_rss_bytes = 100
+    guard.peak_rss_bytes = 200
+    guard.last_native_threads = 3
+    guard.peak_native_threads = 5
+    guard.last_aggregate_memory_bytes = 300
+    guard.peak_aggregate_memory_bytes = 400
+    guard.aggregate_memory_source = "test-job"
+    guard.aggregate_hard_limit_bytes = 1_000
+    guard.warning_crossings = 2
+    guard.backpressure_seconds = 1.5
+    monkeypatch.setattr(
+        parallel.psutil,
+        "virtual_memory",
+        lambda: type("Memory", (), {"available": 2_000})(),
+    )
+
+    snapshot = guard.snapshot()
+
+    assert snapshot == {
+        "process_tree_rss_bytes": 100,
+        "peak_process_tree_rss_bytes": 200,
+        "native_threads": 3,
+        "peak_native_threads": 5,
+        "aggregate_memory_bytes": 300,
+        "peak_aggregate_memory_bytes": 400,
+        "aggregate_memory_hard_limit_bytes": 1_000,
+        "aggregate_memory_source": "test-job",
+        "host_available_memory_bytes": 2_000,
+        "warning_crossings": 2,
+        "backpressure_seconds": 1.5,
+        "near_hard_boundary": False,
+        "monitoring_error": None,
+    }
+    assert guard.last_rss_bytes == 100
+    assert guard.warning_crossings == 2
+
+
 def test_process_tree_memory_warning_backpressures_until_memory_recedes(
     monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

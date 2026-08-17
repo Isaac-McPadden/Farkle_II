@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any, Sequence, cast
+from typing import Any, Callable, Sequence, TypeVar, cast
 
 from farkle import analysis
 from farkle.analysis.release_audit import audit_sidecar_completeness
-from farkle.analysis.stage_runner import StageRunContext, StageRunner
+from farkle.analysis.stage_runner import StageRunContext, StageRunner, StageRunResult
 from farkle.config import AppConfig, assign_config_sha
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
@@ -55,9 +57,14 @@ from farkle.utils.parallel import (
     resolve_stage_parallel_policy,
 )
 from farkle.utils.stage_completion import CompletionState, freshness_sha256, resolve_stage_state
+from farkle.utils.telemetry import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    SupervisorHeartbeatRecorder,
+)
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,43 @@ class _SeedRunStatus:
     lifecycle_sha256: str | None = None
     stage_states: dict[str, str] | None = None
     failure_classification: str | None = None
+    simulation_timing: dict[str, object] | None = None
+    analysis_stage_timings: tuple[dict[str, object], ...] = ()
+    initial_lifecycle_timing: dict[str, object] | None = None
+
+
+def _run_timed_phase(
+    recorder: SupervisorHeartbeatRecorder,
+    summaries: list[dict[str, object]],
+    *,
+    name: str,
+    action: Callable[[], _T],
+    run: str = "two_seed_pipeline",
+    state: str = "working",
+) -> _T:
+    """Run one named parent phase and retain its final operational summary."""
+
+    scope = recorder.begin_scope(
+        name,
+        run=run,
+        stage=name,
+        phase=name,
+        state=state,
+    )
+    status = "success"
+    try:
+        return action()
+    except BaseException:
+        status = "failed"
+        raise
+    finally:
+        summaries.append(scope.finish(status=status).as_metadata())
+
+
+def _stage_timing_metadata(result: StageRunResult | None) -> tuple[dict[str, object], ...]:
+    if result is None:
+        return ()
+    return tuple(summary.as_metadata() for summary in result.stage_timings)
 
 
 @dataclass(frozen=True)
@@ -306,13 +350,14 @@ def _run_per_seed_analysis(
     seed: int,
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
-) -> None:
+    telemetry: SupervisorHeartbeatRecorder | None = None,
+) -> StageRunResult:
     """Execute a root workflow that ends after screening and diagnostics."""
 
     apply_native_thread_limits(policy_bundle.analysis)
     manifest_path = cfg.analysis_dir / cfg.manifest_name
     plan = analysis.build_root_stage_plan(cfg, force=force)
-    StageRunner.run(
+    return StageRunner.run(
         plan,
         StageRunContext(
             config=cfg,
@@ -328,6 +373,7 @@ def _run_per_seed_analysis(
             run_end_metadata={"execution_scope": "root"},
             continue_on_error=False,
             logger=LOGGER,
+            telemetry=telemetry,
         ),
         raise_on_failure=True,
     )
@@ -343,9 +389,16 @@ def _run_one_seed(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
     code_identity: CodeIdentity,
+    telemetry: SupervisorHeartbeatRecorder | None = None,
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
 ) -> _SeedRunStatus:
+    if telemetry is None:
+        telemetry = SupervisorHeartbeatRecorder(
+            LOGGER,
+            run=f"root_{seed}",
+            interval_seconds=0.0,
+        )
     root_cfg = _build_seed_cfg(
         cfg,
         seed_pair=seed_pair,
@@ -364,10 +417,11 @@ def _run_one_seed(
     )
     write_active_config(root_cfg)
     apply_native_thread_limits(policy_bundle.simulation)
+    root_timings: list[dict[str, object]] = []
     try:
-        if not force and seed_has_completion_markers(root_cfg):
-            simulation_event = "root_simulation_skipped_complete"
-        else:
+        def run_simulation() -> str:
+            if not force and seed_has_completion_markers(root_cfg):
+                return "root_simulation_skipped_complete"
             if oracle_game_profile is None:
                 runner.run_tournament(root_cfg, force=force)
             else:
@@ -376,7 +430,15 @@ def _run_one_seed(
                     force=force,
                     oracle_game_profile=oracle_game_profile,
                 )
-            simulation_event = "root_simulation_complete"
+            return "root_simulation_complete"
+
+        simulation_event = _run_timed_phase(
+            telemetry,
+            root_timings,
+            name=f"root_{seed}_simulation",
+            run=f"root_{seed}",
+            action=run_simulation,
+        )
         append_manifest_event(
             manifest_path,
             {"event": simulation_event, "root_seed": seed},
@@ -393,13 +455,21 @@ def _run_one_seed(
             analysis_ok=False,
             simulation_error=error,
             failure_classification=classification or "non_resource_failure",
+            simulation_timing=root_timings[0] if root_timings else None,
         )
     try:
-        _run_per_seed_analysis(
-            root_cfg,
-            seed=seed,
-            force=force,
-            policy_bundle=policy_bundle,
+        analysis_result = _run_timed_phase(
+            telemetry,
+            root_timings,
+            name=f"root_{seed}_analysis",
+            run=f"root_{seed}",
+            action=lambda: _run_per_seed_analysis(
+                root_cfg,
+                seed=seed,
+                force=force,
+                policy_bundle=policy_bundle,
+                telemetry=telemetry,
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         classification = classify_resource_exception(exc)
@@ -410,9 +480,17 @@ def _run_one_seed(
             analysis_ok=False,
             analysis_error=f"{type(exc).__name__}: {exc}",
             failure_classification=classification or "non_resource_failure",
+            simulation_timing=root_timings[0] if root_timings else None,
         )
     plan = analysis.build_root_stage_plan(root_cfg, force=False)
-    lifecycle_sha, stage_states = _root_lifecycle_identity(context, plan)
+    lifecycle_sha, stage_states = _run_timed_phase(
+        telemetry,
+        root_timings,
+        name=f"root_{seed}_initial_lifecycle",
+        run=f"root_{seed}",
+        state="authenticating",
+        action=lambda: _root_lifecycle_identity(context, plan),
+    )
     if lifecycle_sha is None:
         return _SeedRunStatus(
             seed=seed,
@@ -422,6 +500,9 @@ def _run_one_seed(
             analysis_error="root workflow contains stale or incomplete canonical stages",
             stage_states=stage_states,
             failure_classification="non_resource_failure",
+            simulation_timing=root_timings[0] if root_timings else None,
+            analysis_stage_timings=_stage_timing_metadata(analysis_result),
+            initial_lifecycle_timing=root_timings[-1] if root_timings else None,
         )
     return _SeedRunStatus(
         seed=seed,
@@ -430,6 +511,9 @@ def _run_one_seed(
         analysis_ok=True,
         lifecycle_sha256=lifecycle_sha,
         stage_states=stage_states,
+        simulation_timing=root_timings[0] if root_timings else None,
+        analysis_stage_timings=_stage_timing_metadata(analysis_result),
+        initial_lifecycle_timing=root_timings[-1] if root_timings else None,
     )
 
 
@@ -448,6 +532,7 @@ def _final_release_gate(
     *,
     code_identity: CodeIdentity,
     allow_oracle_code_identity: bool,
+    phase_runner: Callable[[str, Callable[[], Any]], Any] | None = None,
 ) -> dict[str, Any]:
     """Authenticate run contexts and every canonical descendant before success."""
 
@@ -457,12 +542,22 @@ def _final_release_gate(
     ]
     contexts.append(pair_context)
     run_contexts: dict[str, dict[str, str]] = {}
+
+    def run_phase(name: str, action: Callable[[], _T]) -> _T:
+        if phase_runner is None:
+            return action()
+        return cast(_T, phase_runner(name, action))
+
     for context in contexts:
         label = "pair" if isinstance(context, RootPairRunContext) else f"root_{int(context.seed)}"
         try:
-            persisted = load_run_context(
-                context.run_context_path,
-                active_config_path=context.active_config_path,
+            persisted = run_phase(
+                f"run_context_authenticate_{label}",
+                partial(
+                    load_run_context,
+                    context.run_context_path,
+                    active_config_path=context.active_config_path,
+                ),
             )
             run_contexts[label] = {
                 "path": str(context.run_context_path),
@@ -471,7 +566,11 @@ def _final_release_gate(
             }
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{label} run context: {type(exc).__name__}: {exc}")
-        for failure in audit_sidecar_completeness(context.analysis_root):
+        audit_failures = run_phase(
+            f"graph_audit_{label}",
+            partial(audit_sidecar_completeness, context.analysis_root),
+        )
+        for failure in audit_failures:
             failures.append(f"{label} authenticated graph: {failure}")
     release_eligible = (
         code_identity.policy == CodeIdentityPolicy.RELEASE_CLEAN.value
@@ -495,13 +594,15 @@ def _final_release_gate(
     }
 
 
-def run_pipeline(
+def _run_pipeline_observed(
     cfg: AppConfig,
     *,
     seed_pair: tuple[int, int],
     force: bool = False,
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
+    memory_guard: ProcessTreeMemoryGuard,
+    telemetry: SupervisorHeartbeatRecorder,
 ) -> None:
     """Run both roots, then combination, H2H, agreement, and reporting once."""
 
@@ -539,12 +640,6 @@ def run_pipeline(
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
     validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
     boundary_provenance = memory_boundary_provenance(cfg.resources)
@@ -581,6 +676,9 @@ def run_pipeline(
         run_id=run_id,
         config_sha=cfg.config_sha,
     )
+    pipeline_started_at = time.monotonic()
+    finalization_timings: list[dict[str, object]] = []
+    pair_stage_timings: tuple[dict[str, object], ...] = ()
     if cfg.orchestration.parallel_seeds:
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {}
@@ -596,6 +694,7 @@ def run_pipeline(
                     force=force,
                     policy_bundle=policy_bundle,
                     code_identity=code_identity,
+                    telemetry=telemetry,
                     cli_overrides=cli_overrides,
                     oracle_game_profile=oracle_game_profile,
                 )
@@ -613,6 +712,7 @@ def run_pipeline(
                 force=force,
                 policy_bundle=policy_bundle,
                 code_identity=code_identity,
+                telemetry=telemetry,
                 cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,
             )
@@ -693,20 +793,34 @@ def run_pipeline(
         write_active_config(pair_context.config, dest_dir=pair_root)
         apply_native_thread_limits(policy_bundle.analysis)
         try:
-            analysis.run_root_pair_analysis(
-                pair_context,
-                force=force,
-                manifest_path=manifest_path,
-                oracle_game_profile=oracle_game_profile,
+            pair_result = _run_timed_phase(
+                telemetry,
+                finalization_timings,
+                name="pair_analysis",
+                run=f"root_pair_{seed_pair[0]}_{seed_pair[1]}",
+                action=lambda: analysis.run_root_pair_analysis(
+                    pair_context,
+                    force=force,
+                    manifest_path=manifest_path,
+                    oracle_game_profile=oracle_game_profile,
+                    telemetry=telemetry,
+                ),
             )
+            pair_stage_timings = _stage_timing_metadata(pair_result)
         except Exception as exc:  # noqa: BLE001
             pair_error = f"{type(exc).__name__}: {exc}"
             pair_failure_classification = classify_resource_exception(exc) or "non_resource_failure"
     pair_stage_states: dict[str, str] = {}
     if pair_context is not None and pair_error is None:
-        pair_stage_states = _current_plan_states(
-            pair_context.config,
-            analysis.build_root_pair_stage_plan(pair_context, force=False),
+        pair_stage_states = _run_timed_phase(
+            telemetry,
+            finalization_timings,
+            name="pair_state_recheck",
+            state="authenticating",
+            action=lambda: _current_plan_states(
+                pair_context.config,
+                analysis.build_root_pair_stage_plan(pair_context, force=False),
+            ),
         )
         if any(
             value != CompletionState.COMPLETE_VALID.value for value in pair_stage_states.values()
@@ -715,9 +829,17 @@ def run_pipeline(
     for seed, result in root_results.items():
         if not result.simulation_ok or not result.analysis_ok:
             continue
-        current_lifecycle, current_states = _root_lifecycle_identity(
-            result.context,
-            analysis.build_root_stage_plan(result.context.config, force=False),
+        lifecycle_plan = analysis.build_root_stage_plan(result.context.config, force=False)
+        current_lifecycle, current_states = _run_timed_phase(
+            telemetry,
+            finalization_timings,
+            name=f"root_{seed}_lifecycle_recheck",
+            state="authenticating",
+            action=partial(
+                _root_lifecycle_identity,
+                result.context,
+                lifecycle_plan,
+            ),
         )
         root_health[str(seed)]["lifecycle_sha256"] = current_lifecycle
         root_health[str(seed)]["stage_states"] = current_states
@@ -745,11 +867,24 @@ def run_pipeline(
             pair_context,
             code_identity=code_identity,
             allow_oracle_code_identity=oracle_game_profile is not None,
+            phase_runner=lambda name, action: _run_timed_phase(
+                telemetry,
+                finalization_timings,
+                name=name,
+                state="authenticating",
+                action=action,
+            ),
         )
         if release_audit["status"] != "passed":
             pair_error = "final release audit failed: " + str(release_audit["failures"][0])
     try:
-        memory_guard.check_before_schedule(force=True)
+        _run_timed_phase(
+            telemetry,
+            finalization_timings,
+            name="resource_final_check",
+            state="authenticating",
+            action=lambda: memory_guard.check_before_schedule(force=True),
+        )
     except ResourceSafetyError as exc:
         pair_error = pair_error or f"process-tree resource safety: {exc}"
         pair_failure_classification = pair_failure_classification or (
@@ -771,6 +906,28 @@ def run_pipeline(
         if not root_failures and pair_error is None
         else ("resource_failure" if resource_classifications else "failed")
     )
+    timing_summary = {
+        "schema_version": 1,
+        "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+        "run_elapsed_seconds": max(0.0, time.monotonic() - pipeline_started_at),
+        "roots": {
+            str(seed): {
+                "simulation": result.simulation_timing,
+                "analysis_stages": list(result.analysis_stage_timings),
+                "initial_lifecycle": result.initial_lifecycle_timing,
+            }
+            for seed, result in sorted(root_results.items())
+        },
+        "pair": {
+            "analysis_stages": list(pair_stage_timings),
+            "finalization_phases": list(finalization_timings),
+            "post_summary_phases": [
+                "pipeline_health_publish",
+                "run_end_manifest_publish",
+            ],
+        },
+        "telemetry": telemetry.summary(),
+    }
     health = {
         "seed_pair": list(seed_pair),
         "status": overall_status,
@@ -811,17 +968,38 @@ def run_pipeline(
                 pair_context.config._run_lineage_sha256 if pair_context is not None else None
             ),
         },
+        "timing_summary": timing_summary,
     }
-    _write_pipeline_health(health_path, health)
-    append_manifest_event(
-        manifest_path,
-        {
-            "event": EVENT_RUN_END,
-            "status": overall_status,
-            "health_artifact": str(health_path),
+    _run_timed_phase(
+        telemetry,
+        finalization_timings,
+        name="pipeline_health_publish",
+        state="publishing",
+        action=lambda: _write_pipeline_health(health_path, health),
+    )
+    _run_timed_phase(
+        telemetry,
+        finalization_timings,
+        name="run_end_manifest_publish",
+        state="publishing",
+        action=lambda: append_manifest_event(
+            manifest_path,
+            {
+                "event": EVENT_RUN_END,
+                "status": overall_status,
+                "health_artifact": str(health_path),
+            },
+            run_id=run_id,
+            config_sha=cfg.config_sha,
+        ),
+    )
+    LOGGER.info(
+        "Pipeline finalization timing summary",
+        extra={
+            "telemetry_kind": "timing_summary",
+            "run": f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}",
+            "finalization_phases": finalization_timings,
         },
-        run_id=run_id,
-        config_sha=cfg.config_sha,
     )
     if root_failures or pair_error is not None:
         if resource_classifications:
@@ -829,6 +1007,51 @@ def run_pipeline(
                 str(resource_classifications[0]), pair_error or root_failures[0]
             )
         raise RuntimeError(pair_error or root_failures[0])
+
+
+def run_pipeline(
+    cfg: AppConfig,
+    *,
+    seed_pair: tuple[int, int],
+    force: bool = False,
+    cli_overrides: tuple[str, ...] = (),
+    oracle_game_profile: GameProfile | None = None,
+) -> None:
+    """Run the two-root pipeline under one parent-owned heartbeat recorder."""
+
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.aggregate_memory_hard_limit_mb,
+        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
+        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
+        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
+    )
+    telemetry = SupervisorHeartbeatRecorder(
+        LOGGER,
+        run=f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}",
+        interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
+        resource_sampler=memory_guard.snapshot,
+    )
+    try:
+        _run_pipeline_observed(
+            cfg,
+            seed_pair=seed_pair,
+            force=force,
+            cli_overrides=cli_overrides,
+            oracle_game_profile=oracle_game_profile,
+            memory_guard=memory_guard,
+            telemetry=telemetry,
+        )
+    finally:
+        cleanup_seconds = telemetry.close()
+        LOGGER.info(
+            "Pipeline telemetry stopped",
+            extra={
+                "telemetry_kind": "telemetry_cleanup",
+                "run": f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}",
+                "cleanup_seconds": cleanup_seconds,
+                **telemetry.summary(),
+            },
+        )
 
 
 __all__ = ["run_pipeline"]
