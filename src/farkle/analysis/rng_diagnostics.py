@@ -68,6 +68,11 @@ from farkle.utils.stage_completion import (
     stage_done_path,
     write_stage_done,
 )
+from farkle.utils.telemetry import (
+    current_supervisor_recorder,
+    current_supervisor_scope,
+    report_worker_progress,
+)
 from farkle.utils.writer import ParquetShardWriter
 
 LOGGER = logging.getLogger(__name__)
@@ -257,6 +262,14 @@ class _EligibilityWriter:
                         run = temp / f"run-{len(runs):06d}.bin"
                         _reduce_count_array(_count_batch_to_records(batch, dtype)).tofile(run)
                         runs.append(run)
+            report_worker_progress(
+                "rng_count_spill_complete",
+                counters={
+                    "spill_runs_created": len(runs),
+                    "spill_bytes_written": _safe_file_bytes(runs),
+                    "route_units_scanned": self.count_route_units,
+                },
+            )
             merged = _collapse_count_runs(runs, temp, dtype)
             _write_eligibility_partition(
                 merged,
@@ -345,6 +358,14 @@ class _StatsPartitionWriter:
                         records = _observation_batch_to_records(batch, dtype)
                         records[_observation_sort_order(records)].tofile(run)
                         runs.append(run)
+            report_worker_progress(
+                "rng_stats_spill_complete",
+                counters={
+                    "spill_runs_created": len(runs),
+                    "spill_bytes_written": _safe_file_bytes(runs),
+                    "route_units_scanned": self.stats_route_units,
+                },
+            )
             merged = _collapse_observation_runs(runs, temp, dtype)
             _write_stats_partition(
                 merged,
@@ -360,6 +381,10 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
     stage_log.start()
+    recorder = current_supervisor_recorder()
+    scope = current_supervisor_scope()
+    if scope is not None:
+        scope.update(phase="rng_source_preparation", state="authenticating")
     policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
     pa.set_cpu_count(policy.arrow_threads)
@@ -411,6 +436,32 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         LOGGER.info(
             "rng-diagnostics: current authenticated result reused", extra={"state": state.value}
         )
+        if recorder is not None and scope is not None:
+            summary: dict[str, object] = {
+                "completion_status": state.value,
+                "reconciled_from": "authenticated_stage_completion",
+            }
+            try:
+                persisted = json.loads(summary_file.read_text(encoding="utf-8"))
+                for key in (
+                    "partition_count",
+                    "normalized_lags",
+                    "total_candidate_group_count",
+                    "eligible_group_count",
+                    "selected_group_count",
+                    "tracked_matchup_group_count",
+                    "skipped_matchup_group_count",
+                    "skipped_matchup_row_count",
+                ):
+                    if key in persisted:
+                        summary[key] = persisted[key]
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+            recorder.record_completion_summary(
+                f"{scope.scope}:rng_diagnostics",
+                stage="rng_diagnostics",
+                summary=summary,
+            )
         return
 
     with pq.ParquetFile(data_partitions[0]) as parquet:
@@ -485,6 +536,8 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
+        progress_total_units=row_groups,
+        progress_phase="rng_count_route",
     )
 
     eligibility_root = stage_root / "02_eligibility"
@@ -512,8 +565,21 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
+        progress_total_units=partitions,
+        progress_phase="rng_eligibility_reduce",
+        enable_worker_progress=True,
     )
 
+    if scope is not None:
+        scope.update(
+            phase="rng_selection",
+            state="working",
+            progress={
+                "eligibility_partitions": eligibility.required_units,
+                "eligibility_reused": eligibility.reused_units,
+                "eligibility_completed": eligibility.completed_units,
+            },
+        )
     selection_report = _write_or_reuse_selection(
         cfg,
         eligibility_root=eligibility_root,
@@ -530,6 +596,20 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         force=force,
         guard=guard,
     )
+    if scope is not None:
+        scope.update(
+            phase="rng_selection_complete",
+            state="working",
+            progress={
+                "candidate_groups": int(selection_report["total_candidate_groups"]),
+                "eligible_groups": int(selection_report["eligible_groups"]),
+                "selected_groups": int(selection_report["selected_groups"]),
+                "capped_groups": int(selection_report["deterministically_capped_groups"]),
+                "skipped_groups": int(
+                    selection_report["below_minimum_observation_groups"]
+                ),
+            },
+        )
     selection_sha = sha256_file(selection_file)
 
     stats_route_root = stage_root / "03_stats_route"
@@ -559,9 +639,17 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
+        progress_total_units=row_groups,
+        progress_phase="rng_stats_route",
     )
 
     stats_root = stage_root / "04_stats"
+    if scope is not None:
+        scope.update(
+            phase="rng_lag_reduce",
+            state="working",
+            progress={"lags": len(normalized_lags), "partitions": partitions},
+        )
     stats = run_partitioned_stage(
         root=stats_root,
         identity=_partition_identity(
@@ -585,9 +673,21 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
+        progress_total_units=partitions,
+        progress_phase="rng_lag_reduce",
+        enable_worker_progress=True,
     )
 
     guard.check_before_schedule(force=True)
+    if scope is not None:
+        scope.update(
+            phase="rng_output_construction",
+            state="publishing",
+            progress={
+                "stats_partitions": stats.required_units,
+                "lags": len(normalized_lags),
+            },
+        )
     capacity = _finalize_outputs(
         cfg,
         data_file=data_file,
@@ -613,6 +713,24 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         status=status,
         sidecar_artifacts=[out_file, summary_file],
     )
+    if recorder is not None and scope is not None:
+        recorder.record_completion_summary(
+            f"{scope.scope}:rng_diagnostics",
+            stage="rng_diagnostics",
+            summary={
+                "row_groups": row_groups,
+                "partitions": partitions,
+                "lags": len(normalized_lags),
+                "candidate_groups": capacity.total_candidate_group_count,
+                "eligible_groups": capacity.eligible_group_count,
+                "selected_groups": capacity.selected_group_count,
+                "tracked_matchup_groups": capacity.tracked_matchup_group_count,
+                "skipped_matchup_groups": capacity.skipped_matchup_group_count,
+                "skipped_matchup_rows": capacity.skipped_matchup_row_count,
+                "completion_status": capacity.completeness_status,
+                "reconciled_from": "authenticated_rng_outputs_and_partition_manifests",
+            },
+        )
     LOGGER.info(
         "rng-diagnostics: published",
         extra={
@@ -964,6 +1082,18 @@ def _close_memmap(array: np.ndarray) -> None:
         mapping.close()
 
 
+def _safe_file_bytes(paths: Sequence[Path]) -> int:
+    """Return best-effort operational spill volume without affecting computation."""
+
+    total = 0
+    for path in paths:
+        try:
+            total += int(path.stat().st_size)
+        except OSError:
+            continue
+    return total
+
+
 def _merge_count_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:
     fields = _count_key_fields(dtype)
     arrays: list[np.memmap] = []
@@ -1026,6 +1156,14 @@ def _collapse_count_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype[Any])
             output = temp / f"merge-{generation:03d}-{len(next_generation):05d}.bin"
             _merge_count_files(current[start : start + _RUN_MERGE_FAN_IN], output, dtype)
             next_generation.append(output)
+        report_worker_progress(
+            "rng_count_merge_pass",
+            counters={
+                "merge_passes_completed": 1,
+                "merge_runs_created": len(next_generation),
+                "merge_bytes_written": _safe_file_bytes(next_generation),
+            },
+        )
         current = next_generation
         generation += 1
     return current[0]
@@ -1603,6 +1741,14 @@ def _collapse_observation_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype
             output = temp / f"merge-{generation:03d}-{len(next_generation):05d}.bin"
             _merge_observation_files(current[start : start + _RUN_MERGE_FAN_IN], output, dtype)
             next_generation.append(output)
+        report_worker_progress(
+            "rng_stats_merge_pass",
+            counters={
+                "merge_passes_completed": 1,
+                "merge_runs_created": len(next_generation),
+                "merge_bytes_written": _safe_file_bytes(next_generation),
+            },
+        )
         current = next_generation
         generation += 1
     return current[0]

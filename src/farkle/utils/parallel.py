@@ -21,7 +21,7 @@ from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from multiprocessing.context import BaseContext
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import psutil
 from threadpoolctl import ThreadpoolController
@@ -344,6 +344,7 @@ class ProcessTreeMemoryGuard:
     high_water_timeout_seconds: float = 30.0
     last_aggregate_memory_bytes: int = 0
     peak_aggregate_memory_bytes: int = 0
+    last_aggregate_current_bytes: int | None = None
     aggregate_memory_source: str | None = None
     aggregate_hard_limit_bytes: int = 0
     monitoring_error: str | None = None
@@ -371,6 +372,14 @@ class ProcessTreeMemoryGuard:
                 self.last_aggregate_memory_bytes = int(observed)
                 self.peak_aggregate_memory_bytes = max(
                     self.peak_aggregate_memory_bytes, int(observed)
+                )
+            self.last_aggregate_current_bytes = (
+                int(sample.current_bytes) if sample.current_bytes is not None else None
+            )
+            if sample.peak_bytes is not None:
+                self.peak_aggregate_memory_bytes = max(
+                    self.peak_aggregate_memory_bytes,
+                    int(sample.peak_bytes),
                 )
 
     def _ensure_monitor(self) -> None:
@@ -489,6 +498,7 @@ class ProcessTreeMemoryGuard:
             native_threads = self.last_native_threads
             peak_native_threads = self.peak_native_threads
             aggregate_memory = self.last_aggregate_memory_bytes
+            aggregate_current = self.last_aggregate_current_bytes
             peak_aggregate_memory = self.peak_aggregate_memory_bytes
             aggregate_source = self.aggregate_memory_source
             aggregate_limit = (
@@ -496,6 +506,8 @@ class ProcessTreeMemoryGuard:
                 or self.aggregate_hard_limit_mb * 1024 * 1024
             )
             warning_crossings = self.warning_crossings
+            warning_active = self.warning_emitted
+            warning_threshold = self.rss_warning_mb
             backpressure_seconds = self.backpressure_seconds
             monitoring_error = self.monitoring_error
         return {
@@ -503,12 +515,22 @@ class ProcessTreeMemoryGuard:
             "peak_process_tree_rss_bytes": int(peak_rss),
             "native_threads": int(native_threads),
             "peak_native_threads": int(peak_native_threads),
-            "aggregate_memory_bytes": int(aggregate_memory),
+            "aggregate_memory_bytes": int(aggregate_current or 0),
+            "aggregate_memory_current_bytes": aggregate_current,
             "peak_aggregate_memory_bytes": int(peak_aggregate_memory),
+            "windows_job_committed_memory_peak_bytes": (
+                int(peak_aggregate_memory) if aggregate_source == "windows_job" else None
+            ),
             "aggregate_memory_hard_limit_bytes": int(aggregate_limit),
             "aggregate_memory_source": aggregate_source,
             "host_available_memory_bytes": int(psutil.virtual_memory().available),
             "warning_crossings": int(warning_crossings),
+            "rss_warning_active": bool(warning_active),
+            "rss_warning_threshold_bytes": (
+                int(warning_threshold * 1024 * 1024)
+                if warning_threshold is not None
+                else None
+            ),
             "backpressure_seconds": float(backpressure_seconds),
             "near_hard_boundary": bool(
                 aggregate_limit
@@ -772,11 +794,27 @@ def process_map(
     window=0,
     mp_context: BaseContext | None = None,
     memory_guard: ProcessTreeMemoryGuard | None = None,
+    progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ):
     """Map ``fn`` across ``items`` with optional multiprocessing support."""
+    progress_enabled = progress_callback is not None
+
+    def report(event: str, **values: object) -> None:
+        nonlocal progress_enabled
+        if not progress_enabled or progress_callback is None:
+            return
+        try:
+            progress_callback({"event": event, **values})
+        except BaseException:
+            # Operational progress is never part of execution control.
+            progress_enabled = False
+
     if initargs is None:
         initargs = ()
     resolved_jobs = normalize_n_jobs(n_jobs, default=1)
+    submitted = 0
+    completed = 0
+    report("pool_start", worker_count=resolved_jobs, window=max(1, int(window)))
     if resolved_jobs == 1:
         # Single-process path: still run initializer so modules relying on
         # per-process globals (e.g., run_tournament._STATE) are set up.
@@ -784,14 +822,28 @@ def process_map(
             initializer(*tuple(initargs))
         for it in items:
             if memory_guard is not None:
+                report("schedule_check", submitted=submitted, completed=completed, pending=0)
                 memory_guard.check_before_schedule()
+            submitted += 1
+            report("submitted", submitted=submitted, completed=completed, pending=1)
             try:
-                yield fn(it)
+                result = fn(it)
+                completed += 1
+                report("completed", submitted=submitted, completed=completed, pending=0)
+                yield result
             except BaseException as exc:
+                report(
+                    "worker_exception",
+                    submitted=submitted,
+                    completed=completed,
+                    pending=max(0, submitted - completed),
+                    exception_type=type(exc).__name__,
+                )
                 classification = classify_resource_exception(exc, memory_guard=memory_guard)
                 if classification is not None and not isinstance(exc, ResourceFailureError):
                     raise ResourceFailureError(classification, str(exc)) from exc
                 raise
+        report("pool_complete", submitted=submitted, completed=completed, pending=0)
         return
     if window <= 0:
         window = resolved_jobs * 4
@@ -803,31 +855,78 @@ def process_map(
         mp_context=mp_context,
     )
     clean_shutdown = False
-    futs = []
+    futs: list[Any] = []
     try:
         it = iter(items)
         # prefill the window
         for _ in range(window):
             try:
                 if memory_guard is not None:
+                    report(
+                        "schedule_check",
+                        submitted=submitted,
+                        completed=completed,
+                        pending=len(futs),
+                    )
                     memory_guard.check_before_schedule()
                 futs.append(executor.submit(fn, next(it)))
+                submitted += 1
+                report(
+                    "submitted",
+                    submitted=submitted,
+                    completed=completed,
+                    pending=len(futs),
+                )
             except StopIteration:
                 break
         while futs:
+            report(
+                "waiting_on_futures",
+                submitted=submitted,
+                completed=completed,
+                pending=len(futs),
+            )
             done = next(as_completed(futs))
             futs.remove(done)
             try:
-                yield done.result()
+                result = done.result()
+                completed += 1
+                report(
+                    "completed",
+                    submitted=submitted,
+                    completed=completed,
+                    pending=len(futs),
+                )
+                yield result
             except BaseException as exc:
+                report(
+                    "worker_exception",
+                    submitted=submitted,
+                    completed=completed,
+                    pending=len(futs),
+                    exception_type=type(exc).__name__,
+                )
                 classification = classify_resource_exception(exc, memory_guard=memory_guard)
                 if classification is not None and not isinstance(exc, ResourceFailureError):
                     raise ResourceFailureError(classification, str(exc)) from exc
                 raise
             with contextlib.suppress(StopIteration):
                 if memory_guard is not None:
+                    report(
+                        "schedule_check",
+                        submitted=submitted,
+                        completed=completed,
+                        pending=len(futs),
+                    )
                     memory_guard.check_before_schedule()
                 futs.append(executor.submit(fn, next(it)))
+                submitted += 1
+                report(
+                    "submitted",
+                    submitted=submitted,
+                    completed=completed,
+                    pending=len(futs),
+                )
         clean_shutdown = True
     except BaseException as exc:
         classification = classify_resource_exception(exc, memory_guard=memory_guard)
@@ -836,9 +935,17 @@ def process_map(
         raise
     finally:
         if not clean_shutdown:
+            report(
+                "cancelling",
+                submitted=submitted,
+                completed=completed,
+                pending=len(futs),
+            )
             cancel_pending_process_work(executor, futs)
+            report("cancelled", submitted=submitted, completed=completed, pending=0)
         else:
             executor.shutdown(wait=True, cancel_futures=False)
+            report("pool_complete", submitted=submitted, completed=completed, pending=0)
 
 
 __all__ = [

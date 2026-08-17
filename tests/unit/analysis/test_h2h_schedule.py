@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -32,6 +33,7 @@ from farkle.utils.artifacts import (
 )
 from farkle.utils.random import RandomPurpose, coordinate_seed
 from farkle.utils.stage_completion import CompletionState
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder, use_supervisor_recorder
 
 
 def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
@@ -617,11 +619,39 @@ def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -
             "completion_status": "unresolved_nonviable",
         }
 
-    artifacts = execute_h2h_schedule(
-        cfg,
+    baseline_cfg = _cfg(tmp_path / "baseline")
+    _write_frozen_family(baseline_cfg, strategies=(1, 2))
+    plan_h2h_schedule(baseline_cfg)
+    baseline_manifest = baseline_cfg.strategy_manifest_root_path()
+    baseline_manifest.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table({"strategy_id": pa.array([], type=pa.int64())}),
+        baseline_manifest,
+    )
+    baseline = execute_h2h_schedule(
+        baseline_cfg,
         n_jobs=1,
         block_runner=always_safety_limit,
     )
+    calls = 0
+
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.h2h.nonviable_progress"),
+        run="pair",
+        interval_seconds=0.0,
+    )
+    scope = recorder.begin_scope(
+        "h2h_scope",
+        run="pair",
+        stage="h2h_execute",
+        phase="action",
+    )
+    with use_supervisor_recorder(recorder, scope):
+        artifacts = execute_h2h_schedule(
+            cfg,
+            n_jobs=1,
+            block_runner=always_safety_limit,
+        )
     counts = pq.read_table(artifacts.order_counts).to_pandas()
     state = json.loads(artifacts.execution_state.read_text(encoding="utf-8"))
 
@@ -635,6 +665,17 @@ def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -
     ).all()
     assert state["unresolved_block_count"] == 4
     assert state["substantive_status"] == "unresolved_nonviable"
+    assert artifacts.order_counts.read_bytes() == baseline.order_counts.read_bytes()
+    assert [path.read_bytes() for path in artifacts.block_paths] == [
+        path.read_bytes() for path in baseline.block_paths
+    ]
+    completed = cast(dict[str, dict[str, object]], recorder.summary()["completed_progress"])
+    summary = completed["h2h_scope:h2h_execute"]
+    assert summary["nonviable_blocks"] == 4
+    assert summary["completed_blocks"] == 4
+    assert summary["reconciled_from"] == "authenticated_h2h_block_checkpoints"
+    scope.finish(status="success")
+    recorder.close()
 
 
 def test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordinate(

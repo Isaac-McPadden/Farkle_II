@@ -18,6 +18,16 @@ def _times_two(value: int) -> int:
     return value * 2
 
 
+def _raise_or_wait(value: int) -> int:
+    if value == 0:
+        raise ValueError("synthetic worker failure")
+    return value
+
+
+def _terminate_worker(_value: int) -> int:
+    os._exit(7)
+
+
 @pytest.fixture
 def writer_queue() -> mp.Queue:  # type: ignore
     queue: mp.Queue = mp.Queue()
@@ -228,6 +238,7 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
 def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPatch) -> None:
     cancelled: list[int] = []
     shutdown: list[tuple[bool, bool]] = []
+    progress: list[Mapping[str, object]] = []
 
     class DummyFuture:
         def __init__(self, item: int) -> None:
@@ -256,11 +267,54 @@ def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPat
     monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
 
     with pytest.raises(parallel.ResourceFailureError) as raised:
-        list(parallel.process_map(_times_two, [1, 2, 3], n_jobs=2, window=3))
+        list(
+            parallel.process_map(
+                _times_two,
+                [1, 2, 3],
+                n_jobs=2,
+                window=3,
+                progress_callback=progress.append,
+            )
+        )
 
     assert raised.value.classification == "allocator_memory_error"
     assert cancelled == [2, 3]
     assert shutdown == [(True, True)]
+    assert [item["event"] for item in progress][-2:] == ["cancelling", "cancelled"]
+
+
+@pytest.mark.skipif("spawn" not in mp.get_all_start_methods(), reason="spawn unavailable")
+def test_spawn_worker_exception_and_termination_report_parent_scheduler_state() -> None:
+    context = mp.get_context("spawn")
+    exception_events: list[Mapping[str, object]] = []
+    with pytest.raises(ValueError, match="synthetic worker failure"):
+        list(
+            parallel.process_map(
+                _raise_or_wait,
+                [0, 1],
+                n_jobs=2,
+                window=2,
+                mp_context=context,
+                progress_callback=exception_events.append,
+            )
+        )
+    assert any(item["event"] == "worker_exception" for item in exception_events)
+    assert [item["event"] for item in exception_events][-2:] == ["cancelling", "cancelled"]
+
+    termination_events: list[Mapping[str, object]] = []
+    with pytest.raises(parallel.BrokenProcessPool):
+        list(
+            parallel.process_map(
+                _terminate_worker,
+                [0],
+                n_jobs=2,
+                window=1,
+                mp_context=context,
+                progress_callback=termination_events.append,
+            )
+        )
+    assert any(item["event"] == "worker_exception" for item in termination_events)
+    assert termination_events[-1]["event"] == "cancelled"
 
 
 def test_process_map_context_modes_identical_artifacts(tmp_path: Path) -> None:
@@ -581,6 +635,7 @@ def test_process_tree_guard_snapshot_is_read_only(monkeypatch: MonkeyPatch) -> N
     guard.last_native_threads = 3
     guard.peak_native_threads = 5
     guard.last_aggregate_memory_bytes = 300
+    guard.last_aggregate_current_bytes = 300
     guard.peak_aggregate_memory_bytes = 400
     guard.aggregate_memory_source = "test-job"
     guard.aggregate_hard_limit_bytes = 1_000
@@ -600,17 +655,46 @@ def test_process_tree_guard_snapshot_is_read_only(monkeypatch: MonkeyPatch) -> N
         "native_threads": 3,
         "peak_native_threads": 5,
         "aggregate_memory_bytes": 300,
+        "aggregate_memory_current_bytes": 300,
         "peak_aggregate_memory_bytes": 400,
+        "windows_job_committed_memory_peak_bytes": None,
         "aggregate_memory_hard_limit_bytes": 1_000,
         "aggregate_memory_source": "test-job",
         "host_available_memory_bytes": 2_000,
         "warning_crossings": 2,
+        "rss_warning_active": False,
+        "rss_warning_threshold_bytes": 768 * 1024 * 1024,
         "backpressure_seconds": 1.5,
         "near_hard_boundary": False,
         "monitoring_error": None,
     }
     assert guard.last_rss_bytes == 100
     assert guard.warning_crossings == 2
+
+
+def test_windows_job_peak_is_not_labeled_as_instantaneous_commit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(aggregate_hard_limit_mb=2304)
+    guard._record_aggregate_sample(
+        parallel.AggregateMemorySample(
+            source="windows_job",
+            current_bytes=None,
+            peak_bytes=400,
+            hard_limit_bytes=1_000,
+        )
+    )
+    monkeypatch.setattr(
+        parallel.psutil,
+        "virtual_memory",
+        lambda: type("Memory", (), {"available": 2_000})(),
+    )
+
+    snapshot = guard.snapshot()
+
+    assert snapshot["aggregate_memory_current_bytes"] is None
+    assert snapshot["aggregate_memory_bytes"] == 0
+    assert snapshot["windows_job_committed_memory_peak_bytes"] == 400
 
 
 def test_process_tree_memory_warning_backpressures_until_memory_recedes(

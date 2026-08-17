@@ -513,9 +513,13 @@ def test_telemetry_does_not_change_authenticated_fixture_outputs_or_identity(
     )
     assert "heartbeat" not in authenticated_text.lower()
     assert "timing_summary" not in authenticated_text.lower()
+    assert "worker_messages_received" not in authenticated_text.lower()
+    assert "completed_progress" not in authenticated_text.lower()
     assert "heartbeat" not in run_context_before.decode("utf-8").lower()
     assert "timing_summary" not in run_context_before.decode("utf-8").lower()
     for manifest in (tmp_path / "disabled.jsonl", tmp_path / "enabled.jsonl"):
         text = manifest.read_text(encoding="utf-8").lower()
         assert "heartbeat" not in text
         assert "timing_summary" not in text
+        assert "worker_messages_received" not in text
+        assert "completed_progress" not in text

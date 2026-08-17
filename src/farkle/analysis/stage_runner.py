@@ -23,6 +23,7 @@ from farkle.utils.stage_completion import CompletionState, read_stage_done, reso
 from farkle.utils.telemetry import (
     HEARTBEAT_INTERVAL_SECONDS,
     SupervisorHeartbeatRecorder,
+    use_supervisor_recorder,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -247,7 +248,8 @@ class StageRunner:
                         scope.update(phase="action", state="working")
                         phase_started = float(context.monotonic_clock())
                         try:
-                            item.action(context.config)
+                            with use_supervisor_recorder(recorder, scope):
+                                item.action(context.config)
                         finally:
                             durations["action"] += _elapsed(
                                 context.monotonic_clock,

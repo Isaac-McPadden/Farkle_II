@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -21,6 +23,7 @@ from farkle.utils.partitioned_stage import (
     validate_final_manifest,
 )
 from farkle.utils.random import RandomPurpose, coordinate_rng
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder, use_supervisor_recorder
 
 
 def _identity() -> PartitionedStageIdentity:
@@ -196,20 +199,39 @@ def test_resource_retry_halves_workers_and_skips_authenticated_units(
 
     monkeypatch.setattr(partitioned_stage_module, "process_map", fake_process_map)
     root = tmp_path / "recovered"
-    result = run_partitioned_stage(
-        root=root,
-        identity=_identity(),
-        unit_source=_unit_source,
-        writer=_deterministic_writer,
-        resources=_resources(),
-        requested_workers=4,
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.partitioned.retry_progress"),
+        run="retry",
+        interval_seconds=0.0,
     )
+    scope = recorder.begin_scope(
+        "retry_scope",
+        run="retry",
+        stage="partitioned_stage",
+        phase="action",
+    )
+    with use_supervisor_recorder(recorder, scope):
+        result = run_partitioned_stage(
+            root=root,
+            identity=_identity(),
+            unit_source=_unit_source,
+            writer=_deterministic_writer,
+            resources=_resources(),
+            requested_workers=4,
+            progress_total_units=12,
+        )
 
     assert worker_counts == [4, 2]
     assert executed_keys[0] == [(0,)]
     assert executed_keys[1][0] == (1,)
     assert (0,) not in executed_keys[1]
     assert len(result.execution_attempts) == 2
+    completed = cast(dict[str, dict[str, object]], recorder.summary()["completed_progress"])
+    summary = next(iter(completed.values()))
+    assert summary["retry_downshifted"] is True
+    assert summary["effective_workers"] == 4
+    scope.finish(status="success")
+    recorder.close()
 
 
 def test_process_workers_never_exceed_pending_units(

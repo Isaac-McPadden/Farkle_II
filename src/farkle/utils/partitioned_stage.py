@@ -37,6 +37,11 @@ from farkle.utils.parallel import (
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
+from farkle.utils.telemetry import (
+    current_supervisor_recorder,
+    current_supervisor_scope,
+    install_worker_progress_endpoint,
+)
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 UnitCoordinate: TypeAlias = int | str
@@ -578,6 +583,9 @@ def run_partitioned_stage(
     validator: UnitValidator | None = None,
     manifest_path: Path | None = None,
     manifest_sidecar: ArtifactSidecar | None = None,
+    progress_total_units: int | None = None,
+    progress_phase: str | None = None,
+    enable_worker_progress: bool = False,
 ) -> PartitionedStageResult:
     """Run/reuse units and publish a final manifest only after complete validation."""
 
@@ -610,6 +618,26 @@ def run_partitioned_stage(
         sample_interval_seconds=resources.rss_sample_interval_seconds,
     )
     guard.check_before_schedule(force=True)
+    recorder = current_supervisor_recorder()
+    scope = current_supervisor_scope()
+    scope_name = (
+        scope.scope
+        if scope is not None
+        else "partitioned:"
+        f"{identity.stage_name}:{hashlib.sha256(str(root).encode()).hexdigest()[:12]}"
+    )
+    execution_phase = progress_phase or "partition_execution"
+    completion_scope = f"{scope_name}:{identity.stage_name}"
+    if scope is not None:
+        scope.update(
+            phase="resume_scan",
+            state="authenticating",
+            progress={
+                "total_units": progress_total_units,
+                "requested_workers": requested_workers,
+                "effective_workers": policy.process_workers,
+            },
+        )
     root.mkdir(parents=True, exist_ok=True)
     _quarantine_temporary_files(root)
     manifest_path = (
@@ -632,7 +660,7 @@ def run_partitioned_stage(
         if current is not None:
             manifest_sha, count = current
             guard.check_before_schedule(force=True)
-            return PartitionedStageResult(
+            result = PartitionedStageResult(
                 manifest_path,
                 manifest_sha,
                 count,
@@ -641,6 +669,20 @@ def run_partitioned_stage(
                 guard.peak_rss_bytes / (1024 * 1024),
                 policy,
             )
+            if recorder is not None:
+                recorder.record_completion_summary(
+                    completion_scope,
+                    stage=identity.stage_name,
+                    summary={
+                        "total_units": count,
+                        "reused_units": count,
+                        "completed_units": 0,
+                        "requested_workers": requested_workers,
+                        "effective_workers": 0,
+                        "reconciled_from": "authenticated_partition_manifest",
+                    },
+                )
+            return result
         if manifest_path.exists():
             _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
 
@@ -736,18 +778,95 @@ def run_partitioned_stage(
             "retry": attempt_index == 1,
         }
         execution_attempts.append(attempt_record)
+        endpoint = None
         try:
             if effective_workers == 0:
                 attempt_record["outcome"] = "complete"
                 break
             window = effective_workers * resources.max_in_flight_per_worker
+            if scope is not None:
+                scope.update(
+                    phase=execution_phase,
+                    state="working" if attempt_index == 0 else "retrying_downshifted",
+                    progress={
+                        "total_units": progress_total_units,
+                        "reused_units": reused,
+                        "scheduled_units": scheduled,
+                        "attempt": attempt_index + 1,
+                        "requested_workers": requested_workers,
+                        "effective_workers": effective_workers,
+                        "window": window,
+                    },
+                )
+            mp_context = resolve_mp_context(mp_start_method)
+            if (
+                recorder is not None
+                and enable_worker_progress
+                and effective_workers > 1
+            ):
+                endpoint = recorder.create_worker_progress_endpoint(
+                    scope_name,
+                    mp_context=mp_context,
+                )
+            attempt_started_at = time.monotonic()
+
+            def scheduler_progress(
+                event: Mapping[str, object],
+                attempt_number: int = attempt_index + 1,
+                workers: int = effective_workers,
+                attempt_started: float = attempt_started_at,
+            ) -> None:
+                if scope is None:
+                    return
+                event_name = str(event.get("event", "working"))
+                state = {
+                    "schedule_check": "waiting_for_memory",
+                    "waiting_on_futures": "waiting_on_futures",
+                    "cancelling": "cancelling",
+                }.get(event_name, "working")
+                completed_value = event.get("completed", 0)
+                completed_now = completed_value if isinstance(completed_value, int) else 0
+                elapsed_now = max(0.0, time.monotonic() - attempt_started)
+                rate = completed_now / elapsed_now if elapsed_now > 0 else 0.0
+                remaining = (
+                    max(0, progress_total_units - reused - completed_now)
+                    if progress_total_units is not None
+                    else None
+                )
+                pending_value = event.get("pending", 0)
+                pending_now = pending_value if isinstance(pending_value, int) else 0
+                scope.update(
+                    phase=execution_phase,
+                    state=state,
+                    progress={
+                        "total_units": progress_total_units,
+                        "reused_units": reused,
+                        "scheduled_units": scheduled,
+                        "attempt": attempt_number,
+                        "requested_workers": requested_workers,
+                        "effective_workers": workers,
+                        "active_workers": min(workers, pending_now),
+                        "queued_units": max(0, pending_now - workers),
+                        "units_per_second": rate,
+                        "eta_seconds": (
+                            remaining / rate
+                            if remaining is not None and rate > 0
+                            else None
+                        ),
+                        **event,
+                    },
+                )
+
             for _completed_key in process_map(
                 _execute_unit,
                 tasks,
                 n_jobs=effective_workers,
+                initializer=(install_worker_progress_endpoint if endpoint is not None else None),
+                initargs=((endpoint,) if endpoint is not None else ()),
                 window=window,
-                mp_context=resolve_mp_context(mp_start_method),
+                mp_context=mp_context,
                 memory_guard=guard,
+                progress_callback=scheduler_progress,
             ):
                 guard.check_before_schedule()
             attempt_record["outcome"] = "complete"
@@ -761,6 +880,25 @@ def run_partitioned_stage(
                 failure_classification=classification,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            if scope is not None:
+                scope.update(
+                    phase=execution_phase,
+                    state=(
+                        "resource_retry_pending"
+                        if attempt_index == 0
+                        else "resource_failure"
+                    ),
+                    progress={
+                        "attempt": attempt_index + 1,
+                        "effective_workers": effective_workers,
+                        "failure_classification": classification,
+                        "next_worker_count": (
+                            max(1, effective_workers // 2)
+                            if attempt_index == 0
+                            else None
+                        ),
+                    },
+                )
             write_execution_telemetry("retrying" if attempt_index == 0 else "resource_failure")
             if attempt_index == 1:
                 raise
@@ -779,8 +917,13 @@ def run_partitioned_stage(
             )
             write_execution_telemetry("non_resource_failure")
             raise
+        finally:
+            if recorder is not None:
+                recorder.close_worker_progress_endpoint(endpoint)
 
     guard.check_before_schedule(force=True)
+    if scope is not None:
+        scope.update(phase="manifest_publication", state="publishing")
     manifest_sha, count = _publish_final_manifest(
         manifest_path,
         root=root,
@@ -803,7 +946,7 @@ def run_partitioned_stage(
         _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
         raise PartitionedStageError("final partition manifest failed post-publication validation")
     write_execution_telemetry("complete")
-    return PartitionedStageResult(
+    result = PartitionedStageResult(
         manifest_path,
         manifest_sha,
         count,
@@ -813,6 +956,25 @@ def run_partitioned_stage(
         policy,
         tuple(execution_attempts),
     )
+    if recorder is not None:
+        recorder.record_completion_summary(
+            completion_scope,
+            stage=identity.stage_name,
+            summary={
+                "total_units": count,
+                "reused_units": reused,
+                "completed_units": scheduled,
+                "requested_workers": requested_workers,
+                "effective_workers": max(
+                    (int(item.get("worker_count", 0)) for item in execution_attempts),
+                    default=0,
+                ),
+                "attempt_count": len(execution_attempts),
+                "retry_downshifted": len(execution_attempts) > 1,
+                "reconciled_from": "authenticated_partition_manifest",
+            },
+        )
+    return result
 
 
 __all__ = [

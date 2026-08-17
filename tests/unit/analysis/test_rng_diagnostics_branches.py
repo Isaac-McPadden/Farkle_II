@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -21,6 +23,7 @@ from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.release_identity import _typed_method
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.stage_completion import CompletionState, resolve_stage_state
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder, use_supervisor_recorder
 
 
 def _curated_table(
@@ -323,7 +326,19 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
     parallel = _config_with_input(tmp_path, name="parallel", table=table, partitions=4, workers=2)
 
     rng_diagnostics.run(serial)
-    rng_diagnostics.run(parallel)
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.rng.specialized_progress"),
+        run="root_9",
+        interval_seconds=45.0,
+    )
+    scope = recorder.begin_scope(
+        "rng_scope",
+        run="root_9",
+        stage="rng_diagnostics",
+        phase="action",
+    )
+    with use_supervisor_recorder(recorder, scope):
+        rng_diagnostics.run(parallel)
 
     pd.testing.assert_frame_equal(
         _sorted_results(serial),
@@ -340,6 +355,15 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
         serial.rng_output_path("rng_group_selection.parquet").read_bytes()
         == parallel.rng_output_path("rng_group_selection.parquet").read_bytes()
     )
+    completed = cast(dict[str, dict[str, object]], recorder.summary()["completed_progress"])
+    rng_summary = completed["rng_scope:rng_diagnostics"]
+    assert rng_summary["row_groups"] == 1
+    assert rng_summary["partitions"] == 4
+    assert rng_summary["reconciled_from"] == (
+        "authenticated_rng_outputs_and_partition_manifests"
+    )
+    scope.finish(status="success")
+    recorder.close()
 
 
 def test_merge_memmaps_are_closed_after_success_and_failure(tmp_path: Path) -> None:

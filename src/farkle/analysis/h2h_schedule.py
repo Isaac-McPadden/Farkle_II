@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -52,6 +54,7 @@ from farkle.utils.stage_completion import (
     write_stage_done,
 )
 from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
+from farkle.utils.telemetry import current_supervisor_recorder, current_supervisor_scope
 
 SCORE_TEST_ID: Final = "independent_two_proportion_score_v1"
 POWER_METHOD_ID: Final = "conditional_exact_power_first_crossing_v2"
@@ -1518,6 +1521,11 @@ def execute_h2h_schedule(
 ) -> H2HExecutionArtifacts:
     """Execute missing immutable blocks and publish their row-preserving union."""
 
+    recorder = current_supervisor_recorder()
+    scope = current_supervisor_scope()
+    telemetry_started = time.monotonic()
+    if scope is not None:
+        scope.update(phase="h2h_source_authentication", state="authenticating")
     if chunk_games < 1:
         raise ValueError("chunk_games must be positive")
     profile_sha256 = oracle_game_profile.sha256 if oracle_game_profile is not None else None
@@ -1571,6 +1579,9 @@ def execute_h2h_schedule(
         raise ValueError("H2H block manifest does not match the power-plan schedule hash")
     roots = tuple(int(value) for value in plan["root_seeds"])
     records = cast(list[dict[str, Any]], schedule.to_dict(orient="records"))
+    total_blocks = len(records)
+    total_pairs = int(schedule["pair_id"].nunique())
+    total_planned_games = int(schedule["n_completed_required"].sum())
     block_paths = tuple(_block_path(cfg, record) for record in records)
     stage_outputs = [state_path, output, *block_paths]
     if stage_is_up_to_date(
@@ -1581,11 +1592,25 @@ def execute_h2h_schedule(
         stage="h2h_execute",
         sidecar_artifacts=stage_outputs,
     ):
-        return H2HExecutionArtifacts(
+        artifacts = H2HExecutionArtifacts(
             execution_state=state_path,
             order_counts=output,
             block_paths=block_paths,
         )
+        if recorder is not None and scope is not None:
+            recorder.record_completion_summary(
+                f"{scope.scope}:h2h_execute",
+                stage="h2h_execute",
+                summary={
+                    "candidate_pairs": total_pairs,
+                    "total_blocks": total_blocks,
+                    "completed_blocks": total_blocks,
+                    "planned_games": total_planned_games,
+                    "completion_status": "reused",
+                    "reconciled_from": "authenticated_stage_completion",
+                },
+            )
+        return artifacts
     if _completed_execution_is_recoverable(
         plan,
         state_path=state_path,
@@ -1600,24 +1625,96 @@ def execute_h2h_schedule(
             stage="h2h_execute",
             sidecar_artifacts=[state_path, output],
         )
-        return H2HExecutionArtifacts(
+        artifacts = H2HExecutionArtifacts(
             execution_state=state_path,
             order_counts=output,
             block_paths=block_paths,
         )
+        if recorder is not None and scope is not None:
+            recorder.record_completion_summary(
+                f"{scope.scope}:h2h_execute",
+                stage="h2h_execute",
+                summary={
+                    "candidate_pairs": total_pairs,
+                    "completed_pairs": total_pairs,
+                    "total_blocks": total_blocks,
+                    "completed_blocks": total_blocks,
+                    "planned_games": total_planned_games,
+                    "completion_status": "completion_stamp_recovered",
+                    "reconciled_from": "authenticated_h2h_block_checkpoints",
+                },
+            )
+        return artifacts
     pending: list[dict[str, Any]] = []
+    completed_games = 0
+    attempted_games = 0
+    blocks_per_pair = {
+        int(cast(Any, pair_id)): int(count)
+        for pair_id, count in schedule.groupby("pair_id", sort=True).size().items()
+    }
+    terminal_blocks_by_pair = dict.fromkeys(blocks_per_pair, 0)
     for record, path in zip(records, block_paths, strict=True):
         checkpoint = _read_existing_block(path, record)
         if checkpoint is None:
             pending.append(record)
-        elif str(checkpoint["completion_status"]) not in _TERMINAL_BLOCK_STATUSES:
-            pending.append(checkpoint)
+        else:
+            completed_games += int(checkpoint["games_completed"])
+            attempted_games += int(checkpoint["games_attempted"])
+            if str(checkpoint["completion_status"]) not in _TERMINAL_BLOCK_STATUSES:
+                pending.append(checkpoint)
+            else:
+                terminal_blocks_by_pair[int(checkpoint["pair_id"])] += 1
+    completed_games_at_start = completed_games
     completed_block_count = len(records) - len(pending)
     checkpoint_interval = min(
         _EXECUTION_STATE_CHECKPOINT_BLOCKS,
         max(1, len(records) // 10),
     )
     last_checkpoint_count = completed_block_count
+    completed_chunks = 0
+    checkpoint_writes = 0
+    checkpoint_bytes = 0
+    execution_state_writes = 0
+    pool_generation = 0
+
+    def progress_payload(**scheduler: object) -> dict[str, object]:
+        elapsed = max(0.0, time.monotonic() - telemetry_started)
+        completed_this_run = max(0, completed_games - completed_games_at_start)
+        rate = completed_this_run / elapsed if elapsed > 0 else 0.0
+        remaining = max(0, total_planned_games - completed_games)
+        return {
+            "candidate_pairs": total_pairs,
+            "completed_pairs": sum(
+                terminal_blocks_by_pair[pair_id] == blocks_per_pair[pair_id]
+                for pair_id in blocks_per_pair
+            ),
+            "total_blocks": total_blocks,
+            "completed_blocks": completed_block_count,
+            "pending_blocks": max(0, total_blocks - completed_block_count),
+            "planned_games": total_planned_games,
+            "completed_games": completed_games,
+            "completed_games_this_run": completed_this_run,
+            "attempted_games": attempted_games,
+            "completed_game_coordinates": completed_games,
+            "attempt_coordinates_covered": attempted_games,
+            "completed_chunks": completed_chunks,
+            "checkpoint_writes": checkpoint_writes,
+            "checkpoint_bytes": checkpoint_bytes,
+            "execution_state_writes": execution_state_writes,
+            "pool_generation": pool_generation,
+            "games_per_second": rate,
+            "eta_seconds": remaining / rate if rate > 0 else None,
+            **scheduler,
+        }
+
+    def update_progress(*, state: str = "working", **scheduler: object) -> None:
+        if scope is not None:
+            scope.update(
+                phase="h2h_execution",
+                state=state,
+                progress=progress_payload(**scheduler),
+            )
+
     if pending:
         _write_execution_state(
             cfg,
@@ -1625,9 +1722,11 @@ def execute_h2h_schedule(
             CompletionState.PARTIAL_RESUMABLE,
             completed_block_count=completed_block_count,
         )
+        execution_state_writes += 1
+    update_progress(state="resuming" if completed_block_count else "working")
 
     def checkpoint_execution_state() -> None:
-        nonlocal last_checkpoint_count
+        nonlocal execution_state_writes, last_checkpoint_count
         if completed_block_count - last_checkpoint_count < checkpoint_interval:
             return
         _write_execution_state(
@@ -1636,6 +1735,7 @@ def execute_h2h_schedule(
             CompletionState.PARTIAL_RESUMABLE,
             completed_block_count=completed_block_count,
         )
+        execution_state_writes += 1
         last_checkpoint_count = completed_block_count
 
     manifest_path = cfg.strategy_manifest_root_path()
@@ -1651,6 +1751,10 @@ def execute_h2h_schedule(
     )
     apply_native_thread_limits(policy)
     worker_count = policy.process_workers
+    update_progress(
+        requested_workers=configured_jobs,
+        effective_workers=worker_count,
+    )
     memory_guard = ProcessTreeMemoryGuard(
         cfg.resources.aggregate_memory_hard_limit_mb,
         rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
@@ -1660,14 +1764,42 @@ def execute_h2h_schedule(
     memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:
         raise ValueError("custom H2H block runners require n_jobs=1")
+    scheduler_active_count = 0
+    scheduler_generation = 0
+
+    def scheduler_progress(event: Mapping[str, object]) -> None:
+        event_name = str(event.get("event", "working"))
+        pending_value = event.get("pending", 0)
+        pending_futures = pending_value if isinstance(pending_value, int) else 0
+        state = {
+            "schedule_check": "waiting_for_memory",
+            "waiting_on_futures": "waiting_on_futures",
+            "cancelling": "cancelling",
+        }.get(event_name, "working")
+        update_progress(
+            state=state,
+            scheduler_event=event_name,
+            submitted_chunks=event.get("submitted"),
+            completed_futures=event.get("completed"),
+            pending_futures=pending_futures,
+            active_workers=min(worker_count, pending_futures),
+            queued_chunks=max(0, pending_futures - worker_count),
+            effective_workers=event.get("worker_count", worker_count),
+            long_tail=(scheduler_active_count <= worker_count or scheduler_generation > 1),
+        )
+
     if block_runner is _simulate_block and pending:
         # ``process_map`` is the shared bounded-submission policy.  Process
         # workers receive the inherited Step 5.5 Job/cgroup boundary before
         # this initializer loads the manifest or allocates model state.
         active_chunks = pending
         while active_chunks:
+            pool_generation += 1
+            scheduler_active_count = len(active_chunks)
+            scheduler_generation = pool_generation
             next_chunks: list[dict[str, Any]] = []
             tasks = ((block, chunk_games) for block in active_chunks)
+
             for previous, raw_result in process_map(
                 _simulate_cached_block,
                 tasks,
@@ -1677,6 +1809,7 @@ def execute_h2h_schedule(
                 window=worker_count * cfg.resources.max_in_flight_per_worker,
                 mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
                 memory_guard=memory_guard,
+                progress_callback=scheduler_progress,
             ):
                 result = _normalize_runner_result(previous, raw_result)
                 _write_block(
@@ -1685,11 +1818,27 @@ def execute_h2h_schedule(
                     schedule_path=schedule_path,
                     roots=roots,
                 )
+                completed_chunks += 1
+                completed_games += int(result["games_completed"]) - int(
+                    previous.get("games_completed", 0)
+                )
+                attempted_games += int(result["games_attempted"]) - int(
+                    previous.get("games_attempted", 0)
+                )
+                checkpoint_writes += 1
+                with contextlib.suppress(OSError):
+                    checkpoint_bytes += _block_path(cfg, result).stat().st_size
                 if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
                     completed_block_count += 1
+                    terminal_blocks_by_pair[int(result["pair_id"])] += 1
                     checkpoint_execution_state()
                 else:
                     next_chunks.append(result)
+                update_progress(
+                    active_blocks=len(active_chunks),
+                    next_generation_blocks=len(next_chunks),
+                    long_tail=(len(active_chunks) <= worker_count or pool_generation > 1),
+                )
             # Canonical submission order is independent of the order in which
             # worker futures completed.
             active_chunks = sorted(
@@ -1711,13 +1860,27 @@ def execute_h2h_schedule(
                     block_runner(current, manifest_path, chunk_games),
                 )
                 _write_block(cfg, result, schedule_path=schedule_path, roots=roots)
+                completed_chunks += 1
+                completed_games += int(result["games_completed"]) - int(
+                    current.get("games_completed", 0)
+                )
+                attempted_games += int(result["games_attempted"]) - int(
+                    current.get("games_attempted", 0)
+                )
+                checkpoint_writes += 1
+                with contextlib.suppress(OSError):
+                    checkpoint_bytes += _block_path(cfg, result).stat().st_size
+                update_progress(effective_workers=1, active_blocks=1)
                 if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
                     completed_block_count += 1
+                    terminal_blocks_by_pair[int(result["pair_id"])] += 1
                     checkpoint_execution_state()
                     break
                 current = result
 
     completed_records: list[dict[str, Any]] = []
+    if scope is not None:
+        scope.update(phase="h2h_final_validation", state="authenticating")
     for record, path in zip(records, block_paths, strict=True):
         block_row = _read_existing_block(path, record)
         if block_row is None or str(block_row["completion_status"]) not in (
@@ -1774,6 +1937,7 @@ def execute_h2h_schedule(
         completed_block_count=len(records),
         block_rows=completed_records,
     )
+    execution_state_writes += 1
     write_stage_done(
         done,
         inputs=[plan_path, schedule_path],
@@ -1782,6 +1946,32 @@ def execute_h2h_schedule(
         stage="h2h_execute",
         sidecar_artifacts=[state_path, output],
     )
+    if recorder is not None and scope is not None:
+        final_completed_games = sum(int(row["games_completed"]) for row in completed_records)
+        final_attempted_games = sum(int(row["games_attempted"]) for row in completed_records)
+        recorder.record_completion_summary(
+            f"{scope.scope}:h2h_execute",
+            stage="h2h_execute",
+            summary={
+                "candidate_pairs": total_pairs,
+                "completed_pairs": total_pairs,
+                "total_blocks": total_blocks,
+                "completed_blocks": len(completed_records),
+                "planned_games": total_planned_games,
+                "completed_games": final_completed_games,
+                "attempted_games": final_attempted_games,
+                "completed_chunks": completed_chunks,
+                "checkpoint_writes": checkpoint_writes,
+                "checkpoint_bytes": checkpoint_bytes,
+                "execution_state_writes": execution_state_writes,
+                "pool_generations": pool_generation,
+                "nonviable_blocks": sum(
+                    str(row["completion_status"]) == "unresolved_nonviable"
+                    for row in completed_records
+                ),
+                "reconciled_from": "authenticated_h2h_block_checkpoints",
+            },
+        )
     return H2HExecutionArtifacts(
         execution_state=state_path,
         order_counts=output,
