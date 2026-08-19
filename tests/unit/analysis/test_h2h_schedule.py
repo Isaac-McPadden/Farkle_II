@@ -240,6 +240,14 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     )
     assert plan["worst_scenario_achieved_power"] >= 0.80
     assert plan["previous_equal_block_size_worst_power"] < 0.80
+    assert plan["profile"]["final_h2h"] == {
+        "final_candidate_count": 3,
+        "unordered_pair_count": 3,
+        "planned_completed_games": plan["total_completed_required"],
+        "n_completed_required_per_root_order_block": plan[
+            "n_completed_required_per_root_order_block"
+        ],
+    }
     target_rows = [
         row for row in plan["power_validation"] if row["reported_effect"] == pytest.approx(0.03)
     ]

@@ -13,6 +13,7 @@ from farkle.config import (
     AnalysisConfig,
     AppConfig,
     IOConfig,
+    ProfileConfig,
     ScreeningConfig,
     SimConfig,
     apply_dot_overrides,
@@ -161,6 +162,12 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        profile=ProfileConfig(
+            purpose="integration",
+            reduced_resolution=True,
+            production_eligible=False,
+            release_eligible=False,
+        ),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
@@ -221,6 +228,12 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        profile=ProfileConfig(
+            purpose="integration",
+            reduced_resolution=True,
+            production_eligible=False,
+            release_eligible=False,
+        ),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
@@ -240,8 +253,12 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
 
     assert len(writes) == 2
     assert writes[0]["status"] == "running"
+    assert writes[0]["profile"]["purpose"] == "integration"
+    assert writes[0]["profile"]["production_eligible"] is False
+    assert writes[0]["profile"]["release_eligible"] is False
     assert "timing_summary" not in writes[0]
     assert writes[1]["status"] == "complete_success"
+    assert writes[1]["profile"]["purpose"] == "integration"
     assert "timing_summary" in writes[1]
 
 
@@ -287,6 +304,8 @@ def test_final_release_gate_names_each_context_and_graph_audit_phase(
     )
 
     assert result["status"] == "passed"
+    assert result["release_eligible"] is True
+    assert result["profile_release_eligible"] is True
     assert phases == [
         "run_context_authenticate_root_11",
         "graph_audit_root_11",
@@ -295,6 +314,49 @@ def test_final_release_gate_names_each_context_and_graph_audit_phase(
         "run_context_authenticate_pair",
         "graph_audit_pair",
     ]
+
+
+def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first = _context(tmp_path, 11)
+    second = _context(tmp_path, 22)
+    pair = RootPairRunContext.from_root_contexts((first, second), pair_root=tmp_path / "pair")
+    pair.config.profile = ProfileConfig(
+        purpose="integration",
+        reduced_resolution=True,
+        production_eligible=False,
+        release_eligible=False,
+    )
+    for context in (first, second, pair):
+        context.run_context_path.parent.mkdir(parents=True, exist_ok=True)
+        context.run_context_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "load_run_context",
+        lambda *_args, **_kwargs: {"run_context_sha256": "b" * 64},
+    )
+    monkeypatch.setattr(two_seed_pipeline, "audit_sidecar_completeness", lambda _root: [])
+
+    result = two_seed_pipeline._final_release_gate(
+        {
+            11: two_seed_pipeline._SeedRunStatus(11, first, True, True),
+            22: two_seed_pipeline._SeedRunStatus(22, second, True, True),
+        },
+        pair,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+        allow_oracle_code_identity=False,
+    )
+
+    assert result["status"] == "passed"
+    assert result["profile_release_eligible"] is False
+    assert result["release_eligible"] is False
 
 
 def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(

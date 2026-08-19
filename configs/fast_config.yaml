@@ -61,7 +61,7 @@ analysis:
   rare_event_target_rate: null
   rng_max_matchup_groups: 150000
   rng_diagnostic_lags: [1]
-  rng_diagnostic_partitions: 32
+  rng_diagnostic_partitions: 8
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
@@ -85,7 +85,7 @@ head2head:
   sensitivity_deltas: [0.03, 0.04]
   seat1_advantage_scenarios: [0.0, 0.03, 0.06]
   delta_equivalence: null
-  candidate_cap: null
+  candidate_cap: 12
   candidate_cap_policy: "balanced-tail"
   min_candidate_completion_rate: 0.99
   max_attempt_multiplier: 2.0
@@ -96,13 +96,19 @@ rng:
   scheme_version: 2
   bit_generator: "PCG64DXSM"
 
+profile:
+  purpose: "integration"
+  reduced_resolution: true
+  production_eligible: false
+  release_eligible: false
+
 screening:
-  resolution_delta: 0.03
+  resolution_delta: 0.08
   interval_confidence: 0.95
   practical_delta_by_k: {2: 0.03, 4: 0.03, 5: 0.03}
   delta_across_k: 0.03
-  bootstrap_replicates: 2000
-  candidate_contribution_size: 75
+  bootstrap_replicates: 500
+  candidate_contribution_size: 8
   controls: []
   mandatory_diagnostics: []
   max_shuffles_per_root_k: null
@@ -148,7 +154,7 @@ resources:
   scheduler_memory_budget_mb: 8192
   process_tree_warning_threshold_mb: 8192
   aggregate_memory_hard_limit_mb: 12288
-  minimum_system_available_memory_mb: 2048
+  minimum_system_available_memory_mb: 4096
   os_memory_limit_enabled: true
   os_memory_limit_required: true
   allow_unenforced_memory_fallback: false

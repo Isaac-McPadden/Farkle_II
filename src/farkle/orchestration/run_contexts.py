@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
+from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
 from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import (
@@ -328,6 +329,8 @@ def write_run_context_atomic(
         "run_lineage_sha256": lineage_sha,
         "public_config_sha256": cfg.config_sha,
         "resource_config_sha256": identity_sha256(asdict(cfg.resources)),
+        "profile_config_sha256": identity_sha256(asdict(cfg.profile)),
+        "profile": resolved_profile_metadata(cfg),
         "parent_lifecycle_roots": list(parent_lifecycle_roots),
         "resolved_paths": resolved_paths,
         "resolved_stage_layout": cfg.stage_layout.to_resolved_layout(),
@@ -367,6 +370,8 @@ def load_run_context(path: Path, *, active_config_path: Path | None = None) -> d
             raise ValueError("run context does not bind the adjacent public configuration")
         if identity_sha256(asdict(config.resources)) != payload.get("resource_config_sha256"):
             raise ValueError("run context does not bind adjacent execution resource controls")
+        if identity_sha256(asdict(config.profile)) != payload.get("profile_config_sha256"):
+            raise ValueError("run context does not bind the adjacent run profile")
     return payload
 
 

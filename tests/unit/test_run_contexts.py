@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
+from farkle.config import AppConfig, IOConfig, ProfileConfig, SimConfig, assign_config_sha
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -141,6 +141,10 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     assert "effective_hard_limit_mb" in payload["execution_controls"]["os_memory_boundary"]
     assert payload["execution_controls"]["os_memory_boundary"]["requested_hard_limit_mb"] == 2304
     assert payload["cli_overrides"] == ["analysis.n_jobs=4"]
+    assert payload["profile"]["purpose"] == "production"
+    assert payload["profile"]["production_eligible"] is True
+    assert payload["profile"]["release_eligible"] is True
+    assert payload["profile"]["workload_by_k"]["2"]["achieved_resolution"] <= 0.03
 
 
 def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -> None:
@@ -180,3 +184,38 @@ def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -
     assert changed_payload["run_context_sha256"] != original
     assert changed_payload["public_config_sha256"] == original_payload["public_config_sha256"]
     assert changed_payload["resource_config_sha256"] != original_payload["resource_config_sha256"]
+
+
+def test_run_context_authenticates_non_release_profile_labels(tmp_path: Path) -> None:
+    context = _root_context(tmp_path, 11)
+    context.config.profile = ProfileConfig(
+        purpose="integration",
+        reduced_resolution=True,
+        production_eligible=False,
+        release_eligible=False,
+    )
+    write_run_context_atomic(
+        context,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+    )
+    payload = load_run_context(context.run_context_path)
+
+    assert payload["profile"]["purpose"] == "integration"
+    assert payload["profile"]["reduced_resolution"] is True
+    assert payload["profile"]["production_eligible"] is False
+    assert payload["profile"]["release_eligible"] is False
+
+    context.config.profile = ProfileConfig()
+    from farkle.orchestration.seed_utils import write_active_config
+
+    write_active_config(context.config)
+    with pytest.raises(ValueError, match="run profile"):
+        load_run_context(
+            context.run_context_path,
+            active_config_path=context.active_config_path,
+        )

@@ -214,7 +214,7 @@ def _method_versions(
         "h2h_digest": {"h2h_method_version": 2, "dominance_method_version": 1},
         "agreement": {"structure_agreement_method_version": 1},
         "reporting": {
-            "structure_report_contract_version": 4,
+            "structure_report_contract_version": 5,
             "migration_report_version": 3,
             "reporting_method_version": 1,
         },

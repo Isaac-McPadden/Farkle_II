@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -11,6 +12,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope
+from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     make_artifact_sidecar,
@@ -21,7 +23,7 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
-STRUCTURE_REPORT_CONTRACT_VERSION: Final = 4
+STRUCTURE_REPORT_CONTRACT_VERSION: Final = 5
 
 
 def _read_json(path: Path, *, operation: str) -> tuple[dict[str, Any], ArtifactSidecar]:
@@ -50,6 +52,7 @@ def _structure_reporting_freshness_key(cfg: AppConfig) -> dict[str, object]:
     return {
         **cfg.freshness_key(),
         "structure_report_contract_version": STRUCTURE_REPORT_CONTRACT_VERSION,
+        "profile": asdict(cfg.profile),
     }
 
 
@@ -272,6 +275,12 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
         f"Pareto membership contains {robustness['pareto_member_count']} strategy configurations.",
         (f"The separate maximin descriptive leader is {robustness['maximin_descriptive_leader']}."),
     ]
+    if not report["profile"]["production_eligible"]:
+        lines.insert(
+            0,
+            "Reduced-resolution integration evidence is non-production and cannot support "
+            "release or production inferential claims.",
+        )
     if h2h["unresolved_pair_count"]:
         lines.append(f"{h2h['unresolved_pair_count']} finalist comparisons remain unresolved.")
     if h2h["operationally_nonviable_candidates"]:
@@ -305,15 +314,38 @@ def render_markdown(report: dict[str, Any]) -> str:
     """Render deterministic claim language from a machine-readable report."""
 
     support = report["support"]
+    profile = report["profile"]
     family = report["candidate_family"]
     h2h = report["h2h"]
     lines = [
         "# Structure analysis report",
         "",
         "This report is conditional on the simulated finite strategy grid.",
+        (
+            "This is reduced-resolution, non-production, non-release integration evidence."
+            if report["profile"]["reduced_resolution"]
+            else (
+                "This profile is configured for production/release eligibility; final "
+                "eligibility remains subject to the release audit."
+            )
+        ),
         "",
         "## Contract",
         "",
+        f"- Run purpose: `{profile['purpose']}`",
+        f"- Reduced resolution: `{profile['reduced_resolution']}`",
+        f"- Production eligible: `{profile['production_eligible']}`",
+        f"- Release eligible: `{profile['release_eligible']}`",
+        f"- Configured resolution: `{profile['configured_resolution']}`",
+        f"- Resolved workload by k: `{profile['workload_by_k']}`",
+        f"- Bootstrap replicates: `{profile['bootstrap_replicates']}`",
+        f"- RNG partitions: `{profile['rng_partitions']}`",
+        (
+            "- Candidate contribution size by method: "
+            f"`{profile['candidate_contribution_size_by_method']}`"
+        ),
+        f"- Frozen-candidate cap: `{profile['frozen_candidate_cap']}`",
+        f"- Final H2H plan: `{profile['final_h2h']}`",
         f"- Execution scope: `{report['execution_scope']}`",
         f"- Roots: `{report['roots']}`",
         f"- Player-count support: `{support['player_counts']}`",
@@ -421,6 +453,7 @@ def run(
         operation="inventory_ignored_on_disk_artifacts",
     )
     family_manifest_path = cfg.h2h_candidate_family_manifest_path()
+    power_plan_path = cfg.h2h_power_plan_path()
     family_membership_path = cfg.h2h_candidate_family_path()
     agreement_path = cfg.structure_agreement_summary_path()
     inference_path = cfg.h2h_pairwise_inference_path()
@@ -432,6 +465,7 @@ def run(
     trueskill_path = cfg.trueskill_candidate_contribution_path()
     performance_path = _performance_source(cfg, roots)
     family, family_sidecar = _read_json(family_manifest_path, operation="candidate_family_freeze")
+    power_plan, _ = _read_json(power_plan_path, operation="score_test_power_plan")
     membership, _ = _read_frame(family_membership_path, operation="candidate_family_freeze")
     agreement, agreement_sidecar = _read_json(
         agreement_path, operation="selection_conditioned_method_agreement"
@@ -469,10 +503,13 @@ def run(
         raise ValueError("report agreement or dominance does not match the frozen family hash")
     if tuple(int(root) for root in family["root_seeds"]) != roots:
         raise ValueError("report candidate roots do not match configured roots")
+    if str(power_plan["family_hash"]) != family_hash:
+        raise ValueError("report H2H power plan does not match the frozen family hash")
     player_counts = list(performance_sidecar.required_player_counts)
     vectors, per_k_sources, safety_cells = _by_k_vectors(cfg, roots, player_counts)
     sources = [
         family_manifest_path,
+        power_plan_path,
         family_membership_path,
         agreement_path,
         inference_path,
@@ -583,6 +620,15 @@ def run(
     h2h_replacements = int(h2h_counts["replacement_attempt_count"].sum())
     report: dict[str, Any] = {
         "report_contract_version": STRUCTURE_REPORT_CONTRACT_VERSION,
+        "profile": resolved_profile_metadata(
+            cfg,
+            final_candidate_count=int(family["candidate_count"]),
+            pair_count=int(power_plan["unordered_pair_count"]),
+            planned_h2h_games=int(power_plan["total_completed_required"]),
+            h2h_games_per_root_order_block=int(
+                power_plan["n_completed_required_per_root_order_block"]
+            ),
+        ),
         "execution_scope": execution_scope,
         "roots": list(roots),
         "finite_grid_conditionality": True,
@@ -656,6 +702,12 @@ def run(
         "h2h": {
             "role": h2h_role,
             "family_hash": family["family_hash"],
+            "candidate_count": int(power_plan["candidate_count"]),
+            "unordered_pair_count": int(power_plan["unordered_pair_count"]),
+            "planned_completed_games": int(power_plan["total_completed_required"]),
+            "n_completed_required_per_root_order_block": int(
+                power_plan["n_completed_required_per_root_order_block"]
+            ),
             "decision_counts": {str(key): int(value) for key, value in decision_counts.items()},
             "unresolved_pair_count": unresolved_pair_count,
             "unresolved_nonviable_pair_count": int(decision_counts.get("unresolved_nonviable", 0)),

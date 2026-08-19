@@ -214,6 +214,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="single_root_tail",
         depends_on=("candidate_freeze",),
         cache_scope=(
+            "profile",
             "head2head.family_alpha",
             "head2head.target_power",
             "head2head.practical_delta",
@@ -256,7 +257,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "reporting",
         group="single_root_tail",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract",),
+        cache_scope=("artifact_contract", "profile"),
     ),
 )
 
@@ -284,6 +285,7 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         group="root_pair",
         depends_on=("candidate_freeze",),
         cache_scope=(
+            "profile",
             "head2head.family_alpha",
             "head2head.target_power",
             "head2head.practical_delta",
@@ -326,7 +328,7 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         "reporting",
         group="root_pair",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract",),
+        cache_scope=("artifact_contract", "profile"),
     ),
 )
 

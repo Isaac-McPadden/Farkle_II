@@ -239,7 +239,7 @@ def assert_report_oracle(pair_context: RootPairRunContext) -> None:
 
     cfg = pair_context.config
     report = json.loads(cfg.structure_report_json_path().read_text(encoding="utf-8"))
-    assert report["report_contract_version"] == 4
+    assert report["report_contract_version"] == 5
     assert report["execution_scope"] == "root_pair"
     assert report["roots"] == [11, 22]
     assert report["support"]["player_counts"] == [2, 4]

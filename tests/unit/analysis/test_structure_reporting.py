@@ -14,7 +14,7 @@ from farkle.analysis.structure_reporting import (
     run,
 )
 from farkle.analysis.trueskill_screening import TRUESKILL_CONDITIONING
-from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
+from farkle.config import AppConfig, ArtifactScope, IOConfig, ProfileConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import load_authenticated_sidecar
@@ -25,6 +25,12 @@ def _cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11], n_players_list=[2]),
+        profile=ProfileConfig(
+            purpose="integration",
+            reduced_resolution=True,
+            production_eligible=False,
+            release_eligible=False,
+        ),
     )
     cfg.screening.controls = [1]
     return cfg
@@ -100,6 +106,18 @@ def _publish_inputs(cfg: AppConfig) -> None:
         "projected_workload": {"unordered_pair_count": 1},
     }
     _write_json(cfg, cfg.h2h_candidate_family_manifest_path(), family, "candidate_family_freeze")
+    _write_json(
+        cfg,
+        cfg.h2h_power_plan_path(),
+        {
+            "family_hash": family_hash,
+            "candidate_count": 2,
+            "unordered_pair_count": 1,
+            "n_completed_required_per_root_order_block": 50,
+            "total_completed_required": 100,
+        },
+        "score_test_power_plan",
+    )
     membership = pd.DataFrame(
         {
             "strategy": ["1", "2"],
@@ -334,7 +352,10 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 4
+    assert report["report_contract_version"] == 5
+    assert report["profile"]["purpose"] == "integration"
+    assert report["profile"]["production_eligible"] is False
+    assert report["profile"]["release_eligible"] is False
     assert report["conditioning"]["trueskill"] == TRUESKILL_CONDITIONING
     completion = json.loads(
         stage_done_path(cfg.stage_dir("reporting"), "structure_reporting").read_text(
@@ -346,7 +367,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert completion["outputs"]
     report_identity = load_authenticated_sidecar(cfg.structure_report_json_path())
     assert report_identity.versions.artifact_contract_version == 3
-    assert report_identity.versions.method_versions["structure_report_contract_version"] == 4
+    assert report_identity.versions.method_versions["structure_report_contract_version"] == 5
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
@@ -358,6 +379,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert report["h2h"]["unique_best_claim_permitted"] is True
     assert report["robustness"]["pareto_members"] == ["1"]
     assert "Unique best among the frozen two-player finalists" in markdown
+    assert "non-production, non-release integration evidence" in markdown
     assert cfg.structure_report_plot_path().stat().st_size > 0
     for path in (
         cfg.structure_report_json_path(),
@@ -405,6 +427,23 @@ def _claim_report(
     permitted: bool = False,
 ) -> dict[str, Any]:
     return {
+        "profile": {
+            "purpose": "integration",
+            "reduced_resolution": True,
+            "production_eligible": False,
+            "release_eligible": False,
+            "configured_resolution": 0.08,
+            "workload_by_k": {"2": {"achieved_resolution": 0.04}},
+            "bootstrap_replicates": 500,
+            "rng_partitions": 8,
+            "candidate_contribution_size_by_method": {"win_rate": 8, "trueskill": 8},
+            "frozen_candidate_cap": 12,
+            "final_h2h": {
+                "final_candidate_count": 2,
+                "unordered_pair_count": 1,
+                "planned_completed_games": 100,
+            },
+        },
         "robustness": {
             "pareto_member_count": 2,
             "maximin_descriptive_leader": "A",
@@ -469,3 +508,4 @@ def test_markdown_uses_external_diagnostic_label_for_multi_k_claims() -> None:
 
     assert "external_two_player_finalist_diagnostic" in markdown
     assert "not a unique-best claim for the configured multi-k" in markdown
+    assert "non-production, non-release integration evidence" in markdown

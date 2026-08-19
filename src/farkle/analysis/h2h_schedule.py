@@ -22,6 +22,7 @@ from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
 
 from farkle.config import AppConfig, ArtifactScope
+from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.simulation import PlayerRngCoordinates, _play_game
 from farkle.simulation.strategies import parse_strategy_identifier
@@ -688,6 +689,13 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "seat_order_rng_contract": "independent_coordinate_streams",
         "power_validation": power_grid,
     }
+    plan["profile"] = resolved_profile_metadata(
+        cfg,
+        final_candidate_count=len(candidates),
+        pair_count=pair_count,
+        planned_h2h_games=total_completed_required,
+        h2h_games_per_root_order_block=block_games,
+    )
     if cfg._game_profile_sha256 is not None:
         plan["game_profile_sha256"] = cfg._game_profile_sha256
     power_path = cfg.h2h_power_plan_path()

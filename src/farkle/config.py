@@ -159,6 +159,16 @@ class RNGConfig:
 
 
 @dataclass
+class ProfileConfig:
+    """Declared run purpose and the claims its outputs may support."""
+
+    purpose: str = "production"
+    reduced_resolution: bool = False
+    production_eligible: bool = True
+    release_eligible: bool = True
+
+
+@dataclass
 class ScreeningConfig:
     """Broad tournament resolution and candidate-screening settings."""
 
@@ -456,6 +466,7 @@ class AppConfig:
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     rng: RNGConfig = field(default_factory=RNGConfig)
+    profile: ProfileConfig = field(default_factory=ProfileConfig)
     screening: ScreeningConfig = field(default_factory=ScreeningConfig)
     batching: BatchingConfig = field(default_factory=BatchingConfig)
     robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
@@ -1403,6 +1414,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "orchestration": OrchestrationConfig,
         "resources": ResourcesConfig,
         "rng": RNGConfig,
+        "profile": ProfileConfig,
         "screening": ScreeningConfig,
         "batching": BatchingConfig,
         "robustness": RobustnessConfig,
@@ -1619,6 +1631,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
         resources=build(ResourcesConfig, data.get("resources", {})),
         rng=build(RNGConfig, data.get("rng", {})),
+        profile=build(ProfileConfig, data.get("profile", {})),
         screening=build(ScreeningConfig, data.get("screening", {})),
         batching=build(BatchingConfig, data.get("batching", {})),
         robustness=build(RobustnessConfig, data.get("robustness", {})),
@@ -1766,6 +1779,7 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
         "ingest.n_jobs",
         "head2head.n_jobs",
         "resources",
+        "profile",
     ):
         _drop_nested_path(resolved, path)
     return resolved
@@ -1888,6 +1902,27 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("sim.n_players_list must contain player counts >= 2")
     if len(set(player_counts)) != len(player_counts):
         raise ValueError("sim.n_players_list must not contain duplicate player counts")
+    profile = cfg.profile
+    if profile.purpose not in {"smoke", "integration", "production"}:
+        raise ValueError("profile.purpose must be 'smoke', 'integration', or 'production'")
+    for name in ("reduced_resolution", "production_eligible", "release_eligible"):
+        if not isinstance(getattr(profile, name), bool):
+            raise TypeError(f"profile.{name} must be a boolean")
+    if profile.purpose == "production":
+        if (
+            profile.reduced_resolution
+            or not profile.production_eligible
+            or not profile.release_eligible
+        ):
+            raise ValueError(
+                "production profiles must be full-resolution, production-eligible, and "
+                "release-eligible"
+            )
+    elif not profile.reduced_resolution or profile.production_eligible or profile.release_eligible:
+        raise ValueError(
+            "smoke and integration profiles must be reduced-resolution, non-production, "
+            "and non-release"
+        )
     if cfg.rng.scheme_version != 2 or cfg.rng.bit_generator != "PCG64DXSM":
         raise ValueError("rng must use scheme_version=2 and bit_generator='PCG64DXSM'")
     rng_cap = cfg.analysis.rng_max_matchup_groups
@@ -2070,10 +2105,11 @@ def compute_stage_config_sha(cfg: AppConfig, stage_key: str) -> str:
     from farkle.analysis.stage_registry import resolve_stage_definition
 
     definition = resolve_stage_definition(stage_key)
-    stage_scope = _project_effective_config(
-        _hashable_config_dict(cfg),
-        definition.cache_scope,
-    )
+    stage_hashable = _hashable_config_dict(cfg)
+    # Run-purpose labels do not alter statistical compute identity, but stages
+    # that publish those labels may opt into their authenticated cache scope.
+    stage_hashable["profile"] = dataclasses.asdict(cfg.profile)
+    stage_scope = _project_effective_config(stage_hashable, definition.cache_scope)
     canonical_json = json.dumps(
         {
             "stage": stage_key,
@@ -2109,6 +2145,7 @@ __all__ = [
     "OrchestrationConfig",
     "ResourcesConfig",
     "RNGConfig",
+    "ProfileConfig",
     "ScreeningConfig",
     "BatchingConfig",
     "RobustnessConfig",

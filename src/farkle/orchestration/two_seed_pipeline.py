@@ -15,6 +15,7 @@ from farkle import analysis
 from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.analysis.stage_runner import StageRunContext, StageRunner, StageRunResult
 from farkle.config import AppConfig, assign_config_sha
+from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -32,6 +33,7 @@ from farkle.orchestration.seed_utils import (
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
 from farkle.utils.artifact_contract import sha256_file
+from farkle.utils.artifacts import read_json_artifact
 from farkle.utils.authenticated_contract import (
     CodeIdentity,
     CodeIdentityPolicy,
@@ -280,6 +282,35 @@ def _project_file_capacity(cfg: AppConfig, *, root_count: int) -> dict[str, obje
     }
 
 
+def _final_profile_metadata(
+    cfg: AppConfig,
+    pair_context: RootPairRunContext | None,
+) -> dict[str, Any]:
+    """Resolve final candidate and exact H2H plan counts when they are available."""
+
+    if pair_context is None:
+        return resolved_profile_metadata(cfg)
+    family_path = pair_context.config.h2h_candidate_family_manifest_path()
+    power_path = pair_context.config.h2h_power_plan_path()
+    if not family_path.exists() or not power_path.exists():
+        return resolved_profile_metadata(cfg)
+    family = cast(
+        dict[str, Any],
+        read_json_artifact(family_path),
+    )
+    power = cast(
+        dict[str, Any],
+        read_json_artifact(power_path),
+    )
+    return resolved_profile_metadata(
+        cfg,
+        final_candidate_count=int(family["candidate_count"]),
+        pair_count=int(power["unordered_pair_count"]),
+        planned_h2h_games=int(power["total_completed_required"]),
+        h2h_games_per_root_order_block=int(power["n_completed_required_per_root_order_block"]),
+    )
+
+
 def _build_seed_cfg(
     cfg: AppConfig,
     *,
@@ -419,6 +450,7 @@ def _run_one_seed(
     apply_native_thread_limits(policy_bundle.simulation)
     root_timings: list[dict[str, object]] = []
     try:
+
         def run_simulation() -> str:
             if not force and seed_has_completion_markers(root_cfg):
                 return "root_simulation_skipped_complete"
@@ -572,15 +604,18 @@ def _final_release_gate(
         )
         for failure in audit_failures:
             failures.append(f"{label} authenticated graph: {failure}")
-    release_eligible = (
+    code_release_eligible = (
         code_identity.policy == CodeIdentityPolicy.RELEASE_CLEAN.value
         and code_identity.state == "clean"
     )
-    if not release_eligible and not allow_oracle_code_identity:
+    if not code_release_eligible and not allow_oracle_code_identity:
         failures.append("release approval requires release-clean code identity")
+    profile_release_eligible = pair_context.config.profile.release_eligible
+    release_eligible = code_release_eligible and profile_release_eligible
     return {
         "status": "passed" if not failures else "failed",
         "release_eligible": release_eligible,
+        "profile_release_eligible": profile_release_eligible,
         "accepted_release_identity": [3, 2, 2, 2, 2, 2],
         "artifact_roots": [str(context.analysis_root) for context in contexts],
         "run_contexts": run_contexts,
@@ -642,6 +677,7 @@ def _run_pipeline_observed(
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
+    profile_metadata = resolved_profile_metadata(cfg)
     boundary_provenance = memory_boundary_provenance(cfg.resources)
     resource_policy = resolve_resource_policy(cfg.resources).as_metadata(
         effective_hard_limit_mb=cast(int | None, boundary_provenance.get("effective_hard_limit_mb"))
@@ -652,6 +688,7 @@ def _run_pipeline_observed(
             "seed_pair": list(seed_pair),
             "status": "running",
             "config_sha": cfg.config_sha,
+            "profile": profile_metadata,
             "resource_policy": resource_policy,
             "worker_policy": policy_bundle.as_metadata(),
             "os_memory_boundary": boundary_provenance,
@@ -672,6 +709,7 @@ def _run_pipeline_observed(
             "resolved_policy": policy_bundle.as_metadata(),
             "os_memory_boundary": boundary_provenance,
             "file_count_capacity": file_capacity,
+            "profile": profile_metadata,
         },
         run_id=run_id,
         config_sha=cfg.config_sha,
@@ -932,6 +970,10 @@ def _run_pipeline_observed(
         "seed_pair": list(seed_pair),
         "status": overall_status,
         "config_sha": cfg.config_sha,
+        "profile": _final_profile_metadata(
+            cfg,
+            pair_context if pair_error is None else None,
+        ),
         "resource_telemetry": {
             "resource_policy": resource_policy,
             "worker_policy": policy_bundle.as_metadata(),

@@ -170,6 +170,19 @@ changing code or accepting a statistical conclusion.
   Per-k, seat-analysis, and top-level metrics completion inventories include
   those canonical manifests; live multi-shard simulation manifests retain their
   append/finalize lifecycle.
+  Task 2 maps the existing fast configuration family to an explicit
+  reduced-resolution integration profile. Profile purpose and claim-eligibility
+  labels are authenticated in run contexts and label-publishing stage scopes
+  while remaining outside statistical compute identity. The fast numerical
+  identity now uses resolution target 0.08, 500 bootstrap replicates, eight RNG
+  partitions, top-eight win-rate and TrueSkill contributions, and a
+  balanced-tail candidate cap of 12. The existing 100-by-30 batching floor
+  resolves that target to 3,000 shuffles per root/k (achieved maximum Wilson
+  width about 0.035761), and the existing exact H2H power method projects at
+  most 66 pairs, 1,372 completed games per root/order block, and 362,208
+  planned completed games. Reports, run contexts, health, and the H2H power plan
+  expose the profile and resolved workload; non-production integration runs
+  cannot become release-eligible merely from a clean code identity.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

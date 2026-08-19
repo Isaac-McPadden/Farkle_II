@@ -11,6 +11,7 @@ an actionable replacement message and are never reinterpreted.
 | `io` | Results-root prefix and analysis subdirectory |
 | `sim` | Roots, player counts, strategy grid, simulation workers, and checkpoints |
 | `rng` | RNG scheme and bit generator |
+| `profile` | Run purpose and production/release claim eligibility |
 | `screening` | Wilson-width target, practical thresholds, bootstrap size, and candidate inputs |
 | `batching` | Deterministic batch construction |
 | `robustness` | Pareto, maximin, and two-root stability diagnostics |
@@ -38,7 +39,7 @@ an actionable replacement message and are never reinterpreted.
 
 - `rng.scheme_version = 2`
 - `rng.bit_generator = PCG64DXSM`
-- `screening.resolution_delta = 0.03`, the maximum full 95% Wilson width
+- production `screening.resolution_delta = 0.03`, the maximum full 95% Wilson width
 - `screening.practical_delta_by_k` must contain every configured k
 - `screening.delta_across_k` must be positive
 - `batching.target_batches = 100`
@@ -86,6 +87,24 @@ The workload planner chooses the smallest shuffle count meeting the Wilson
 target, then rounds upward to 100 equal contiguous batches. A cap that is too
 small produces `blocked_by_cap` before simulation work begins.
 
+## Run profiles
+
+`profile.purpose` is `smoke`, `integration`, or `production`. Production
+profiles are full-resolution, production-eligible, and release-eligible. Smoke
+and integration profiles must be explicitly reduced-resolution,
+non-production, and non-release. These claim labels are authenticated in the
+run context and in stages that publish them, but remain outside statistical
+compute identity; the numerical workload settings independently change that
+identity.
+
+`fast_config.yaml` is the existing machine-targeted integration family. It
+preserves 80 strategies, roots 48/49, and k=2/4/5, with a 0.08 configured
+resolution, 500 bootstrap replicates, eight RNG partitions, top-eight
+contributions per ranking method, and a balanced-tail frozen-candidate cap of
+12. The locked batching floor resolves 0.08 to 3,000 shuffles (100 batches of
+30) per root/k, not approximately 600, and achieves a maximum Wilson width of
+about 0.035761. This is development evidence only.
+
 ## H2H contract
 
 - `family_alpha = 0.02`
@@ -105,6 +124,12 @@ completed support. Work is equal across roots and seat orders; single-root work
 is equal across seat orders. `total_game_cap` authorization and progress live in
 mutable execution state, so a cap-only raise never rewrites the immutable power
 plan or block manifest.
+
+Balanced-tail contraction lowers both method-specific cutoffs simultaneously,
+uses stable source ranks (with strategy identifier tie-breaking for equal
+win-rate scores), and preserves configured controls and mandatory diagnostics.
+It may finish below the cap when a simultaneous tail removal drops multiple
+unique candidates; it does not introduce a new inferential selection rule.
 
 ## Simulation, analysis, and model settings
 
@@ -158,10 +183,11 @@ replicate ranges.
 
 The library/default YAML is a conservative portable profile with automatic CPU
 detection. `fast_config.yaml` and `farkle_mega_config.yaml` are explicitly
-machine-targeted for the Ryzen 7 3700X / 32 GiB production-test host: 15 logical
-CPUs, an 8192 MiB scheduler and warning budget, a 12288 MiB aggregate hard
-limit, an 8192 MiB minimum host reserve, a 512 MiB parent estimate, and one
-native thread per worker. Those values are not universal defaults. Preflight
+machine-targeted for the Ryzen 7 3700X / 32 GiB host: 15 logical CPUs, an 8192
+MiB scheduler and warning budget, a 12288 MiB aggregate hard limit, a 512 MiB
+parent estimate, and one native thread per worker. The integration profile uses
+a 4096 MiB minimum host reserve; the mega production profile retains 8192 MiB.
+Those values are not universal defaults. Preflight
 rejects an explicit CPU budget above detected logical CPUs or a hard-limit plus
 host-reserve total above detected physical memory.
 

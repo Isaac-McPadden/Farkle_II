@@ -9,7 +9,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis.candidate_family import freeze_h2h_candidate_family
+from farkle.analysis.candidate_family import (
+    _contract_family,
+    _rank_contribution,
+    _RankedContribution,
+    freeze_h2h_candidate_family,
+)
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.trueskill_screening import (
     TRUESKILL_CONDITIONING,
@@ -18,6 +23,7 @@ from farkle.analysis.trueskill_screening import (
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
+    ArtifactSidecar,
     make_artifact_sidecar,
     validate_artifact_sidecar,
 )
@@ -39,6 +45,15 @@ def _cfg(tmp_path: Path, *, cap: int | None = 5) -> AppConfig:
     cfg.head2head.candidate_cap = cap
     cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
     return cfg
+
+
+def _ranked(order: tuple[int, ...]) -> _RankedContribution:
+    return _RankedContribution(
+        ranks={strategy: rank for rank, strategy in enumerate(order, 1)},
+        scores={strategy: float(len(order) - rank) for rank, strategy in enumerate(order, 1)},
+        score_name="fixture_score",
+        sidecar=cast(ArtifactSidecar, None),
+    )
 
 
 def _write_frame(
@@ -181,6 +196,59 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
     freeze_h2h_candidate_family(cfg, force=True)
     replay = json.loads(artifacts.manifest.read_text(encoding="utf-8"))
     assert replay["family_hash"] == manifest["family_hash"]
+
+
+def test_balanced_tail_over_cap_disjoint_contributions_remain_method_symmetric() -> None:
+    family, initial, final, history, _removed = _contract_family(
+        win_rate=_ranked(tuple(range(1, 9))),
+        trueskill=_ranked(tuple(range(9, 17))),
+        contribution_size=8,
+        candidate_cap=12,
+        protected=set(),
+    )
+
+    assert initial == {"win_rate": 8, "trueskill": 8}
+    assert final == {"win_rate": 6, "trueskill": 6}
+    assert family == set(range(1, 7)) | set(range(9, 15))
+    assert history[-1]["family_size"] == 12
+
+
+def test_balanced_tail_overlap_and_protected_shared_candidate_are_deterministic() -> None:
+    kwargs = {
+        "win_rate": _ranked((1, 2, 3, 4, 5, 6, 7, 8)),
+        "trueskill": _ranked((1, 9, 10, 11, 12, 13, 14, 8)),
+        "contribution_size": 8,
+        "candidate_cap": 12,
+        "protected": {8},
+    }
+
+    first = _contract_family(**kwargs)
+    second = _contract_family(**kwargs)
+
+    assert first == second
+    family, _initial, final, _history, _removed = first
+    assert final == {"win_rate": 6, "trueskill": 6}
+    assert len(family) == 12
+    assert {1, 8}.issubset(family)
+
+
+def test_tied_win_rate_scores_use_stable_strategy_identifier_order() -> None:
+    frame = pd.DataFrame(
+        {
+            "strategy": [4, 2, 3, 1],
+            "complete_support": [True, True, True, True],
+            "score": [0.5, 0.5, 0.5, 0.6],
+        }
+    )
+
+    contribution = _rank_contribution(
+        frame,
+        score_column="score",
+        label="tie fixture",
+        sidecar=cast(ArtifactSidecar, None),
+    )
+
+    assert contribution.ordered == [1, 2, 3, 4]
 
 
 def test_candidate_family_without_cap_keeps_complete_declared_union(tmp_path: Path) -> None:

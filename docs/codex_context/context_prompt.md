@@ -45,6 +45,12 @@ Preserve these invariants:
 - active configs contain only reloadable public fields; resolved paths, layouts,
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
+- run profiles explicitly declare smoke/integration/production purpose and
+  production/release claim eligibility; the existing fast family is
+  reduced-resolution integration evidence, profile labels stay outside
+  statistical compute identity but are authenticated in run contexts and
+  label-publishing stages, and a non-release profile cannot pass the release
+  eligibility gate;
 - public process-tree execution is launched inside one aggregate Windows Job
   Object or delegated cgroup-v2 `memory.max` boundary using an explicit aggregate
   hard limit; scheduler admission memory, RSS high-water warning, host-available
