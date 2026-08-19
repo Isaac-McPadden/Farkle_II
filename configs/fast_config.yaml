@@ -115,7 +115,7 @@ screening:
   projected_games_per_second: null
 
 batching:
-  target_batches: 100
+  target_batches: 20
   min_shuffles_per_batch: 30
 
 robustness:

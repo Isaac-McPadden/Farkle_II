@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig, ProfileConfig, SimConfig, assign_config_sha
+from farkle.config import (
+    AppConfig,
+    IOConfig,
+    ProfileConfig,
+    SimConfig,
+    assign_config_sha,
+    compute_config_sha,
+)
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -186,8 +193,11 @@ def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -
     assert changed_payload["resource_config_sha256"] != original_payload["resource_config_sha256"]
 
 
-def test_run_context_authenticates_non_release_profile_labels(tmp_path: Path) -> None:
+def test_purpose_only_change_preserves_compute_identity_but_invalidates_claim_context(
+    tmp_path: Path,
+) -> None:
     context = _root_context(tmp_path, 11)
+    context.config.batching = replace(context.config.batching, target_batches=20)
     context.config.profile = ProfileConfig(
         purpose="integration",
         reduced_resolution=True,
@@ -203,14 +213,19 @@ def test_run_context_authenticates_non_release_profile_labels(tmp_path: Path) ->
             dirty_fingerprint_sha256=None,
         ),
     )
-    payload = load_run_context(context.run_context_path)
+    integration_payload = load_run_context(context.run_context_path)
+    statistical_identity = compute_config_sha(context.config)
 
-    assert payload["profile"]["purpose"] == "integration"
-    assert payload["profile"]["reduced_resolution"] is True
-    assert payload["profile"]["production_eligible"] is False
-    assert payload["profile"]["release_eligible"] is False
+    assert integration_payload["profile"]["purpose"] == "integration"
+    assert integration_payload["profile"]["reduced_resolution"] is True
+    assert integration_payload["profile"]["production_eligible"] is False
+    assert integration_payload["profile"]["release_eligible"] is False
 
-    context.config.profile = ProfileConfig()
+    context.config.profile = replace(context.config.profile, purpose="production")
+    assert compute_config_sha(context.config) == statistical_identity
+    assert integration_payload["public_config_sha256"] == statistical_identity
+    assert context.config.profile.production_eligible is False
+    assert context.config.profile.release_eligible is False
     from farkle.orchestration.seed_utils import write_active_config
 
     write_active_config(context.config)
@@ -219,3 +234,6 @@ def test_run_context_authenticates_non_release_profile_labels(tmp_path: Path) ->
             context.run_context_path,
             active_config_path=context.active_config_path,
         )
+
+    with pytest.raises(ValueError, match="production profiles must be full-resolution"):
+        context.config.validate_statistical_contract()

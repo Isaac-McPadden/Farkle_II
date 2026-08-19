@@ -61,7 +61,7 @@ class ArtifactScope(str, Enum):
 
 RETIRED_CONFIG_KEYS: dict[str, str] = {
     "resources.target_memory_mb": (
-        "resources.scheduler_memory_budget_mb and " "resources.process_tree_warning_threshold_mb"
+        "resources.scheduler_memory_budget_mb and resources.process_tree_warning_threshold_mb"
     ),
     "resources.memory_safety_factor": "resources.aggregate_memory_hard_limit_mb",
     "resources.parent_reserve_mb": "resources.parent_process_memory_mb",
@@ -2001,9 +2001,14 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         or cfg.screening.projected_games_per_second <= 0.0
     ):
         raise ValueError("screening.projected_games_per_second must be positive when configured")
-    if cfg.batching.target_batches != 100 or cfg.batching.min_shuffles_per_batch < 30:
+    required_batch_count = 20 if cfg.profile.purpose == "integration" else 100
+    if (
+        cfg.batching.target_batches != required_batch_count
+        or cfg.batching.min_shuffles_per_batch < 30
+    ):
         raise ValueError(
-            "batching requires exactly 100 equal batches with at least 30 shuffles per batch"
+            f"{cfg.profile.purpose} batching requires exactly {required_batch_count} equal "
+            "batches with at least 30 shuffles per batch"
         )
 
     practical = cfg.screening.practical_delta_by_k

@@ -176,9 +176,10 @@ changing code or accepting a statistical conclusion.
   while remaining outside statistical compute identity. The fast numerical
   identity now uses resolution target 0.08, 500 bootstrap replicates, eight RNG
   partitions, top-eight win-rate and TrueSkill contributions, and a
-  balanced-tail candidate cap of 12. The existing 100-by-30 batching floor
-  resolves that target to 3,000 shuffles per root/k (achieved maximum Wilson
-  width about 0.035761), and the existing exact H2H power method projects at
+  balanced-tail candidate cap of 12. Its integration-only 20-batch granularity
+  and existing 30-shuffle floor resolve the unrounded requirement of 597 to
+  600 shuffles per root/k (achieved maximum Wilson width about 0.0797603), while
+  production retains 100 batches. The existing exact H2H power method projects at
   most 66 pairs, 1,372 completed games per root/order block, and 362,208
   planned completed games. Reports, run contexts, health, and the H2H power plan
   expose the profile and resolved workload; non-production integration runs

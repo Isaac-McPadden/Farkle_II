@@ -101,9 +101,10 @@ identity.
 preserves 80 strategies, roots 48/49, and k=2/4/5, with a 0.08 configured
 resolution, 500 bootstrap replicates, eight RNG partitions, top-eight
 contributions per ranking method, and a balanced-tail frozen-candidate cap of
-12. The locked batching floor resolves 0.08 to 3,000 shuffles (100 batches of
-30) per root/k, not approximately 600, and achieves a maximum Wilson width of
-about 0.035761. This is development evidence only.
+12. The integration-only 20-batch granularity and locked 30-shuffle floor
+resolve the unrounded 597-shuffle requirement to 600 shuffles per root/k and
+achieve a maximum Wilson width of about 0.0797603. Production profiles retain
+100 batches. This is development evidence only.
 
 ## H2H contract
 

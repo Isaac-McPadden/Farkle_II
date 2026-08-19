@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resolve_stage_layout
 from farkle.config import AppConfig, ProfileConfig, compute_config_sha, load_app_config
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
 
@@ -38,18 +39,23 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     workload = metadata["workload_by_k"]
     assert set(workload) == {"2", "4", "5"}
     assert {cell["required_shuffles_unrounded"] for cell in workload.values()} == {597}
-    assert {cell["required_shuffles"] for cell in workload.values()} == {3_000}
-    assert {cell["batch_count"] for cell in workload.values()} == {100}
+    assert {cell["required_shuffles"] for cell in workload.values()} == {600}
+    assert {cell["batch_count"] for cell in workload.values()} == {20}
     assert {cell["shuffles_per_batch"] for cell in workload.values()} == {30}
     assert all(
-        cell["achieved_resolution"] == pytest.approx(0.03576099446779917)
+        cell["achieved_resolution"] == pytest.approx(0.07976027215162139)
         for cell in workload.values()
     )
     assert {k: cell["required_games_per_root"] for k, cell in workload.items()} == {
-        "2": 120_000,
-        "4": 60_000,
-        "5": 48_000,
+        "2": 24_000,
+        "4": 12_000,
+        "5": 9_600,
     }
+    assert sum(cell["required_games_per_root"] for cell in workload.values()) == 45_600
+    assert (
+        len(metadata["roots"]) * sum(cell["required_games_per_root"] for cell in workload.values())
+        == 91_200
+    )
 
     h2h = metadata["projected_h2h"]
     assert h2h["candidate_count"] == 12
@@ -68,14 +74,57 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     assert cfg.resources.parent_process_memory_mb == 512
     assert cfg.resources.logical_cpu_budget == 15
     assert cfg.resources.native_threads_per_worker == 1
+    assert cfg.batching.target_batches == 20
+    assert cfg.batching.min_shuffles_per_batch == 30
     assert compute_config_sha(cfg) == (
-        "fe0e55de5613c2a296030c1fdc64c410a69131b70620e74a3d37430037c9fb3c"
+        "0e2b6bad2a5fa07dcefa39466e96e170b4127fccf0f493e232daed79b9839b2e"
     )
     with_old_host_reserve = replace(
         cfg,
         resources=replace(cfg.resources, minimum_system_available_memory_mb=2_048),
     )
     assert compute_config_sha(with_old_host_reserve) == compute_config_sha(cfg)
+
+
+def test_fast_config_keeps_pipeline_execution_mechanisms_and_principal_stages() -> None:
+    cfg = load_app_config(CONFIG_DIR / "fast_config.yaml", seed_list_len=2)
+
+    assert cfg.batching.target_batches > 1
+    assert cfg.sim.n_jobs is not None and cfg.sim.n_jobs > 1
+    assert cfg.analysis.n_jobs is not None and cfg.analysis.n_jobs > 1
+    assert cfg.head2head.n_jobs == 0  # auto-resolved multiprocessing
+    assert cfg.sim.ckpt_every_sec > 0
+    assert cfg.sim.row_dir is not None
+    assert cfg.analysis.disable_rng_diagnostics is False
+    assert resolve_stage_layout(cfg).keys() == [
+        "ingest",
+        "curate",
+        "combine",
+        "metrics",
+        "game_stats",
+        "rng_diagnostics",
+        "trueskill",
+        "hgb",
+        "screening",
+        "candidate_freeze",
+        "h2h_power",
+        "h2h_execute",
+        "h2h_inference",
+        "h2h_digest",
+        "agreement",
+        "reporting",
+    ]
+    assert resolve_root_pair_stage_layout(cfg).keys() == [
+        "root_stability",
+        "trueskill",
+        "candidate_freeze",
+        "h2h_power",
+        "h2h_execute",
+        "h2h_inference",
+        "h2h_digest",
+        "agreement",
+        "reporting",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -107,6 +156,8 @@ def test_production_configs_retain_statistical_settings_and_identity(
     assert cfg.analysis.rng_diagnostic_partitions == 32
     assert cfg.screening.candidate_contribution_size == 75
     assert cfg.head2head.candidate_cap is None
+    assert cfg.batching.target_batches == 100
+    assert cfg.batching.min_shuffles_per_batch == 30
     assert compute_config_sha(cfg) == expected_hash
 
 

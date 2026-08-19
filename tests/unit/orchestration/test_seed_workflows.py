@@ -12,6 +12,7 @@ from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import (
     AnalysisConfig,
     AppConfig,
+    BatchingConfig,
     IOConfig,
     ProfileConfig,
     ScreeningConfig,
@@ -168,6 +169,7 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
             production_eligible=False,
             release_eligible=False,
         ),
+        batching=BatchingConfig(target_batches=20),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
@@ -234,6 +236,7 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
             production_eligible=False,
             release_eligible=False,
         ),
+        batching=BatchingConfig(target_batches=20),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
