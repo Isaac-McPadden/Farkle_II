@@ -65,6 +65,13 @@ Preserve these invariants:
   are never quarantined for a soft warning, and roots fail fast before pair work;
 - byte-bounded streaming, atomic durable units, and exact resume are permanent
   engineering invariants; a fixed 1 GiB process-tree ceiling is not;
+- RNG diagnostic checkpoint route-layout v2 groups the canonical source-row-group
+  sequence into deterministic contiguous ranges of at most 32 row groups. Route
+  units stream one source row group and projected Arrow batch at a time, declare
+  their repeated partition-batch layout in Arrow metadata, and reducers consume
+  the already authenticated manifest inventory. Partition checkpoint schema v2
+  prevents reuse of the former one-row-group route layout; RNG method v4,
+  cache-key v6, statistical identity, and canonical output schemas are unchanged;
 - simulation v3 publication is producer-owned: staged data is hashed and
   sidecarred without a canonical data rewrite, coordinate-sorted native
   manifests reuse those identities, routine completion/resume is metadata-fast,

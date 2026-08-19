@@ -184,6 +184,17 @@ changing code or accepting a statistical conclusion.
   planned completed games. Reports, run contexts, health, and the H2H power plan
   expose the profile and resolved workload; non-production integration runs
   cannot become release-eligible merely from a clean code identity.
+  Task 3B advances only the RNG partition checkpoint schema to v2 and introduces
+  route-layout v2. The canonical source-row-group sequence is divided into
+  contiguous half-open ranges of at most 32 row groups, including cross-file
+  ranges. Route workers retain byte-bounded projected reads and process one row
+  group at a time. Arrow route metadata authenticates the repeated
+  source-batch-then-partition layout, reducers consume the validated manifest
+  inventory instead of synthesizing filenames, and bounded spill coalescing
+  reduces initial runs. The layout version, range size, complete plan, and source
+  row-group count are bound to route identity and downstream manifests. RNG
+  diagnostic method v4, cache-key v6, statistical config identity, canonical
+  schemas, grouping, eligibility, cap, lag, and coordinate semantics are unchanged.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

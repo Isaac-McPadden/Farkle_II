@@ -83,7 +83,9 @@ _EXPECTED_NOTE = (
 )
 _BAND_METHOD = "zero_centered_1.96_over_sqrt_lagged_pairs_descriptive_reference_band"
 _DIAGNOSTIC_METHOD_VERSION = 4
-_PARTITION_SCHEMA_VERSION = 1
+_PARTITION_SCHEMA_VERSION = 2
+_ROUTE_LAYOUT_VERSION = 2
+_ROUTE_ROW_GROUPS_PER_UNIT = 32
 _GAME_COORDINATE_COLUMNS = ("root_seed", "k", "shuffle_index", "game_index")
 _SEAT_COORDINATE_COLUMNS = (*_GAME_COORDINATE_COLUMNS, "seat_index")
 _SEQUENCE_DEFINITION = "externally_partitioned_rng_v2_semantic_coordinate_then_group_filter"
@@ -206,37 +208,51 @@ class _CountRouteWriter:
     expected_root_seed: int
 
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
-        source_map = {ordinal: (source, row_group) for ordinal, source, row_group in self.sources}
-        source, row_group = source_map[int(unit.key[0])]
-        schema = _count_arrow_schema(len(self.strat_cols))
+        covered = _sources_for_route_unit(unit, self.sources)
+        schema = _route_arrow_schema(
+            _count_arrow_schema(len(self.strat_cols)),
+            route_kind="count",
+            partition_count=self.partition_count,
+        )
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            batches = _iter_row_group_batches(
-                Path(source),
-                row_group,
-                columns=self.columns,
-                batch_bytes=self.batch_bytes,
-                expansion=max(2, len(self.strat_cols) + 1),
-            )
-            with closing(batches):
-                for batch in batches:
-                    arrays = _extract_batch_arrays(
-                        batch,
-                        winner_col=self.winner_col,
-                        strat_cols=self.strat_cols,
-                        expected_root_seed=self.expected_root_seed,
-                    )
-                    records = _count_records(arrays)
-                    partitions = _stable_partitions(records, self.partition_count)
-                    for partition in range(self.partition_count):
-                        writer.write_batch(
-                            _count_records_to_batch(records[partitions == partition], schema)
+            for _ordinal, source, row_group in covered:
+                batches = _iter_row_group_batches(
+                    Path(source),
+                    row_group,
+                    columns=self.columns,
+                    batch_bytes=self.batch_bytes,
+                    expansion=max(2, len(self.strat_cols) + 1),
+                )
+                with closing(batches):
+                    for batch in batches:
+                        arrays = _extract_batch_arrays(
+                            batch,
+                            winner_col=self.winner_col,
+                            strat_cols=self.strat_cols,
+                            expected_root_seed=self.expected_root_seed,
                         )
+                        records = _count_records(arrays)
+                        partitions = _stable_partitions(records, self.partition_count)
+                        for partition in range(self.partition_count):
+                            writer.write_batch(
+                                _count_records_to_batch(records[partitions == partition], schema)
+                            )
+                report_worker_progress(
+                    "rng_count_route_source_row_group_complete",
+                    counters={"source_row_groups_completed": 1},
+                )
+        report_worker_progress(
+            "rng_count_route_unit_complete",
+            counters={
+                "durable_route_units_completed": 1,
+                "route_row_groups_covered": len(covered),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class _EligibilityWriter:
-    count_route_root: str
-    count_route_units: int
+    count_route_paths: tuple[str, ...]
     partition_count: int
     max_players: int
     minimum_observations: int
@@ -248,26 +264,40 @@ class _EligibilityWriter:
         dtype = _count_dtype(self.max_players)
         with _temporary_workspace(prefix=f"farkle_rng_count_p{partition:03d}_") as temp:
             runs: list[Path] = []
-            for source_unit in range(self.count_route_units):
-                route_path = (
-                    Path(self.count_route_root) / "units" / f"row-group-{source_unit:05d}.arrow"
+            spill_bytes = 0
+            max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
+            for route_path_text in self.count_route_paths:
+                pending: list[np.ndarray] = []
+                pending_bytes = 0
+                route_path = Path(route_path_text)
+                for batch in _iter_route_partition_batches(
+                    route_path,
+                    partition=partition,
+                    partition_count=self.partition_count,
+                    route_kind="count",
+                    expected_schema=_count_arrow_schema(self.max_players),
+                ):
+                    if batch.num_rows == 0:
+                        continue
+                    records = _count_batch_to_records(batch, dtype)
+                    if pending and pending_bytes + records.nbytes > max_spill_bytes:
+                        spill_bytes += _write_count_spill(pending, temp, runs)
+                        pending = []
+                        pending_bytes = 0
+                    pending.append(records)
+                    pending_bytes += records.nbytes
+                if pending:
+                    spill_bytes += _write_count_spill(pending, temp, runs)
+                report_worker_progress(
+                    "rng_count_reduce_route_open",
+                    counters={"reducer_route_units_opened": 1},
                 )
-                with route_path.open("rb") as handle, ipc.open_file(handle) as reader:
-                    for batch_index in range(
-                        partition, reader.num_record_batches, self.partition_count
-                    ):
-                        batch = reader.get_batch(batch_index)
-                        if batch.num_rows == 0:
-                            continue
-                        run = temp / f"run-{len(runs):06d}.bin"
-                        _reduce_count_array(_count_batch_to_records(batch, dtype)).tofile(run)
-                        runs.append(run)
             report_worker_progress(
                 "rng_count_spill_complete",
                 counters={
                     "spill_runs_created": len(runs),
-                    "spill_bytes_written": _safe_file_bytes(runs),
-                    "route_units_scanned": self.count_route_units,
+                    "spill_bytes_written": spill_bytes,
+                    "route_units_scanned": len(self.count_route_paths),
                 },
             )
             merged = _collapse_count_runs(runs, temp, dtype)
@@ -301,38 +331,56 @@ class _StatsRouteWriter:
             max_players=len(self.strat_cols),
             max_bytes=self.selection_memory_bytes,
         )
-        source_map = {ordinal: (source, row_group) for ordinal, source, row_group in self.sources}
-        source, row_group = source_map[int(unit.key[0])]
-        schema = _observation_arrow_schema(len(self.strat_cols))
+        report_worker_progress(
+            "rng_stats_route_membership_loaded",
+            counters={"selection_membership_loads": 1},
+        )
+        covered = _sources_for_route_unit(unit, self.sources)
+        schema = _route_arrow_schema(
+            _observation_arrow_schema(len(self.strat_cols)),
+            route_kind="stats",
+            partition_count=self.partition_count,
+        )
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            batches = _iter_row_group_batches(
-                Path(source),
-                row_group,
-                columns=self.columns,
-                batch_bytes=self.batch_bytes,
-                expansion=max(2, len(self.strat_cols) + 1),
-            )
-            with closing(batches):
-                for batch in batches:
-                    arrays = _extract_batch_arrays(
-                        batch,
-                        winner_col=self.winner_col,
-                        strat_cols=self.strat_cols,
-                        expected_root_seed=self.expected_root_seed,
-                    )
-                    records = _observation_records(arrays)
-                    partitions = _stable_partitions(records, self.partition_count)
-                    for partition in range(self.partition_count):
-                        subset = records[partitions == partition]
-                        if subset.size:
-                            subset = subset[_membership_mask(subset, memberships[partition])]
-                        writer.write_batch(_observation_records_to_batch(subset, schema))
+            for _ordinal, source, row_group in covered:
+                batches = _iter_row_group_batches(
+                    Path(source),
+                    row_group,
+                    columns=self.columns,
+                    batch_bytes=self.batch_bytes,
+                    expansion=max(2, len(self.strat_cols) + 1),
+                )
+                with closing(batches):
+                    for batch in batches:
+                        arrays = _extract_batch_arrays(
+                            batch,
+                            winner_col=self.winner_col,
+                            strat_cols=self.strat_cols,
+                            expected_root_seed=self.expected_root_seed,
+                        )
+                        records = _observation_records(arrays)
+                        partitions = _stable_partitions(records, self.partition_count)
+                        for partition in range(self.partition_count):
+                            subset = records[partitions == partition]
+                            if subset.size:
+                                subset = subset[_membership_mask(subset, memberships[partition])]
+                            writer.write_batch(_observation_records_to_batch(subset, schema))
+                report_worker_progress(
+                    "rng_stats_route_source_row_group_complete",
+                    counters={"source_row_groups_completed": 1},
+                )
+        report_worker_progress(
+            "rng_stats_route_unit_complete",
+            counters={
+                "durable_route_units_completed": 1,
+                "route_row_groups_covered": len(covered),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class _StatsPartitionWriter:
-    stats_route_root: str
-    stats_route_units: int
+    stats_route_paths: tuple[str, ...]
     partition_count: int
     max_players: int
     lags: tuple[int, ...]
@@ -343,27 +391,40 @@ class _StatsPartitionWriter:
         dtype = _observation_dtype(self.max_players)
         with _temporary_workspace(prefix=f"farkle_rng_stats_p{partition:03d}_") as temp:
             runs: list[Path] = []
-            for source_unit in range(self.stats_route_units):
-                route_path = (
-                    Path(self.stats_route_root) / "units" / f"row-group-{source_unit:05d}.arrow"
+            spill_bytes = 0
+            max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
+            for route_path_text in self.stats_route_paths:
+                pending: list[np.ndarray] = []
+                pending_bytes = 0
+                route_path = Path(route_path_text)
+                for batch in _iter_route_partition_batches(
+                    route_path,
+                    partition=partition,
+                    partition_count=self.partition_count,
+                    route_kind="stats",
+                    expected_schema=_observation_arrow_schema(self.max_players),
+                ):
+                    if batch.num_rows == 0:
+                        continue
+                    records = _observation_batch_to_records(batch, dtype)
+                    if pending and pending_bytes + records.nbytes > max_spill_bytes:
+                        spill_bytes += _write_observation_spill(pending, temp, runs)
+                        pending = []
+                        pending_bytes = 0
+                    pending.append(records)
+                    pending_bytes += records.nbytes
+                if pending:
+                    spill_bytes += _write_observation_spill(pending, temp, runs)
+                report_worker_progress(
+                    "rng_stats_reduce_route_open",
+                    counters={"reducer_route_units_opened": 1},
                 )
-                with route_path.open("rb") as handle, ipc.open_file(handle) as reader:
-                    for batch_index in range(
-                        partition, reader.num_record_batches, self.partition_count
-                    ):
-                        batch = reader.get_batch(batch_index)
-                        if batch.num_rows == 0:
-                            continue
-                        run = temp / f"run-{len(runs):06d}.bin"
-                        records = _observation_batch_to_records(batch, dtype)
-                        records[_observation_sort_order(records)].tofile(run)
-                        runs.append(run)
             report_worker_progress(
                 "rng_stats_spill_complete",
                 counters={
                     "spill_runs_created": len(runs),
-                    "spill_bytes_written": _safe_file_bytes(runs),
-                    "route_units_scanned": self.stats_route_units,
+                    "spill_bytes_written": spill_bytes,
+                    "route_units_scanned": len(self.stats_route_paths),
                 },
             )
             merged = _collapse_observation_runs(runs, temp, dtype)
@@ -376,7 +437,13 @@ class _StatsPartitionWriter:
             )
 
 
-def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = False) -> None:
+def run(
+    cfg: AppConfig,
+    *,
+    lags: Sequence[int] | None = None,
+    force: bool = False,
+    _route_row_groups_per_unit: int | None = None,
+) -> None:
     """Compute bounded, resumable lag diagnostics from curated rows."""
 
     stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
@@ -500,6 +567,19 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         )
     )
     row_groups = len(row_group_sources)
+    route_row_groups_per_unit = (
+        _ROUTE_ROW_GROUPS_PER_UNIT
+        if _route_row_groups_per_unit is None
+        else int(_route_row_groups_per_unit)
+    )
+    route_units = tuple(
+        _row_group_units(row_group_sources, row_groups_per_unit=route_row_groups_per_unit)
+    )
+    route_unit_count = len(route_units)
+    route_layout_sha = _route_layout_sha256(
+        row_group_sources,
+        row_groups_per_unit=route_row_groups_per_unit,
+    )
     batch_bytes = int(
         cfg.resources.stage_batch_bytes.get(
             "rng_diagnostics", cfg.resources.stage_batch_bytes["analysis"]
@@ -512,16 +592,26 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     minimum_observations = min(normalized_lags) + 2
 
     count_route_root = stage_root / "01_count_route"
+    if scope is not None:
+        scope.update(
+            phase="rng_count_route",
+            state="working",
+            progress={
+                "source_row_groups_total": row_groups,
+                "durable_route_units_total": route_unit_count,
+                "route_row_groups_per_unit": route_row_groups_per_unit,
+            },
+        )
     count_route = run_partitioned_stage(
         root=count_route_root,
         identity=_partition_identity(
             "rng_diagnostics_count_route",
             root_seed,
-            (("curated_rows", source_sha),),
+            (("curated_rows", source_sha), ("route_layout", route_layout_sha)),
             stage_config_sha,
             code_sha,
         ),
-        unit_source=lambda: _row_group_units(row_groups),
+        unit_source=lambda: iter(route_units),
         writer=_CountRouteWriter(
             row_group_sources,
             tuple(columns),
@@ -536,8 +626,14 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
-        progress_total_units=row_groups,
+        progress_total_units=route_unit_count,
         progress_phase="rng_count_route",
+        enable_worker_progress=True,
+    )
+    count_route_paths = _route_inventory_from_manifest(
+        count_route.manifest_path,
+        root=count_route_root,
+        expected_units=route_units,
     )
 
     eligibility_root = stage_root / "02_eligibility"
@@ -552,8 +648,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         ),
         unit_source=lambda: _partition_units(partitions, "part", ".parquet"),
         writer=_EligibilityWriter(
-            str(count_route_root),
-            row_groups,
+            count_route_paths,
             partitions,
             len(strat_cols),
             minimum_observations,
@@ -605,24 +700,36 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
                 "eligible_groups": int(selection_report["eligible_groups"]),
                 "selected_groups": int(selection_report["selected_groups"]),
                 "capped_groups": int(selection_report["deterministically_capped_groups"]),
-                "skipped_groups": int(
-                    selection_report["below_minimum_observation_groups"]
-                ),
+                "skipped_groups": int(selection_report["below_minimum_observation_groups"]),
             },
         )
     selection_sha = sha256_file(selection_file)
 
     stats_route_root = stage_root / "03_stats_route"
+    if scope is not None:
+        scope.update(
+            phase="rng_stats_route",
+            state="working",
+            progress={
+                "source_row_groups_total": row_groups,
+                "durable_route_units_total": route_unit_count,
+                "route_row_groups_per_unit": route_row_groups_per_unit,
+            },
+        )
     stats_route = run_partitioned_stage(
         root=stats_route_root,
         identity=_partition_identity(
             "rng_diagnostics_stats_route",
             root_seed,
-            (("curated_rows", source_sha), ("selection", selection_sha)),
+            (
+                ("curated_rows", source_sha),
+                ("route_layout", route_layout_sha),
+                ("selection", selection_sha),
+            ),
             stage_config_sha,
             code_sha,
         ),
-        unit_source=lambda: _row_group_units(row_groups),
+        unit_source=lambda: iter(route_units),
         writer=_StatsRouteWriter(
             row_group_sources,
             str(selection_file),
@@ -639,8 +746,14 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
         memory_guard=guard,
-        progress_total_units=row_groups,
+        progress_total_units=route_unit_count,
         progress_phase="rng_stats_route",
+        enable_worker_progress=True,
+    )
+    stats_route_paths = _route_inventory_from_manifest(
+        stats_route.manifest_path,
+        root=stats_route_root,
+        expected_units=route_units,
     )
 
     stats_root = stage_root / "04_stats"
@@ -661,8 +774,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         ),
         unit_source=lambda: _partition_units(partitions, "part", ".parquet"),
         writer=_StatsPartitionWriter(
-            str(stats_route_root),
-            row_groups,
+            stats_route_paths,
             partitions,
             len(strat_cols),
             normalized_lags,
@@ -719,6 +831,16 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
             stage="rng_diagnostics",
             summary={
                 "row_groups": row_groups,
+                "source_row_groups_total": row_groups,
+                "count_route_source_row_groups_completed": row_groups,
+                "count_route_units_total": count_route.required_units,
+                "count_route_units_reused": count_route.reused_units,
+                "count_route_units_completed": count_route.completed_units,
+                "stats_route_units_total": stats_route.required_units,
+                "stats_route_source_row_groups_completed": row_groups,
+                "stats_route_units_reused": stats_route.reused_units,
+                "stats_route_units_completed": stats_route.completed_units,
+                "route_row_groups_per_unit": route_row_groups_per_unit,
                 "partitions": partitions,
                 "lags": len(normalized_lags),
                 "candidate_groups": capacity.total_candidate_group_count,
@@ -765,9 +887,81 @@ def _diagnostic_code_sha256(cfg: AppConfig) -> str:
     return resolved_code_identity_sha256(cfg)
 
 
-def _row_group_units(count: int) -> Iterator[PartitionedUnit]:
-    for index in range(count):
-        yield PartitionedUnit((index,), f"row-group-{index:05d}.arrow")
+def _row_group_units(
+    sources: Sequence[tuple[int, str, int]],
+    *,
+    row_groups_per_unit: int,
+) -> Iterator[PartitionedUnit]:
+    """Plan deterministic contiguous half-open ranges over canonical row groups."""
+
+    if row_groups_per_unit < 1:
+        raise ValueError("RNG route row groups per unit must be positive")
+    for expected, (ordinal, _source, row_group) in enumerate(sources):
+        if ordinal != expected:
+            raise ValueError("RNG route sources must have contiguous canonical ordinals")
+        if row_group < 0:
+            raise ValueError("RNG route source row-group indices must be nonnegative")
+    width = max(5, len(str(max(0, len(sources) - 1))))
+    for start in range(0, len(sources), row_groups_per_unit):
+        stop = min(len(sources), start + row_groups_per_unit)
+        yield PartitionedUnit(
+            (start, stop),
+            f"row-groups-{start:0{width}d}-{stop - 1:0{width}d}.arrow",
+        )
+
+
+def _sources_for_route_unit(
+    unit: PartitionedUnit,
+    sources: Sequence[tuple[int, str, int]],
+) -> tuple[tuple[int, str, int], ...]:
+    if len(unit.key) != 2 or not all(isinstance(value, int) for value in unit.key):
+        raise ValueError("RNG route unit requires integer start/stop coordinates")
+    start, stop = cast(tuple[int, int], unit.key)
+    if start < 0 or stop <= start or stop > len(sources):
+        raise ValueError("RNG route unit is outside the canonical source inventory")
+    covered = tuple(sources[start:stop])
+    if tuple(item[0] for item in covered) != tuple(range(start, stop)):
+        raise ValueError("RNG route unit does not cover its canonical interval exactly once")
+    return covered
+
+
+def _route_layout_sha256(
+    sources: Sequence[tuple[int, str, int]],
+    *,
+    row_groups_per_unit: int,
+) -> str:
+    units = tuple(_row_group_units(sources, row_groups_per_unit=row_groups_per_unit))
+    payload = {
+        "route_layout_version": _ROUTE_LAYOUT_VERSION,
+        "row_groups_per_unit": row_groups_per_unit,
+        "source_row_groups": len(sources),
+        "units": [
+            {"key": list(unit.key), "relative_output": unit.relative_output} for unit in units
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _route_inventory_from_manifest(
+    manifest: Path,
+    *,
+    root: Path,
+    expected_units: Sequence[PartitionedUnit],
+) -> tuple[str, ...]:
+    """Read paths once from an already authenticated partition manifest."""
+
+    entries: list[tuple[tuple[int | str, ...], str]] = []
+    with manifest.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            payload = json.loads(line)
+            if payload.get("type") == "unit":
+                entries.append((tuple(payload["unit_key"]), str(payload["relative_output"])))
+    expected = [(unit.key, unit.relative_output) for unit in expected_units]
+    if entries != expected:
+        raise ValueError("authenticated RNG route manifest does not match the planned inventory")
+    return tuple(str(root / "units" / relative) for _key, relative in entries)
 
 
 def _partition_units(count: int, prefix: str, suffix: str) -> Iterator[PartitionedUnit]:
@@ -836,6 +1030,53 @@ def _iter_row_group_batches(
                 if piece.nbytes > batch_bytes and piece.num_rows > 1:
                     raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
                 yield piece
+
+
+def _route_arrow_schema(
+    schema: pa.Schema,
+    *,
+    route_kind: str,
+    partition_count: int,
+) -> pa.Schema:
+    if route_kind not in {"count", "stats"} or partition_count < 1:
+        raise ValueError("invalid RNG route schema metadata")
+    return schema.with_metadata(
+        {
+            b"farkle_rng_route_layout_version": str(_ROUTE_LAYOUT_VERSION).encode("ascii"),
+            b"farkle_rng_route_kind": route_kind.encode("ascii"),
+            b"farkle_rng_route_partition_count": str(partition_count).encode("ascii"),
+            b"farkle_rng_route_batch_layout": b"source_batch_then_partition",
+        }
+    )
+
+
+def _iter_route_partition_batches(
+    path: Path,
+    *,
+    partition: int,
+    partition_count: int,
+    route_kind: str,
+    expected_schema: pa.Schema,
+) -> Iterator[pa.RecordBatch]:
+    """Yield one partition from each repeated partition block in a route file."""
+
+    if partition < 0 or partition >= partition_count:
+        raise ValueError("RNG route partition is outside the declared layout")
+    with path.open("rb") as handle, ipc.open_file(handle) as reader:
+        metadata = reader.schema.metadata or {}
+        expected_metadata = _route_arrow_schema(
+            expected_schema,
+            route_kind=route_kind,
+            partition_count=partition_count,
+        ).metadata
+        if not reader.schema.equals(expected_schema, check_metadata=False):
+            raise ValueError("RNG route file schema does not match its reducer")
+        if metadata != expected_metadata:
+            raise ValueError("RNG route file layout metadata is missing or incompatible")
+        if reader.num_record_batches % partition_count:
+            raise ValueError("RNG route file has an incomplete partition batch block")
+        for batch_index in range(partition, reader.num_record_batches, partition_count):
+            yield reader.get_batch(batch_index)
 
 
 def _parquet_num_row_groups(path: Path) -> int:
@@ -1092,6 +1333,39 @@ def _safe_file_bytes(paths: Sequence[Path]) -> int:
         except OSError:
             continue
     return total
+
+
+def _write_count_spill(
+    chunks: Sequence[np.ndarray],
+    temp: Path,
+    runs: list[Path],
+) -> int:
+    records = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+    reduced = _reduce_count_array(records)
+    run = temp / f"run-{len(runs):06d}.bin"
+    reduced.tofile(run)
+    runs.append(run)
+    return int(run.stat().st_size)
+
+
+def _write_observation_spill(
+    chunks: Sequence[np.ndarray],
+    temp: Path,
+    runs: list[Path],
+) -> int:
+    records = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+    ordered = records[_observation_sort_order(records)]
+    if ordered.size > 1:
+        fields = _observation_sort_fields(ordered.dtype)
+        duplicate = np.ones(ordered.size - 1, dtype=bool)
+        for name in fields:
+            duplicate &= ordered[name][1:] == ordered[name][:-1]
+        if np.any(duplicate):
+            raise ValueError("duplicate RNG diagnostic semantic observation coordinate")
+    run = temp / f"run-{len(runs):06d}.bin"
+    ordered.tofile(run)
+    runs.append(run)
+    return int(run.stat().st_size)
 
 
 def _merge_count_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:

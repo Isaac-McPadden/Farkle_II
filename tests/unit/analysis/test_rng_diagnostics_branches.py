@@ -9,6 +9,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
 import pytest
@@ -69,12 +70,14 @@ def _config_with_input(
     cap: int = 100,
     workers: int = 1,
     lags: tuple[int, ...] = (1, 2),
+    row_group_size: int = 64_000,
 ):
     cfg = make_authenticated_v3_config(tmp_path, name=name, root_seed=root_seed, player_counts=(2,))
     cfg.analysis.rng_diagnostic_partitions = partitions
     cfg.analysis.rng_max_matchup_groups = cap
     cfg.analysis.rng_diagnostic_lags = lags
     cfg.analysis.n_jobs = workers
+    cfg.ingest.row_group_size = row_group_size
     assign_config_sha(cfg)
     publish_v3_parquet(
         cfg,
@@ -126,6 +129,147 @@ def test_compact_group_records_and_shared_ring_accumulator() -> None:
         metric.push(value)
     assert metric.result(0)[0] == pytest.approx(-0.5)
     assert metric.result(2) == (None, "insufficient_pairs")
+
+
+@pytest.mark.parametrize(
+    ("count", "range_size", "expected"),
+    [
+        (3, 8, [(0, 3)]),
+        (8, 8, [(0, 8)]),
+        (10, 4, [(0, 4), (4, 8), (8, 10)]),
+    ],
+)
+def test_route_range_plan_is_contiguous_and_complete(
+    count: int, range_size: int, expected: list[tuple[int, int]]
+) -> None:
+    sources = tuple((index, "source.parquet", index) for index in range(count))
+    units = tuple(rng_diagnostics._row_group_units(sources, row_groups_per_unit=range_size))
+
+    assert [unit.key for unit in units] == expected
+    covered = [
+        ordinal
+        for unit in units
+        for ordinal, _source, _row_group in rng_diagnostics._sources_for_route_unit(unit, sources)
+    ]
+    assert covered == list(range(count))
+    assert len(covered) == len(set(covered))
+    assert all(unit.relative_output.startswith("row-groups-") for unit in units)
+
+
+def test_route_range_plan_crosses_source_boundaries_deterministically() -> None:
+    sources = (
+        (0, "a.parquet", 0),
+        (1, "a.parquet", 1),
+        (2, "b.parquet", 0),
+        (3, "b.parquet", 1),
+        (4, "b.parquet", 2),
+    )
+    units = tuple(rng_diagnostics._row_group_units(sources, row_groups_per_unit=3))
+
+    assert [unit.key for unit in units] == [(0, 3), (3, 5)]
+    assert rng_diagnostics._sources_for_route_unit(units[0], sources) == sources[:3]
+    assert units == tuple(rng_diagnostics._row_group_units(sources, row_groups_per_unit=3))
+
+
+def test_coarsened_route_recovers_every_partition_across_row_groups_and_batches(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2), (1, 3)] * 12)
+    source = tmp_path / "source.parquet"
+    pq.write_table(table, source, row_group_size=12)
+    sources = ((0, str(source), 0), (1, str(source), 1))
+    unit = next(rng_diagnostics._row_group_units(sources, row_groups_per_unit=8))
+    route = tmp_path / unit.relative_output
+    columns = tuple(table.schema.names)
+    writer = rng_diagnostics._CountRouteWriter(
+        sources,
+        columns,
+        "winner_strategy",
+        ("P1_strategy", "P2_strategy"),
+        4,
+        128,
+        9,
+    )
+    writer(unit, route)
+
+    recovered = []
+    batches_per_partition = []
+    for partition in range(4):
+        batches = list(
+            rng_diagnostics._iter_route_partition_batches(
+                route,
+                partition=partition,
+                partition_count=4,
+                route_kind="count",
+                expected_schema=rng_diagnostics._count_arrow_schema(2),
+            )
+        )
+        batches_per_partition.append(len(batches))
+        recovered.extend(
+            rng_diagnostics._count_batch_to_records(batch, rng_diagnostics._count_dtype(2))
+            for batch in batches
+            if batch.num_rows
+        )
+    actual = rng_diagnostics._reduce_count_array(np.concatenate(recovered))
+    arrays = rng_diagnostics._extract_batch_arrays(
+        table.to_batches()[0],
+        winner_col="winner_strategy",
+        strat_cols=("P1_strategy", "P2_strategy"),
+        expected_root_seed=9,
+    )
+    expected = rng_diagnostics._count_records(arrays)
+    np.testing.assert_array_equal(actual, expected)
+    assert len(set(batches_per_partition)) == 1
+    assert batches_per_partition[0] > 2
+
+
+def test_coarsened_route_streams_uneven_row_groups_within_batch_budget(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 53)
+    source = tmp_path / "uneven.parquet"
+    with pq.ParquetWriter(source, table.schema) as writer:
+        writer.write_table(table.slice(0, 1))
+        writer.write_table(table.slice(1, 50))
+        writer.write_table(table.slice(51, 2))
+    projected = (
+        "root_seed",
+        "k",
+        "shuffle_index",
+        "game_index",
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+        "n_rounds",
+        "winner_strategy",
+        "P1_strategy",
+        "P2_strategy",
+    )
+    for row_group in range(3):
+        batches = list(
+            rng_diagnostics._iter_row_group_batches(
+                source,
+                row_group,
+                columns=projected,
+                batch_bytes=256,
+                expansion=3,
+            )
+        )
+        assert batches
+        assert all(batch.nbytes <= 256 for batch in batches)
+
+    sources = tuple((index, str(source), index) for index in range(3))
+    unit = next(rng_diagnostics._row_group_units(sources, row_groups_per_unit=8))
+    route = tmp_path / unit.relative_output
+    rng_diagnostics._CountRouteWriter(
+        sources,
+        projected,
+        "winner_strategy",
+        ("P1_strategy", "P2_strategy"),
+        4,
+        256,
+        9,
+    )(unit, route)
+    assert route.is_file()
 
 
 def test_seed_46_matchup_is_canonicalized_and_repeated_observations_aggregate() -> None:
@@ -214,6 +358,46 @@ def test_full_canonical_key_distinguishes_an_injected_digest_collision(
     assert set(zip(kept["p0"], kept["p1"], strict=True)) == {(1, 2)}
 
 
+def test_injected_digest_collision_remains_distinct_through_coarsened_full_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    collision_id = np.uint64(0x0123456789ABCDEF)
+
+    def collide(k: np.ndarray, sorted_seats: np.ndarray) -> np.ndarray:
+        del sorted_seats
+        return np.full(k.size, collision_id, dtype=np.uint64)
+
+    monkeypatch.setattr(rng_diagnostics, "_matchup_ids", collide)
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 8 + [(1, 3)] * 8)
+    cfg = _config_with_input(
+        tmp_path,
+        name="collision_full_stage",
+        table=table,
+        partitions=4,
+        row_group_size=2,
+    )
+
+    rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+
+    selection = pq.read_table(cfg.rng_output_path("rng_group_selection.parquet")).to_pandas()
+    matchup_selection = selection.loc[selection["group_type"] == rng_diagnostics._GROUP_MATCHUP]
+    assert set(matchup_selection["group_id"]) == {int(collision_id)}
+    assert {tuple(value) for value in matchup_selection[["p0", "p1"]].to_numpy()} == {
+        (1, 2),
+        (1, 3),
+    }
+    result_table = pq.read_table(cfg.rng_output_path("rng_diagnostics.parquet"))
+    matchup_table = result_table.filter(
+        pc.equal(result_table["summary_level"], pa.scalar("matchup"))
+    )
+    assert set(matchup_table["matchup_id"].drop_null().to_pylist()) == {int(collision_id)}
+    matchup_results = matchup_table.to_pandas()
+    assert {tuple(value) for value in matchup_results["participant_strategy_ids"]} == {
+        (1, 2),
+        (1, 3),
+    }
+
+
 def test_eligibility_error_preserves_primary_exception_and_removes_workspace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -230,8 +414,10 @@ def test_eligibility_error_preserves_primary_exception_and_removes_workspace(
         np.array([2], dtype=np.int16), np.array([[13, 31]], dtype=np.int32)
     )
     record["count"] = 1
-    schema = rng_diagnostics._count_arrow_schema(2)
-    route_path = units / "row-group-00000.arrow"
+    schema = rng_diagnostics._route_arrow_schema(
+        rng_diagnostics._count_arrow_schema(2), route_kind="count", partition_count=1
+    )
+    route_path = units / "row-groups-00000-00000.arrow"
     with route_path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
         writer.write_batch(rng_diagnostics._count_records_to_batch(record, schema))
 
@@ -244,7 +430,7 @@ def test_eligibility_error_preserves_primary_exception_and_removes_workspace(
             created.append(Path(self.name))
 
     monkeypatch.setattr(rng_diagnostics, "TemporaryDirectory", TrackingTemporaryDirectory)
-    writer = rng_diagnostics._EligibilityWriter(str(route_root), 1, 1, 2, 3, 9, 16)
+    writer = rng_diagnostics._EligibilityWriter((str(route_path),), 1, 2, 3, 9, 16)
     failed_output = tmp_path / "failed-output.parquet"
     with pytest.raises(ValueError, match="not canonically ordered"):
         writer(rng_diagnostics.PartitionedUnit((0,), "part-000.parquet"), failed_output)
@@ -322,8 +508,12 @@ def test_small_fixture_matches_legacy_statistics_where_semantics_are_retained(
 
 def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path) -> None:
     table = _curated_table(root_seed=9, matchups=[(1, 2)] * 9 + [(1, 3)] * 9)
-    serial = _config_with_input(tmp_path, name="serial", table=table, partitions=4, workers=1)
-    parallel = _config_with_input(tmp_path, name="parallel", table=table, partitions=4, workers=2)
+    serial = _config_with_input(
+        tmp_path, name="serial", table=table, partitions=4, workers=1, row_group_size=3
+    )
+    parallel = _config_with_input(
+        tmp_path, name="parallel", table=table, partitions=4, workers=2, row_group_size=3
+    )
 
     rng_diagnostics.run(serial)
     recorder = SupervisorHeartbeatRecorder(
@@ -343,9 +533,7 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
     pd.testing.assert_frame_equal(
         _sorted_results(serial),
         _sorted_results(parallel),
-        check_exact=False,
-        rtol=1e-15,
-        atol=1e-15,
+        check_exact=True,
     )
     assert (
         serial.rng_output_path("rng_diagnostics.parquet").read_bytes()
@@ -357,13 +545,94 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
     )
     completed = cast(dict[str, dict[str, object]], recorder.summary()["completed_progress"])
     rng_summary = completed["rng_scope:rng_diagnostics"]
-    assert rng_summary["row_groups"] == 1
+    assert rng_summary["row_groups"] == 6
+    assert rng_summary["source_row_groups_total"] == 6
+    assert rng_summary["count_route_units_total"] == 1
+    assert rng_summary["stats_route_units_total"] == 1
+    assert rng_summary["route_row_groups_per_unit"] == 32
     assert rng_summary["partitions"] == 4
-    assert rng_summary["reconciled_from"] == (
-        "authenticated_rng_outputs_and_partition_manifests"
-    )
+    assert rng_summary["reconciled_from"] == ("authenticated_rng_outputs_and_partition_manifests")
     scope.finish(status="success")
     recorder.close()
+
+
+def test_one_row_group_and_coarsened_routes_have_exact_canonical_results(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(
+        root_seed=9,
+        matchups=[(1, 2)] * 12 + [(1, 3)] * 12 + [(2, 3)] * 12,
+        order=list(reversed(range(36))),
+    )
+    baseline = _config_with_input(
+        tmp_path,
+        name="route_one",
+        table=table,
+        partitions=4,
+        row_group_size=3,
+        lags=(1, 2, 5),
+    )
+    coarsened = _config_with_input(
+        tmp_path,
+        name="route_four",
+        table=table,
+        partitions=4,
+        row_group_size=3,
+        lags=(1, 2, 5),
+    )
+
+    rng_diagnostics.run(baseline, _route_row_groups_per_unit=1)
+    rng_diagnostics.run(coarsened, _route_row_groups_per_unit=4)
+
+    baseline_output = baseline.rng_output_path("rng_diagnostics.parquet")
+    coarsened_output = coarsened.rng_output_path("rng_diagnostics.parquet")
+    assert baseline_output.read_bytes() == coarsened_output.read_bytes()
+    assert (
+        baseline.rng_output_path("rng_group_selection.parquet").read_bytes()
+        == coarsened.rng_output_path("rng_group_selection.parquet").read_bytes()
+    )
+    baseline_table = pq.read_table(baseline_output)
+    coarsened_table = pq.read_table(coarsened_output)
+    assert baseline_table.schema == coarsened_table.schema
+    assert baseline_table.equals(coarsened_table)
+    for field in baseline_table.schema:
+        if pa.types.is_floating(field.type):
+            left = baseline_table[field.name].combine_chunks().to_numpy(zero_copy_only=False)
+            right = coarsened_table[field.name].combine_chunks().to_numpy(zero_copy_only=False)
+            np.testing.assert_array_equal(left.view(np.uint64), right.view(np.uint64))
+
+    left_summary = json.loads(
+        baseline.rng_output_path("rng_diagnostics_summary.json").read_text(encoding="utf-8")
+    )
+    right_summary = json.loads(
+        coarsened.rng_output_path("rng_diagnostics_summary.json").read_text(encoding="utf-8")
+    )
+    for operational in ("partition_manifest_sha256", "peak_sampled_process_tree_rss_mb"):
+        left_summary.pop(operational)
+        right_summary.pop(operational)
+    assert left_summary == right_summary
+
+    baseline_checkpoint = next((baseline.rng_stage_dir / "checkpoints").iterdir())
+    coarsened_checkpoint = next((coarsened.rng_stage_dir / "checkpoints").iterdir())
+    baseline_routes = list((baseline_checkpoint / "01_count_route" / "units").glob("*.arrow"))
+    coarsened_routes = list((coarsened_checkpoint / "01_count_route" / "units").glob("*.arrow"))
+    assert len(baseline_routes) == 12
+    assert len(coarsened_routes) == 3
+
+
+def test_diagnostic_partition_counts_preserve_exact_logical_results(tmp_path: Path) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 12 + [(1, 3)] * 12 + [(2, 3)] * 12)
+    two = _config_with_input(
+        tmp_path, name="partitions_two", table=table, partitions=2, row_group_size=3
+    )
+    eight = _config_with_input(
+        tmp_path, name="partitions_eight", table=table, partitions=8, row_group_size=3
+    )
+
+    rng_diagnostics.run(two, _route_row_groups_per_unit=4)
+    rng_diagnostics.run(eight, _route_row_groups_per_unit=4)
+
+    pd.testing.assert_frame_equal(_sorted_results(two), _sorted_results(eight), check_exact=True)
 
 
 def test_merge_memmaps_are_closed_after_success_and_failure(tmp_path: Path) -> None:
@@ -394,6 +663,8 @@ def test_merge_memmaps_are_closed_after_success_and_failure(tmp_path: Path) -> N
     observation["p1"] = -1
     observation.tofile(observation_input_a)
     observation.tofile(observation_input_b)
+    with pytest.raises(ValueError, match="duplicate RNG diagnostic semantic observation"):
+        rng_diagnostics._write_observation_spill([np.repeat(observation, 2)], tmp_path, [])
     with pytest.raises(ValueError, match="duplicate RNG diagnostic semantic observation"):
         rng_diagnostics._merge_observation_files(
             [observation_input_a, observation_input_b], observation_output, observation_dtype
@@ -495,6 +766,110 @@ def test_corrupt_partition_is_quarantined_and_other_partitions_are_reused(
     assert validate_authenticated_artifact_unbound(
         cfg.rng_output_path("rng_diagnostics.parquet"), validate_provenance=False
     )
+
+
+def test_interrupted_coarsened_route_is_atomic_and_resumes_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 24)
+    cfg = _config_with_input(
+        tmp_path, name="route_interrupt", table=table, row_group_size=3, partitions=2
+    )
+    original = rng_diagnostics._CountRouteWriter.__call__
+    interrupted = {"raised": False}
+
+    def interrupt_after_write(self, unit, path):
+        original(self, unit, path)
+        if unit.key == (4, 8) and not interrupted["raised"]:
+            interrupted["raised"] = True
+            raise RuntimeError("synthetic ranged-route interruption")
+
+    monkeypatch.setattr(rng_diagnostics._CountRouteWriter, "__call__", interrupt_after_write)
+    with pytest.raises(RuntimeError, match="synthetic ranged-route interruption"):
+        rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+
+    checkpoint = next((cfg.rng_stage_dir / "checkpoints").iterdir()) / "01_count_route"
+    first = checkpoint / "units" / "row-groups-00000-00003.arrow"
+    interrupted_output = checkpoint / "units" / "row-groups-00004-00007.arrow"
+    assert first.is_file()
+    assert first.with_name(f"{first.name}.unit.done.json").is_file()
+    assert not interrupted_output.exists()
+    assert not interrupted_output.with_name(f"{interrupted_output.name}.unit.done.json").exists()
+    first_mtime = first.stat().st_mtime_ns
+
+    calls: dict[tuple[int | str, ...], int] = {}
+
+    def count_calls(self, unit, path):
+        calls[unit.key] = calls.get(unit.key, 0) + 1
+        return original(self, unit, path)
+
+    monkeypatch.setattr(rng_diagnostics._CountRouteWriter, "__call__", count_calls)
+    rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+
+    assert first.stat().st_mtime_ns == first_mtime
+    assert calls == {(4, 8): 1}
+    assert (checkpoint / "partition_manifest.jsonl").is_file()
+
+
+def test_corrupt_ranged_route_is_quarantined_without_rewriting_valid_ranges(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 24)
+    cfg = _config_with_input(
+        tmp_path, name="route_corruption", table=table, row_group_size=3, partitions=2
+    )
+    rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+    checkpoint = next((cfg.rng_stage_dir / "checkpoints").iterdir()) / "01_count_route"
+    routes = sorted((checkpoint / "units").glob("*.arrow"))
+    untouched = {path.name: path.stat().st_mtime_ns for path in routes[1:]}
+    routes[0].write_bytes(b"corrupt")
+    for path in (
+        cfg.rng_output_path("rng_diagnostics.parquet"),
+        cfg.rng_output_path("rng_diagnostics_summary.json"),
+    ):
+        path.unlink()
+        sidecar_path(path).unlink()
+    (cfg.rng_stage_dir / "rng_diagnostics.done.json").unlink()
+
+    rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+
+    assert all(
+        (checkpoint / "units" / name).stat().st_mtime_ns == modified
+        for name, modified in untouched.items()
+    )
+    assert any((checkpoint / "quarantine").iterdir())
+    assert validate_authenticated_artifact_unbound(
+        cfg.rng_output_path("rng_diagnostics.parquet"), validate_provenance=False
+    )
+
+
+def test_route_telemetry_reconciles_source_row_groups_and_durable_units(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 24)
+    cfg = _config_with_input(
+        tmp_path, name="route_telemetry", table=table, row_group_size=3, partitions=2
+    )
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.rng.route_telemetry"), run="root_9", interval_seconds=3600.0
+    )
+    scope = recorder.begin_scope(
+        "rng_route_scope", run="root_9", stage="rng_diagnostics", phase="action"
+    )
+    with use_supervisor_recorder(recorder, scope):
+        rng_diagnostics.run(cfg, _route_row_groups_per_unit=4)
+    completed = cast(dict[str, dict[str, object]], recorder.summary()["completed_progress"])
+    summary = completed["rng_route_scope:rng_diagnostics"]
+    assert summary["source_row_groups_total"] == 8
+    assert summary["count_route_source_row_groups_completed"] == 8
+    assert summary["count_route_units_total"] == 2
+    assert summary["count_route_units_completed"] == 2
+    assert summary["stats_route_units_total"] == 2
+    assert summary["stats_route_units_completed"] == 2
+    assert summary["stats_route_source_row_groups_completed"] == 8
+    assert summary["route_row_groups_per_unit"] == 4
+    scope.finish(status="success")
+    recorder.close()
 
 
 def test_sparse_high_cardinality_stays_bounded_and_resumes_after_interruption(
