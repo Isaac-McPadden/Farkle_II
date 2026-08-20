@@ -99,6 +99,9 @@ def read_json_file_with_retry(path: Path | str) -> Any:
     """Read JSON while tolerating transient access and non-atomic remote views."""
 
     source = Path(path)
+    from farkle.utils.authentication_telemetry import record_authentication_open
+
+    record_authentication_open(source)
     io_attempt = 0
     json_view_attempt = 0
     while True:
@@ -259,10 +262,20 @@ def sidecar_path(artifact_path: Path | str) -> Path:
 def sha256_file(path: Path | str, *, chunk_size: int = 1024 * 1024) -> str:
     """Return a streaming SHA-256 digest for *path*."""
 
+    from farkle.utils.authentication_telemetry import (
+        record_authentication_hash,
+        record_authentication_open,
+    )
+
+    source = Path(path)
     digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
+    byte_count = 0
+    record_authentication_open(source)
+    with source.open("rb") as handle:
         while chunk := handle.read(chunk_size):
             digest.update(chunk)
+            byte_count += len(chunk)
+    record_authentication_hash(source, byte_count)
     return digest.hexdigest()
 
 

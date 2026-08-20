@@ -254,6 +254,10 @@ def resolve_stage_state(
 ) -> CompletionState:
     """Resolve one stage into a canonical resumable lifecycle state."""
 
+    from farkle.utils.authentication_telemetry import record_stage_state_resolution
+
+    record_stage_state_resolution()
+
     input_paths = _coerce_paths(inputs)
     output_paths = _coerce_paths(outputs)
     partial = _coerce_paths(partial_paths)

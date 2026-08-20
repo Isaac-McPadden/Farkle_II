@@ -210,6 +210,19 @@ changing code or accepting a statistical conclusion.
   checkpoint history. Pool/initializer, simulation, checkpoint, sidecar,
   execution-state, authentication, aggregation, and shutdown telemetry is
   reported without entering canonical rows.
+  Task 4B captures one frozen, explicitly generation-owned authenticated graph
+  snapshot after each root or pair context becomes complete and quiescent.
+  Snapshots bind run-context/config/code/lineage, exact completion bytes and
+  stage identities, lifecycle hashes, and canonical artifact/manifest
+  inventories; they are nonserializable, process-local, explicitly invalidated,
+  and never canonical or resumable. Final root lifecycle and pair-state queries
+  reuse those identities without rehashing. Pipeline success remains gated by
+  exactly one top-level `final_byte_deep_release_audit` that freshly traverses
+  the two root graphs and pair graph, authenticates current bytes/schemas,
+  contexts/configurations, completion inventories and cross-context provenance,
+  and rejects any post-snapshot mutation. Artifact contract v3, accepted
+  `3/2/2/2/2/2` identity, schemas, paths, statistical methods, and lifecycle
+  hash values are unchanged.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

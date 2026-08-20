@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -92,7 +93,26 @@ def _install_root_results(
     *,
     failed_root: int | None = None,
     failure_classification: str | None = None,
+    rejected_snapshot_root: int | None = None,
 ) -> None:
+    class FakeGeneration:
+        def __init__(self, *, rejected: bool = False) -> None:
+            self.rejected = rejected
+
+        def validate(self, *_args: object, **_kwargs: object) -> None:
+            if self.rejected:
+                raise RuntimeError("explicitly invalidated test snapshot")
+            return None
+
+    def fake_snapshot(scope: str, roots: tuple[int, ...], root: Path) -> Any:
+        return SimpleNamespace(
+            scope=scope,
+            roots=roots,
+            graph_root=root,
+            lifecycle_sha256="e" * 64,
+            stage_states=(("screening", "complete_valid"),),
+        )
+
     def fake_run_one_seed(
         _cfg: AppConfig,
         *,
@@ -109,11 +129,16 @@ def _install_root_results(
                 analysis_error="root analysis failed",
                 failure_classification=failure_classification,
             )
+        snapshot = fake_snapshot("root", (seed,), context.results_root)
         return two_seed_pipeline._SeedRunStatus(
             seed=seed,
             context=context,
             simulation_ok=True,
             analysis_ok=True,
+            lifecycle_sha256=snapshot.lifecycle_sha256,
+            stage_states=dict(snapshot.stage_states),
+            graph_snapshot=snapshot,
+            snapshot_generation=FakeGeneration(rejected=seed == rejected_snapshot_root),  # type: ignore[arg-type]
         )
 
     monkeypatch.setattr(two_seed_pipeline, "_run_one_seed", fake_run_one_seed)
@@ -130,6 +155,14 @@ def _install_root_results(
     monkeypatch.setattr(two_seed_pipeline, "validate_manifest_contract", lambda _path: None)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_build_pair_authenticated_snapshot",
+        lambda context, *_args, **_kwargs: (
+            fake_snapshot("pair", tuple(sorted(context.root_pair)), context.analysis_root),
+            FakeGeneration(),
+        ),
+    )
     monkeypatch.setattr(
         two_seed_pipeline,
         "_current_plan_states",
@@ -212,9 +245,10 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     phase_names = {phase["stage"] for phase in timing["pair"]["finalization_phases"]}
     assert {
         "pair_analysis",
-        "pair_state_recheck",
-        "root_11_lifecycle_recheck",
-        "root_22_lifecycle_recheck",
+        "pair_authenticated_graph_snapshot",
+        "root_11_authenticated_graph_snapshot_reuse",
+        "root_22_authenticated_graph_snapshot_reuse",
+        "final_byte_deep_release_audit",
         "resource_final_check",
     }.issubset(phase_names)
     assert timing["pair"]["post_summary_phases"] == [
@@ -265,7 +299,7 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
     assert "timing_summary" in writes[1]
 
 
-def test_final_release_gate_names_each_context_and_graph_audit_phase(
+def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -275,48 +309,78 @@ def test_final_release_gate_names_each_context_and_graph_audit_phase(
         (first, second),
         pair_root=tmp_path / "pair",
     )
-    for context in (first, second, pair):
-        context.run_context_path.parent.mkdir(parents=True, exist_ok=True)
-        context.run_context_path.write_text("{}", encoding="utf-8")
+    code = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+    snapshots = {
+        11: cast(
+            two_seed_pipeline.AuthenticatedGraphSnapshot,
+            SimpleNamespace(graph_root=first.results_root),
+        ),
+        22: cast(
+            two_seed_pipeline.AuthenticatedGraphSnapshot,
+            SimpleNamespace(graph_root=second.results_root),
+        ),
+    }
+    generations = {
+        11: cast(two_seed_pipeline.SnapshotGeneration, object()),
+        22: cast(two_seed_pipeline.SnapshotGeneration, object()),
+    }
+    pair_snapshot = cast(
+        two_seed_pipeline.AuthenticatedGraphSnapshot,
+        SimpleNamespace(graph_root=pair.analysis_root),
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(two_seed_pipeline, "resolve_code_identity", lambda *_a, **_k: code)
     monkeypatch.setattr(
         two_seed_pipeline,
-        "load_run_context",
-        lambda *_args, **_kwargs: {"run_context_sha256": "b" * 64},
+        "audit_authenticated_release_graphs",
+        lambda targets, **_kwargs: calls.append(tuple(targets))
+        or {
+            "status": "passed",
+            "failures": [],
+            "run_contexts": {},
+            "internal_roots": [{"label": "root_11"}, {"label": "root_22"}, {"label": "pair"}],
+            "top_level_invocations": 1,
+        },
     )
-    monkeypatch.setattr(two_seed_pipeline, "audit_sidecar_completeness", lambda _root: [])
-    phases: list[str] = []
-
-    def run_phase(name: str, action):
-        phases.append(name)
-        return action()
 
     result = two_seed_pipeline._final_release_gate(
         {
-            11: two_seed_pipeline._SeedRunStatus(11, first, True, True),
-            22: two_seed_pipeline._SeedRunStatus(22, second, True, True),
+            11: two_seed_pipeline._SeedRunStatus(
+                11,
+                first,
+                True,
+                True,
+                graph_snapshot=snapshots[11],
+                snapshot_generation=generations[11],
+            ),
+            22: two_seed_pipeline._SeedRunStatus(
+                22,
+                second,
+                True,
+                True,
+                graph_snapshot=snapshots[22],
+                snapshot_generation=generations[22],
+            ),
         },
         pair,
-        code_identity=CodeIdentity(
-            commit="a" * 40,
-            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
-            state="clean",
-            dirty_fingerprint_sha256=None,
-        ),
+        code_identity=code,
         allow_oracle_code_identity=False,
-        phase_runner=run_phase,
+        pair_snapshot=pair_snapshot,
+        pair_generation=cast(two_seed_pipeline.SnapshotGeneration, object()),
+        authentication_telemetry=two_seed_pipeline.AuthenticationTelemetry(),
     )
 
     assert result["status"] == "passed"
     assert result["release_eligible"] is True
     assert result["profile_release_eligible"] is True
-    assert phases == [
-        "run_context_authenticate_root_11",
-        "graph_audit_root_11",
-        "run_context_authenticate_root_22",
-        "graph_audit_root_22",
-        "run_context_authenticate_pair",
-        "graph_audit_pair",
-    ]
+    assert result["top_level_invocations"] == 1
+    assert len(result["internal_roots"]) == 3
+    assert len(calls) == 1
 
 
 def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
@@ -332,29 +396,58 @@ def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
         production_eligible=False,
         release_eligible=False,
     )
-    for context in (first, second, pair):
-        context.run_context_path.parent.mkdir(parents=True, exist_ok=True)
-        context.run_context_path.write_text("{}", encoding="utf-8")
+    code = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+    monkeypatch.setattr(two_seed_pipeline, "resolve_code_identity", lambda *_a, **_k: code)
     monkeypatch.setattr(
         two_seed_pipeline,
-        "load_run_context",
-        lambda *_args, **_kwargs: {"run_context_sha256": "b" * 64},
+        "audit_authenticated_release_graphs",
+        lambda *_args, **_kwargs: {
+            "status": "passed",
+            "failures": [],
+            "run_contexts": {},
+            "internal_roots": [],
+            "top_level_invocations": 1,
+        },
     )
-    monkeypatch.setattr(two_seed_pipeline, "audit_sidecar_completeness", lambda _root: [])
+    root_snapshot = cast(
+        two_seed_pipeline.AuthenticatedGraphSnapshot,
+        SimpleNamespace(graph_root=first.results_root),
+    )
+    snapshot_generation = cast(two_seed_pipeline.SnapshotGeneration, object())
 
     result = two_seed_pipeline._final_release_gate(
         {
-            11: two_seed_pipeline._SeedRunStatus(11, first, True, True),
-            22: two_seed_pipeline._SeedRunStatus(22, second, True, True),
+            11: two_seed_pipeline._SeedRunStatus(
+                11,
+                first,
+                True,
+                True,
+                graph_snapshot=root_snapshot,
+                snapshot_generation=snapshot_generation,
+            ),
+            22: two_seed_pipeline._SeedRunStatus(
+                22,
+                second,
+                True,
+                True,
+                graph_snapshot=root_snapshot,
+                snapshot_generation=snapshot_generation,
+            ),
         },
         pair,
-        code_identity=CodeIdentity(
-            commit="a" * 40,
-            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
-            state="clean",
-            dirty_fingerprint_sha256=None,
-        ),
+        code_identity=code,
         allow_oracle_code_identity=False,
+        pair_snapshot=cast(
+            two_seed_pipeline.AuthenticatedGraphSnapshot,
+            SimpleNamespace(graph_root=pair.analysis_root),
+        ),
+        pair_generation=cast(two_seed_pipeline.SnapshotGeneration, object()),
+        authentication_telemetry=two_seed_pipeline.AuthenticationTelemetry(),
     )
 
     assert result["status"] == "passed"
@@ -473,6 +566,71 @@ def test_hard_supervisor_exit_cannot_leave_successful_health(
     assert health["status"] != "complete_success"
 
 
+def test_final_audit_interruption_cannot_publish_success_or_run_end(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_final_release_gate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            InterruptedError("final byte-deep audit interrupted")
+        ),
+    )
+    health_writes: list[dict[str, Any]] = []
+    manifest_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_write_pipeline_health",
+        lambda _path, payload: health_writes.append(dict(payload)),
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "append_manifest_event",
+        lambda _path, event, **_kwargs: manifest_events.append(dict(event)),
+    )
+
+    with pytest.raises(InterruptedError, match="audit interrupted"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert [item["status"] for item in health_writes] == ["running"]
+    assert not any(item.get("event") == two_seed_pipeline.EVENT_RUN_END for item in manifest_events)
+
+
+def test_failed_root_precondition_executes_final_audit_zero_times(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path, failed_root=11)
+    audit_calls: list[object] = []
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_final_release_gate",
+        lambda *_args, **_kwargs: audit_calls.append(object()),
+    )
+
+    with pytest.raises(RuntimeError, match="root analysis failed"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert audit_calls == []
+
+
 def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -490,15 +648,13 @@ def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
         lambda *_args, **_kwargs: None,
     )
 
-    def states(_cfg: AppConfig, plan: list[Any]) -> dict[str, str]:
-        values = {
-            item.name: two_seed_pipeline.CompletionState.COMPLETE_VALID.value for item in plan
-        }
-        if values and next(iter(values)) == "root_stability":
-            values["root_stability"] = two_seed_pipeline.CompletionState.COMPLETE_STALE.value
-        return values
-
-    monkeypatch.setattr(two_seed_pipeline, "_current_plan_states", states)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_build_pair_authenticated_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("pair workflow contains stale or incomplete canonical stages")
+        ),
+    )
     monkeypatch.setattr(
         two_seed_pipeline,
         "_write_pipeline_health",
@@ -509,10 +665,10 @@ def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
         two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
 
     assert health["status"] == "failed"
-    assert health["pair_workflow"]["stage_states"]["root_stability"] == "complete_stale"
+    assert "stale or incomplete" in health["pair_workflow"]["error"]
 
 
-def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
+def test_pipeline_health_rejects_explicitly_invalidated_root_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -521,8 +677,7 @@ def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
-    root_lifecycle_identity = two_seed_pipeline._root_lifecycle_identity
-    _install_root_results(monkeypatch, tmp_path)
+    _install_root_results(monkeypatch, tmp_path, rejected_snapshot_root=22)
     health: dict[str, Any] = {}
     monkeypatch.setattr(
         two_seed_pipeline.analysis,
@@ -531,37 +686,17 @@ def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
     )
     monkeypatch.setattr(
         two_seed_pipeline,
-        "_root_lifecycle_identity",
-        root_lifecycle_identity,
-    )
-    monkeypatch.setattr(
-        two_seed_pipeline.runner,
-        "simulation_is_complete",
-        lambda _cfg, _k: True,
-    )
-
-    def current_states(_cfg: AppConfig, plan: list[Any]) -> dict[str, str]:
-        states = {
-            item.name: two_seed_pipeline.CompletionState.COMPLETE_VALID.value for item in plan
-        }
-        if "rng_diagnostics" in states:
-            states["rng_diagnostics"] = two_seed_pipeline.CompletionState.COMPLETE_STALE.value
-        return states
-
-    monkeypatch.setattr(two_seed_pipeline, "_current_plan_states", current_states)
-    monkeypatch.setattr(
-        two_seed_pipeline,
         "_write_pipeline_health",
         lambda _path, payload: health.update(payload),
     )
 
-    with pytest.raises(RuntimeError, match="root workflow became stale"):
+    with pytest.raises(RuntimeError, match="snapshot rejected"):
         two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
 
     assert health["status"] == "failed"
-    assert health["root_workflows"]["11"]["analysis"] == "failed"
+    assert health["root_workflows"]["11"]["analysis"] == "complete"
     assert health["root_workflows"]["22"]["analysis"] == "failed"
-    assert health["root_workflows"]["22"]["stage_states"]["rng_diagnostics"] == "complete_stale"
+    assert "explicitly invalidated" in health["root_workflows"]["22"]["error"]
 
 
 def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:

@@ -7,12 +7,14 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar, cast
 
 from farkle import analysis
-from farkle.analysis.release_audit import audit_sidecar_completeness
+from farkle.analysis.release_audit import (
+    AuthenticatedReleaseAuditTarget,
+    audit_authenticated_release_graphs,
+)
 from farkle.analysis.stage_runner import StageRunContext, StageRunner, StageRunResult
 from farkle.config import AppConfig, assign_config_sha
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
@@ -20,7 +22,6 @@ from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
     SeedRunContext,
-    load_run_context,
     write_run_context_atomic,
 )
 from farkle.orchestration.seed_utils import (
@@ -38,6 +39,15 @@ from farkle.utils.authenticated_contract import (
     CodeIdentity,
     CodeIdentityPolicy,
     resolve_code_identity,
+)
+from farkle.utils.authenticated_graph import (
+    AuthenticatedGraphSnapshot,
+    SnapshotGeneration,
+    capture_authenticated_graph_snapshot,
+)
+from farkle.utils.authentication_telemetry import (
+    AuthenticationTelemetry,
+    use_authentication_telemetry,
 )
 from farkle.utils.manifest import (
     EVENT_RUN_END,
@@ -85,6 +95,8 @@ class _SeedRunStatus:
     simulation_timing: dict[str, object] | None = None
     analysis_stage_timings: tuple[dict[str, object], ...] = ()
     initial_lifecycle_timing: dict[str, object] | None = None
+    graph_snapshot: AuthenticatedGraphSnapshot | None = None
+    snapshot_generation: SnapshotGeneration | None = None
 
 
 def _run_timed_phase(
@@ -375,6 +387,79 @@ def _root_lifecycle_identity(
     return identity, states
 
 
+def _build_root_authenticated_snapshot(
+    context: SeedRunContext,
+    plan: Sequence[Any],
+    *,
+    code_identity: CodeIdentity,
+    telemetry: AuthenticationTelemetry,
+) -> tuple[AuthenticatedGraphSnapshot, SnapshotGeneration]:
+    """Authenticate one completed root once and capture its finalization snapshot."""
+
+    with use_authentication_telemetry(telemetry):
+        lifecycle_sha, states = _root_lifecycle_identity(context, plan)
+        if lifecycle_sha is None:
+            raise RuntimeError("root workflow contains stale or incomplete canonical stages")
+        completion_paths = [
+            (f"simulation_{int(k)}p", runner.simulation_done_path(context.config, int(k)))
+            for k in context.config.sim.n_players_list
+        ]
+        completion_paths.extend(
+            (item.name, item.completion_stamp) for item in plan if item.completion_stamp is not None
+        )
+        generation = SnapshotGeneration()
+        snapshot = capture_authenticated_graph_snapshot(
+            cfg=context.config,
+            scope="root",
+            roots=(int(context.seed),),
+            graph_root=context.results_root,
+            analysis_root=context.analysis_root,
+            run_context_path=context.run_context_path,
+            active_config_path=context.active_config_path,
+            stage_states=states,
+            completion_paths=completion_paths,
+            generation=generation,
+            code_identity=code_identity,
+        )
+        if snapshot.lifecycle_sha256 != lifecycle_sha:
+            raise RuntimeError("snapshot changed the established root lifecycle identity")
+        return snapshot, generation
+
+
+def _build_pair_authenticated_snapshot(
+    context: RootPairRunContext,
+    plan: Sequence[Any],
+    *,
+    code_identity: CodeIdentity,
+    telemetry: AuthenticationTelemetry,
+) -> tuple[AuthenticatedGraphSnapshot, SnapshotGeneration]:
+    """Authenticate one quiescent pair graph and capture its finalization snapshot."""
+
+    with use_authentication_telemetry(telemetry):
+        states = _current_plan_states(context.config, plan)
+        if any(value != CompletionState.COMPLETE_VALID.value for value in states.values()):
+            raise RuntimeError("pair workflow contains stale or incomplete canonical stages")
+        generation = SnapshotGeneration()
+        snapshot = capture_authenticated_graph_snapshot(
+            cfg=context.config,
+            scope="pair",
+            roots=tuple(sorted(int(root) for root in context.root_pair)),
+            graph_root=context.analysis_root,
+            analysis_root=context.analysis_root,
+            run_context_path=context.run_context_path,
+            active_config_path=context.active_config_path,
+            stage_states=states,
+            completion_paths=[
+                (item.name, item.completion_stamp)
+                for item in plan
+                if item.completion_stamp is not None
+            ],
+            generation=generation,
+            code_identity=code_identity,
+        )
+        return snapshot, generation
+
+
 def _run_per_seed_analysis(
     cfg: AppConfig,
     *,
@@ -423,6 +508,7 @@ def _run_one_seed(
     telemetry: SupervisorHeartbeatRecorder | None = None,
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
+    authentication_telemetry: AuthenticationTelemetry | None = None,
 ) -> _SeedRunStatus:
     if telemetry is None:
         telemetry = SupervisorHeartbeatRecorder(
@@ -430,6 +516,7 @@ def _run_one_seed(
             run=f"root_{seed}",
             interval_seconds=0.0,
         )
+    auth_telemetry = authentication_telemetry or AuthenticationTelemetry()
     root_cfg = _build_seed_cfg(
         cfg,
         seed_pair=seed_pair,
@@ -515,22 +602,27 @@ def _run_one_seed(
             simulation_timing=root_timings[0] if root_timings else None,
         )
     plan = analysis.build_root_stage_plan(root_cfg, force=False)
-    lifecycle_sha, stage_states = _run_timed_phase(
-        telemetry,
-        root_timings,
-        name=f"root_{seed}_initial_lifecycle",
-        run=f"root_{seed}",
-        state="authenticating",
-        action=lambda: _root_lifecycle_identity(context, plan),
-    )
-    if lifecycle_sha is None:
+    try:
+        graph_snapshot, snapshot_generation = _run_timed_phase(
+            telemetry,
+            root_timings,
+            name=f"root_{seed}_authenticated_graph_snapshot",
+            run=f"root_{seed}",
+            state="authenticating",
+            action=lambda: _build_root_authenticated_snapshot(
+                context,
+                plan,
+                code_identity=code_identity,
+                telemetry=auth_telemetry,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
         return _SeedRunStatus(
             seed=seed,
             context=context,
             simulation_ok=True,
             analysis_ok=False,
-            analysis_error="root workflow contains stale or incomplete canonical stages",
-            stage_states=stage_states,
+            analysis_error=f"{type(exc).__name__}: {exc}",
             failure_classification="non_resource_failure",
             simulation_timing=root_timings[0] if root_timings else None,
             analysis_stage_timings=_stage_timing_metadata(analysis_result),
@@ -541,11 +633,13 @@ def _run_one_seed(
         context=context,
         simulation_ok=True,
         analysis_ok=True,
-        lifecycle_sha256=lifecycle_sha,
-        stage_states=stage_states,
+        lifecycle_sha256=graph_snapshot.lifecycle_sha256,
+        stage_states=dict(graph_snapshot.stage_states),
         simulation_timing=root_timings[0] if root_timings else None,
         analysis_stage_timings=_stage_timing_metadata(analysis_result),
         initial_lifecycle_timing=root_timings[-1] if root_timings else None,
+        graph_snapshot=graph_snapshot,
+        snapshot_generation=snapshot_generation,
     )
 
 
@@ -564,46 +658,47 @@ def _final_release_gate(
     *,
     code_identity: CodeIdentity,
     allow_oracle_code_identity: bool,
-    phase_runner: Callable[[str, Callable[[], Any]], Any] | None = None,
+    pair_snapshot: AuthenticatedGraphSnapshot,
+    pair_generation: SnapshotGeneration,
+    authentication_telemetry: AuthenticationTelemetry,
 ) -> dict[str, Any]:
-    """Authenticate run contexts and every canonical descendant before success."""
+    """Execute the single byte-deep release gate before success publication."""
 
     failures: list[str] = []
-    contexts: list[SeedRunContext | RootPairRunContext] = [
-        root_results[seed].context for seed in sorted(root_results)
-    ]
-    contexts.append(pair_context)
-    run_contexts: dict[str, dict[str, str]] = {}
-
-    def run_phase(name: str, action: Callable[[], _T]) -> _T:
-        if phase_runner is None:
-            return action()
-        return cast(_T, phase_runner(name, action))
-
-    for context in contexts:
-        label = "pair" if isinstance(context, RootPairRunContext) else f"root_{int(context.seed)}"
-        try:
-            persisted = run_phase(
-                f"run_context_authenticate_{label}",
-                partial(
-                    load_run_context,
-                    context.run_context_path,
-                    active_config_path=context.active_config_path,
-                ),
+    targets: list[AuthenticatedReleaseAuditTarget] = []
+    for seed in sorted(root_results):
+        result = root_results[seed]
+        if result.graph_snapshot is None or result.snapshot_generation is None:
+            failures.append(f"root_{seed} authenticated graph snapshot is unavailable")
+            continue
+        targets.append(
+            AuthenticatedReleaseAuditTarget(
+                cfg=result.context.config,
+                snapshot=result.graph_snapshot,
+                generation=result.snapshot_generation,
             )
-            run_contexts[label] = {
-                "path": str(context.run_context_path),
-                "sha256": sha256_file(context.run_context_path),
-                "identity_sha256": str(persisted["run_context_sha256"]),
-            }
-        except Exception as exc:  # noqa: BLE001
-            failures.append(f"{label} run context: {type(exc).__name__}: {exc}")
-        audit_failures = run_phase(
-            f"graph_audit_{label}",
-            partial(audit_sidecar_completeness, context.analysis_root),
         )
-        for failure in audit_failures:
-            failures.append(f"{label} authenticated graph: {failure}")
+    targets.append(
+        AuthenticatedReleaseAuditTarget(
+            cfg=pair_context.config,
+            snapshot=pair_snapshot,
+            generation=pair_generation,
+        )
+    )
+    try:
+        current_code_identity = resolve_code_identity(
+            Path(__file__).resolve().parents[3],
+            policy=CodeIdentityPolicy(code_identity.policy),
+        )
+        with use_authentication_telemetry(authentication_telemetry):
+            audit_result = audit_authenticated_release_graphs(
+                targets,
+                expected_code_identity=code_identity,
+                current_code_identity=current_code_identity,
+            )
+        failures.extend(audit_result["failures"])
+    except BaseException:
+        raise
     code_release_eligible = (
         code_identity.policy == CodeIdentityPolicy.RELEASE_CLEAN.value
         and code_identity.state == "clean"
@@ -617,8 +712,11 @@ def _final_release_gate(
         "release_eligible": release_eligible,
         "profile_release_eligible": profile_release_eligible,
         "accepted_release_identity": [3, 2, 2, 2, 2, 2],
-        "artifact_roots": [str(context.analysis_root) for context in contexts],
-        "run_contexts": run_contexts,
+        "artifact_roots": [str(target.snapshot.graph_root) for target in targets],
+        "run_contexts": audit_result["run_contexts"],
+        "top_level_invocations": audit_result["top_level_invocations"],
+        "internal_roots": audit_result["internal_roots"],
+        "authentication_telemetry": authentication_telemetry.as_metadata(),
         "code_identity": {
             "commit": code_identity.commit,
             "policy": code_identity.policy,
@@ -638,6 +736,7 @@ def _run_pipeline_observed(
     oracle_game_profile: GameProfile | None = None,
     memory_guard: ProcessTreeMemoryGuard,
     telemetry: SupervisorHeartbeatRecorder,
+    authentication_telemetry: AuthenticationTelemetry,
 ) -> None:
     """Run both roots, then combination, H2H, agreement, and reporting once."""
 
@@ -735,6 +834,7 @@ def _run_pipeline_observed(
                     telemetry=telemetry,
                     cli_overrides=cli_overrides,
                     oracle_game_profile=oracle_game_profile,
+                    authentication_telemetry=authentication_telemetry,
                 )
             root_results = {seed: futures[seed].result() for seed in seed_pair}
     else:
@@ -753,6 +853,7 @@ def _run_pipeline_observed(
                 telemetry=telemetry,
                 cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,
+                authentication_telemetry=authentication_telemetry,
             )
             # Sequential roots are fail-fast for every failure class. Resource
             # failures additionally prevent any retry outside the owning stage.
@@ -804,6 +905,8 @@ def _run_pipeline_observed(
             exc.classification if isinstance(exc, ResourceFailureError) else "resource_safety"
         )
     pair_context: RootPairRunContext | None = None
+    pair_snapshot: AuthenticatedGraphSnapshot | None = None
+    pair_generation: SnapshotGeneration | None = None
     pair_error: str | None = None
     pair_failure_classification: str | None = None
     if not root_failures:
@@ -850,42 +953,59 @@ def _run_pipeline_observed(
             pair_failure_classification = classify_resource_exception(exc) or "non_resource_failure"
     pair_stage_states: dict[str, str] = {}
     if pair_context is not None and pair_error is None:
-        pair_stage_states = _run_timed_phase(
-            telemetry,
-            finalization_timings,
-            name="pair_state_recheck",
-            state="authenticating",
-            action=lambda: _current_plan_states(
-                pair_context.config,
-                analysis.build_root_pair_stage_plan(pair_context, force=False),
-            ),
-        )
-        if any(
-            value != CompletionState.COMPLETE_VALID.value for value in pair_stage_states.values()
-        ):
-            pair_error = "pair workflow contains stale or incomplete canonical stages"
+        try:
+            pair_snapshot, pair_generation = _run_timed_phase(
+                telemetry,
+                finalization_timings,
+                name="pair_authenticated_graph_snapshot",
+                state="authenticating",
+                action=lambda: _build_pair_authenticated_snapshot(
+                    pair_context,
+                    analysis.build_root_pair_stage_plan(pair_context, force=False),
+                    code_identity=code_identity,
+                    telemetry=authentication_telemetry,
+                ),
+            )
+            pair_stage_states = dict(pair_snapshot.stage_states)
+        except Exception as exc:  # noqa: BLE001
+            pair_error = f"{type(exc).__name__}: {exc}"
     for seed, result in root_results.items():
         if not result.simulation_ok or not result.analysis_ok:
             continue
-        lifecycle_plan = analysis.build_root_stage_plan(result.context.config, force=False)
-        current_lifecycle, current_states = _run_timed_phase(
-            telemetry,
-            finalization_timings,
-            name=f"root_{seed}_lifecycle_recheck",
-            state="authenticating",
-            action=partial(
-                _root_lifecycle_identity,
-                result.context,
-                lifecycle_plan,
-            ),
-        )
-        root_health[str(seed)]["lifecycle_sha256"] = current_lifecycle
-        root_health[str(seed)]["stage_states"] = current_states
-        if current_lifecycle is None:
+        try:
+            if result.graph_snapshot is None or result.snapshot_generation is None:
+                raise RuntimeError("completed root has no authenticated graph snapshot")
+            graph_snapshot = result.graph_snapshot
+            snapshot_generation = result.snapshot_generation
+            expected_root = int(result.context.seed)
+            expected_run_context_path = result.context.run_context_path
+
+            def reuse_root_snapshot(
+                snapshot: AuthenticatedGraphSnapshot = graph_snapshot,
+                generation: SnapshotGeneration = snapshot_generation,
+                root: int = expected_root,
+                run_context_path: Path = expected_run_context_path,
+            ) -> None:
+                generation.validate(
+                    snapshot,
+                    expected_scope="root",
+                    expected_roots=(root,),
+                    expected_run_context_path=run_context_path,
+                    telemetry=authentication_telemetry,
+                )
+
+            _run_timed_phase(
+                telemetry,
+                finalization_timings,
+                name=f"root_{seed}_authenticated_graph_snapshot_reuse",
+                state="authenticating",
+                action=reuse_root_snapshot,
+            )
+            root_health[str(seed)]["lifecycle_sha256"] = graph_snapshot.lifecycle_sha256
+            root_health[str(seed)]["stage_states"] = dict(graph_snapshot.stage_states)
+        except Exception as exc:  # noqa: BLE001
             root_health[str(seed)]["analysis"] = "failed"
-            root_health[str(seed)][
-                "error"
-            ] = "root workflow became stale before final health publication"
+            root_health[str(seed)]["error"] = f"authenticated graph snapshot rejected: {exc}"
     root_failures = [
         f"root {seed}: {status['error']}"
         for seed, status in root_health.items()
@@ -899,18 +1019,26 @@ def _run_pipeline_observed(
         "run_contexts": {},
         "failures": ["pair workflow did not reach the final release gate"],
     }
-    if not root_failures and pair_context is not None and pair_error is None:
-        release_audit = _final_release_gate(
-            root_results,
-            pair_context,
-            code_identity=code_identity,
-            allow_oracle_code_identity=oracle_game_profile is not None,
-            phase_runner=lambda name, action: _run_timed_phase(
-                telemetry,
-                finalization_timings,
-                name=name,
-                state="authenticating",
-                action=action,
+    if (
+        not root_failures
+        and pair_context is not None
+        and pair_error is None
+        and pair_snapshot is not None
+        and pair_generation is not None
+    ):
+        release_audit = _run_timed_phase(
+            telemetry,
+            finalization_timings,
+            name="final_byte_deep_release_audit",
+            state="authenticating",
+            action=lambda: _final_release_gate(
+                root_results,
+                pair_context,
+                code_identity=code_identity,
+                allow_oracle_code_identity=oracle_game_profile is not None,
+                pair_snapshot=pair_snapshot,
+                pair_generation=pair_generation,
+                authentication_telemetry=authentication_telemetry,
             ),
         )
         if release_audit["status"] != "passed":
@@ -965,6 +1093,7 @@ def _run_pipeline_observed(
             ],
         },
         "telemetry": telemetry.summary(),
+        "authentication": authentication_telemetry.as_metadata(),
     }
     health = {
         "seed_pair": list(seed_pair),
@@ -1073,16 +1202,19 @@ def run_pipeline(
         interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
         resource_sampler=memory_guard.snapshot,
     )
+    authentication_telemetry = AuthenticationTelemetry()
     try:
-        _run_pipeline_observed(
-            cfg,
-            seed_pair=seed_pair,
-            force=force,
-            cli_overrides=cli_overrides,
-            oracle_game_profile=oracle_game_profile,
-            memory_guard=memory_guard,
-            telemetry=telemetry,
-        )
+        with use_authentication_telemetry(authentication_telemetry):
+            _run_pipeline_observed(
+                cfg,
+                seed_pair=seed_pair,
+                force=force,
+                cli_overrides=cli_overrides,
+                oracle_game_profile=oracle_game_profile,
+                memory_guard=memory_guard,
+                telemetry=telemetry,
+                authentication_telemetry=authentication_telemetry,
+            )
     finally:
         cleanup_seconds = telemetry.close()
         LOGGER.info(

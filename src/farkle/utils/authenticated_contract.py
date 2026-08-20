@@ -293,6 +293,9 @@ def arrow_schema_identity(schema: pa.Schema, *, schema_version: int) -> ArrowSch
 def parquet_schema_identity(path: Path | str, *, schema_version: int) -> ArrowSchemaIdentity:
     """Read only Parquet metadata and fingerprint its actual Arrow schema."""
 
+    from farkle.utils.authentication_telemetry import record_schema_validation
+
+    record_schema_validation()
     schema = retry_transient_io(lambda: pq.read_schema(path))
     return arrow_schema_identity(schema, schema_version=schema_version)
 
@@ -1181,7 +1184,10 @@ def load_authenticated_sidecar(path: Path | str) -> AuthenticatedSidecar:
     if not metadata_path.exists():
         raise MissingSidecarError(f"missing sidecar for {artifact}")
     try:
+        from farkle.utils.authentication_telemetry import record_metadata_validation
+
         payload = read_json_file_with_retry(metadata_path)
+        record_metadata_validation()
         if not isinstance(payload, Mapping):
             raise TypeError("sidecar root must be an object")
         return _parse_sidecar(payload)
@@ -1199,7 +1205,10 @@ def load_immutable_manifest_sidecar(path: Path | str) -> ImmutableManifestSideca
     if not metadata_path.exists():
         raise MissingSidecarError(f"missing manifest sidecar for {manifest_path}")
     try:
+        from farkle.utils.authentication_telemetry import record_metadata_validation
+
         payload = read_json_file_with_retry(metadata_path)
+        record_metadata_validation()
         if not isinstance(payload, Mapping):
             raise TypeError("manifest sidecar root must be an object")
         return _parse_immutable_manifest_sidecar(payload)
@@ -2001,6 +2010,12 @@ def _load_completion(path: Path) -> AuthenticatedCompletion:
     return _construct(AuthenticatedCompletion, payload, outputs=outputs)
 
 
+def load_authenticated_completion(path: Path | str) -> AuthenticatedCompletion:
+    """Load and structurally validate one authenticated completion stamp."""
+
+    return _load_completion(Path(path))
+
+
 def classify_authenticated_lifecycle(
     completion_path: Path,
     *,
@@ -2218,6 +2233,7 @@ __all__ = [
     "file_format_identity",
     "identity_sha256",
     "load_authenticated_sidecar",
+    "load_authenticated_completion",
     "load_immutable_manifest_sidecar",
     "make_authenticated_sidecar",
     "make_stage_identity",

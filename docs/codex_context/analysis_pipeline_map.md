@@ -55,6 +55,10 @@ Standalone analysis runs the root workflow and appends the same H2H tail with
   never rediscover the global upstream tree.
 - A completion stamp is valid only when inputs, output identities, stage hash,
   freshness key, and sidecars validate.
+- A completed context may be captured once as an immutable process-local graph
+  snapshot for same-process lifecycle/state reuse. Snapshots are never
+  persisted or resumed and remain subordinate to one fresh byte-deep
+  root/root/pair release audit before pipeline success.
 - The lifecycle is `not_started`, `partial_resumable`, `complete_valid`,
   `complete_stale`, or `blocked_by_cap`.
 

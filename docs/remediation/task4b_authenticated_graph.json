@@ -1,0 +1,155 @@
+{
+  "task": "4B",
+  "title": "Authenticated graph snapshots and final-audit deduplication",
+  "status": "implemented_and_bounded_benchmark_accepted",
+  "repository": {
+    "starting_head": "0186ec0154c70bd1d47736282f4e9d024d1da205",
+    "commit_created": false,
+    "historical_artifacts_mutated": false
+  },
+  "contract_review": {
+    "snapshot_persisted": false,
+    "snapshot_canonical": false,
+    "snapshot_resumable": false,
+    "accepted_authentication_semantics_changed": false,
+    "artifact_contract_v3_changed": false,
+    "sidecar_schema_changed": false,
+    "manifest_schema_changed": false,
+    "completion_schema_changed": false,
+    "run_context_schema_changed": false,
+    "canonical_paths_or_inventory_changed": false,
+    "statistical_or_method_identity_changed": false,
+    "lifecycle_hash_values_changed": false,
+    "accepted_release_identity": [3, 2, 2, 2, 2, 2]
+  },
+  "snapshot": {
+    "ownership": "explicit SnapshotGeneration object",
+    "lifetime": "constructed only after a root or pair context is quiescent and complete-valid; retained only through same-process finalization",
+    "immutable": true,
+    "serializable": false,
+    "process_restart_reuse": false,
+    "explicit_invalidation": true,
+    "final_audit_subordinate": true
+  },
+  "benchmark": {
+    "driver": "scripts/benchmark_task4b_authenticated_graph.py",
+    "root": "data/farkle-task4b-authenticated-graph-v1",
+    "raw_evidence": "data/farkle-task4b-authenticated-graph-v1/task4b_authenticated_graph.json",
+    "sizes": [9, 128, 512],
+    "contexts_per_fixture": 3,
+    "repetitions": 3,
+    "warmups": 1,
+    "alternating_order": true,
+    "tamper_equivalence": {
+      "baseline_status": "failed",
+      "optimized_status": "failed",
+      "both_fail_closed": true
+    },
+    "results": [
+      {
+        "artifact_count": 9,
+        "baseline_median_finalization_seconds": 0.3228253999259323,
+        "optimized_median_finalization_seconds": 0.6481541000539437,
+        "snapshot_construction_seconds": 0.11060579994227737,
+        "optimized_to_baseline_ratio": 2.007754347094911,
+        "improvement_fraction_excluding_snapshot_construction": -1.0077543470949109,
+        "canonical_outputs_unchanged": true
+      },
+      {
+        "artifact_count": 128,
+        "baseline_median_finalization_seconds": 3.1304102999856696,
+        "optimized_median_finalization_seconds": 1.4836508000735193,
+        "snapshot_construction_seconds": 0.39621090004220605,
+        "optimized_to_baseline_ratio": 0.4739477122472767,
+        "improvement_fraction_excluding_snapshot_construction": 0.5260522877527233,
+        "improvement_fraction_including_snapshot_construction": 0.3994665647605742,
+        "canonical_outputs_unchanged": true
+      },
+      {
+        "artifact_count": 512,
+        "baseline_median_finalization_seconds": 12.713617899920791,
+        "optimized_median_finalization_seconds": 3.844493699958548,
+        "snapshot_construction_seconds": 1.4703215999761596,
+        "optimized_to_baseline_ratio": 0.30239179203132255,
+        "improvement_fraction_excluding_snapshot_construction": 0.6976082079686774,
+        "improvement_fraction_including_snapshot_construction": 0.5819417351837818,
+        "canonical_outputs_unchanged": true
+      }
+    ],
+    "scale_512_structural": {
+      "baseline": {
+        "total_opens": 8711,
+        "sha256_calls": 4099,
+        "total_bytes_hashed": 10859241,
+        "schema_validations": 2048,
+        "metadata_validations": 2560,
+        "stage_state_resolutions": 3,
+        "top_level_graph_audit_invocations": 3,
+        "internal_root_traversals": 3,
+        "peak_rss_bytes": 235257856
+      },
+      "optimized": {
+        "total_opens": 2576,
+        "sha256_calls": 1037,
+        "total_bytes_hashed": 3127274,
+        "schema_validations": 512,
+        "metadata_validations": 512,
+        "stage_state_resolutions": 0,
+        "snapshot_hits": 6,
+        "top_level_graph_audit_invocations": 1,
+        "internal_root_traversals": 3,
+        "peak_rss_bytes": 235253760
+      },
+      "reductions": {
+        "opens_fraction": 0.704281942371714,
+        "sha256_calls_fraction": 0.747011466211271,
+        "bytes_hashed_fraction": 0.712019099216631,
+        "schema_validations_fraction": 0.75,
+        "metadata_validations_fraction": 0.8,
+        "peak_rss_change_bytes": -4096
+      }
+    }
+  },
+  "adversarial_verification": {
+    "post_snapshot_mutation_classes": 28,
+    "all_rejected": true,
+    "snapshot_construction_boundaries_interrupted": 5,
+    "all_interruptions_returned_no_snapshot": true,
+    "incomplete_lifecycle_states_rejected": 4,
+    "final_audit_interruption_blocks_success_publication": true,
+    "standalone_release_audit_remains_byte_deep": true
+  },
+  "decision": {
+    "production_change_accepted": true,
+    "threshold_met": true,
+    "basis": "52.6% median repeated-finalization improvement at 128 artifacts and 69.8% at 512 artifacts, or 39.9% and 58.2% respectively when one-time snapshot inventory construction is conservatively included",
+    "integration_projection": "low confidence: retain the plan's 45-75 minute post-Task-4B range; the historical 23-minute tail suggests roughly 10-18 minutes of avoidable repeated lifecycle authentication"
+  },
+  "verification": {
+    "focused_unit_tests": "376 passed in 587.4 seconds; directly affected snapshot/release files also passed after final inventory hardening",
+    "structural_toy_oracle": "2 passed in 210.1 seconds",
+    "ruff_repository_wide": "passed",
+    "mypy_src": "passed: 86 source files",
+    "black_changed_python": "passed: 12 files",
+    "pyright_changed_files": "passed: 0 errors, 0 warnings",
+    "git_diff_check": "passed",
+    "json_parse": "passed",
+    "established_baselines": {
+      "black_repository_wide": "6 unrelated files would be reformatted; 207 files unchanged",
+      "pyright_repository_wide": "28 unrelated test errors",
+      "stage_registry": "1 known tuple-versus-list assertion failure; 8 tests pass"
+    }
+  },
+  "temporary_roots": {
+    "task4b_preserved": [
+      "data/farkle-task4b-authenticated-graph-v1",
+      "data/data/farkle-task4b-authenticated-graph-v1"
+    ],
+    "task4a_untouched": [
+      "data/farkle-task4a-quick-w2",
+      "data/farkle-task4a-bounded-w2-v2",
+      "data/farkle-task4a-bounded-w1-v2",
+      "data/farkle-task4a-bounded-w2"
+    ]
+  }
+}

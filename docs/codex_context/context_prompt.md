@@ -119,6 +119,12 @@ Preserve these invariants:
   states TrueSkill's completed-game conditioning and safety-limit exclusion;
 - transient artifact I/O uses bounded, provider-neutral retries, and completed
   H2H execution can finalize a missing stamp without replaying block data.
+- completed root and pair contexts create one immutable, explicitly owned,
+  nonserializable process-local authenticated graph snapshot; same-process
+  lifecycle/state finalization reuses require the same process, context, and
+  generation, while one top-level `final_byte_deep_release_audit` freshly
+  authenticates all root/root/pair bytes, schemas, contexts, configurations,
+  completion inventories, and cross-context provenance before success.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and
