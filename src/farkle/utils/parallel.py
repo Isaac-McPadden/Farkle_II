@@ -502,8 +502,7 @@ class ProcessTreeMemoryGuard:
             peak_aggregate_memory = self.peak_aggregate_memory_bytes
             aggregate_source = self.aggregate_memory_source
             aggregate_limit = (
-                self.aggregate_hard_limit_bytes
-                or self.aggregate_hard_limit_mb * 1024 * 1024
+                self.aggregate_hard_limit_bytes or self.aggregate_hard_limit_mb * 1024 * 1024
             )
             warning_crossings = self.warning_crossings
             warning_active = self.warning_emitted
@@ -527,9 +526,7 @@ class ProcessTreeMemoryGuard:
             "warning_crossings": int(warning_crossings),
             "rss_warning_active": bool(warning_active),
             "rss_warning_threshold_bytes": (
-                int(warning_threshold * 1024 * 1024)
-                if warning_threshold is not None
-                else None
+                int(warning_threshold * 1024 * 1024) if warning_threshold is not None else None
             ),
             "backpressure_seconds": float(backpressure_seconds),
             "near_hard_boundary": bool(
@@ -848,11 +845,17 @@ def process_map(
     if window <= 0:
         window = resolved_jobs * 4
 
+    executor_construction_started = time.perf_counter()
     executor = ProcessPoolExecutor(
         max_workers=resolved_jobs,
         initializer=_initialize_process_worker,
         initargs=(initializer, tuple(initargs)),
         mp_context=mp_context,
+    )
+    report(
+        "pool_created",
+        worker_count=resolved_jobs,
+        executor_construction_seconds=time.perf_counter() - executor_construction_started,
     )
     clean_shutdown = False
     futs: list[Any] = []
@@ -944,8 +947,21 @@ def process_map(
             cancel_pending_process_work(executor, futs)
             report("cancelled", submitted=submitted, completed=completed, pending=0)
         else:
+            shutdown_started = time.perf_counter()
+            report(
+                "pool_shutdown_start",
+                submitted=submitted,
+                completed=completed,
+                pending=0,
+            )
             executor.shutdown(wait=True, cancel_futures=False)
-            report("pool_complete", submitted=submitted, completed=completed, pending=0)
+            report(
+                "pool_complete",
+                submitted=submitted,
+                completed=completed,
+                pending=0,
+                pool_shutdown_seconds=time.perf_counter() - shutdown_started,
+            )
 
 
 __all__ = [

@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from farkle.utils.artifact_contract import (
     H2HMethodContract,
     make_artifact_sidecar,
     sha256_file,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -64,6 +66,7 @@ H2H_CONDITIONING: Final = (
     'formal inference conditions on termination_status == "completed"; '
     "safety-limit attempts are retained separately"
 )
+DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT: Final = 5_000
 _EXECUTION_STATE_CHECKPOINT_BLOCKS: Final = 100
 _TERMINAL_BLOCK_STATUSES: Final = {"complete", "unresolved_nonviable"}
 
@@ -73,6 +76,57 @@ _TERMINAL_BLOCK_STATUSES: Final = {"complete", "unresolved_nonviable"}
 _H2H_WORKER_MANIFEST: pd.DataFrame | None = None
 _H2H_WORKER_PROFILE: GameProfile | None = None
 _H2H_WORKER_MANIFEST_PATH: Path | None = None
+_H2H_WORKER_INITIALIZATION_SECONDS = 0.0
+_H2H_WORKER_INITIALIZER_REPORT_PENDING = False
+
+
+@dataclass(frozen=True, slots=True)
+class H2HChunkPlan:
+    """One deterministic attempt-prefix extension for an H2H block."""
+
+    attempt_index_start: int
+    attempt_index_stop_exclusive: int
+    attempt_count: int
+    completed_games_remaining: int
+    reaches_attempt_cap: bool
+
+
+def plan_h2h_chunk(
+    block: Mapping[str, Any],
+    *,
+    max_attempts_per_checkpoint: int = DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT,
+) -> H2HChunkPlan:
+    """Plan the next cap-bounded durable attempt-prefix extension.
+
+    The upper bound is an execution-only recovery control.  It never enters a
+    statistical identity: block coordinates, the completed-game target, and
+    the frozen maximum-attempt cap remain owned by the immutable schedule.
+    """
+
+    if max_attempts_per_checkpoint < 1:
+        raise ValueError("max_attempts_per_checkpoint must be positive")
+    attempted = int(block.get("games_attempted", 0))
+    completed = int(block.get("games_completed", 0))
+    target = int(block["n_completed_required"])
+    maximum = int(block["max_attempts"])
+    if not 0 <= completed <= target or not completed <= attempted <= maximum:
+        raise ValueError("H2H block has impossible attempt/completion progress")
+    if completed >= target or attempted >= maximum:
+        return H2HChunkPlan(
+            attempt_index_start=attempted,
+            attempt_index_stop_exclusive=attempted,
+            attempt_count=0,
+            completed_games_remaining=max(0, target - completed),
+            reaches_attempt_cap=attempted >= maximum,
+        )
+    stop = min(maximum, attempted + max_attempts_per_checkpoint)
+    return H2HChunkPlan(
+        attempt_index_start=attempted,
+        attempt_index_stop_exclusive=stop,
+        attempt_count=stop - attempted,
+        completed_games_remaining=target - completed,
+        reaches_attempt_cap=stop == maximum,
+    )
 
 
 def h2h_method_contract(
@@ -1060,6 +1114,8 @@ def _block_progress(
                 "games_safety_limit",
                 "wins_seat1",
                 "wins_seat2",
+                "wins_a",
+                "wins_b",
                 "replacement_attempt_count",
                 "completion_status",
                 "completion_game_rate",
@@ -1069,13 +1125,15 @@ def _block_progress(
                 "attempt_coordinate_range_hash",
             }
         },
+        # Preserve the established fixed-1,000 terminal schema regardless of
+        # whether this result passed through an intermediate checkpoint.
+        "wins_a": wins_seat1 if int(block["order"]) == 0 else wins_seat2,
+        "wins_b": wins_seat2 if int(block["order"]) == 0 else wins_seat1,
         "games_attempted": games_attempted,
         "games_completed": games_completed,
         "games_safety_limit": games_safety_limit,
         "wins_seat1": wins_seat1,
         "wins_seat2": wins_seat2,
-        "wins_a": wins_seat1 if int(block["order"]) == 0 else wins_seat2,
-        "wins_b": wins_seat2 if int(block["order"]) == 0 else wins_seat1,
         "replacement_attempt_count": max(0, games_attempted - target),
         "completion_status": completion_status,
         "completion_game_rate": (games_completed / games_attempted if games_attempted else None),
@@ -1208,12 +1266,19 @@ def _initialize_h2h_worker(
 ) -> None:
     """Load one immutable manifest per worker before processing any blocks."""
 
+    global _H2H_WORKER_INITIALIZATION_SECONDS, _H2H_WORKER_INITIALIZER_REPORT_PENDING
     global _H2H_WORKER_MANIFEST, _H2H_WORKER_MANIFEST_PATH, _H2H_WORKER_PROFILE
+    started = time.perf_counter()
     apply_native_thread_limits(policy)
+    loaded = False
     if _H2H_WORKER_MANIFEST is None or strategy_manifest_path != _H2H_WORKER_MANIFEST_PATH:
         _H2H_WORKER_MANIFEST = pd.read_parquet(strategy_manifest_path)
         _H2H_WORKER_MANIFEST_PATH = strategy_manifest_path
+        loaded = True
     _H2H_WORKER_PROFILE = oracle_game_profile
+    if loaded:
+        _H2H_WORKER_INITIALIZATION_SECONDS = time.perf_counter() - started
+    _H2H_WORKER_INITIALIZER_REPORT_PENDING = _H2H_WORKER_INITIALIZER_REPORT_PENDING or loaded
 
 
 def _simulate_cached_block(
@@ -1224,14 +1289,24 @@ def _simulate_cached_block(
     block, chunk_games = task
     if _H2H_WORKER_MANIFEST is None:
         raise RuntimeError("H2H worker manifest cache was not initialized")
+    global _H2H_WORKER_INITIALIZER_REPORT_PENDING
+    started = time.perf_counter()
+    result = _simulate_block_from_manifest(
+        block,
+        _H2H_WORKER_MANIFEST,
+        chunk_games,
+        _H2H_WORKER_PROFILE,
+    )
+    result["_h2h_simulation_seconds"] = time.perf_counter() - started
+    result["_h2h_worker_pid"] = os.getpid()
+    result["_h2h_worker_initializer_load"] = int(_H2H_WORKER_INITIALIZER_REPORT_PENDING)
+    result["_h2h_worker_initialization_seconds"] = (
+        _H2H_WORKER_INITIALIZATION_SECONDS if _H2H_WORKER_INITIALIZER_REPORT_PENDING else 0.0
+    )
+    _H2H_WORKER_INITIALIZER_REPORT_PENDING = False
     return (
         block,
-        _simulate_block_from_manifest(
-            block,
-            _H2H_WORKER_MANIFEST,
-            chunk_games,
-            _H2H_WORKER_PROFILE,
-        ),
+        result,
     )
 
 
@@ -1523,15 +1598,21 @@ def execute_h2h_schedule(
     cfg: AppConfig,
     *,
     n_jobs: int | None = None,
-    chunk_games: int = 1_000,
+    chunk_games: int = DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT,
     block_runner: BlockRunner = _simulate_block,
     oracle_game_profile: GameProfile | None = None,
 ) -> H2HExecutionArtifacts:
-    """Execute missing immutable blocks and publish their row-preserving union."""
+    """Execute missing immutable blocks and publish their row-preserving union.
+
+    ``chunk_games`` is the execution-only maximum number of attempt
+    coordinates between durable block states.  Valid authenticated prefixes
+    remain resumable when that operational bound changes.
+    """
 
     recorder = current_supervisor_recorder()
     scope = current_supervisor_scope()
     telemetry_started = time.monotonic()
+    source_auth_started = time.perf_counter()
     if scope is not None:
         scope.update(phase="h2h_source_authentication", state="authenticating")
     if chunk_games < 1:
@@ -1656,6 +1737,8 @@ def execute_h2h_schedule(
     pending: list[dict[str, Any]] = []
     completed_games = 0
     attempted_games = 0
+    safety_limit_games = 0
+    replacement_attempts = 0
     blocks_per_pair = {
         int(cast(Any, pair_id)): int(count)
         for pair_id, count in schedule.groupby("pair_id", sort=True).size().items()
@@ -1668,6 +1751,8 @@ def execute_h2h_schedule(
         else:
             completed_games += int(checkpoint["games_completed"])
             attempted_games += int(checkpoint["games_attempted"])
+            safety_limit_games += int(checkpoint["games_safety_limit"])
+            replacement_attempts += int(checkpoint["replacement_attempt_count"])
             if str(checkpoint["completion_status"]) not in _TERMINAL_BLOCK_STATUSES:
                 pending.append(checkpoint)
             else:
@@ -1684,6 +1769,24 @@ def execute_h2h_schedule(
     checkpoint_bytes = 0
     execution_state_writes = 0
     pool_generation = 0
+    scheduled_chunks = 0
+    maximum_scheduled_attempts_per_chunk = 0
+    worker_initializer_loads = 0
+    worker_initialization_seconds = 0.0
+    simulation_worker_seconds = 0.0
+    pool_generation_wall_seconds = 0.0
+    pool_executor_construction_seconds = 0.0
+    pool_shutdown_seconds = 0.0
+    block_checkpoint_seconds = 0.0
+    execution_state_seconds = 0.0
+    final_block_authentication_seconds = 0.0
+    aggregate_publication_seconds = 0.0
+    completion_publication_seconds = 0.0
+    sidecar_publications = 0
+    sidecar_bytes = 0
+    worker_attempts: dict[int, int] = {}
+    worker_simulation_seconds: dict[int, float] = {}
+    source_authentication_seconds = time.perf_counter() - source_auth_started
 
     def progress_payload(**scheduler: object) -> dict[str, object]:
         elapsed = max(0.0, time.monotonic() - telemetry_started)
@@ -1703,13 +1806,20 @@ def execute_h2h_schedule(
             "completed_games": completed_games,
             "completed_games_this_run": completed_this_run,
             "attempted_games": attempted_games,
+            "safety_limit_games": safety_limit_games,
+            "replacement_attempts": replacement_attempts,
             "completed_game_coordinates": completed_games,
             "attempt_coordinates_covered": attempted_games,
             "completed_chunks": completed_chunks,
+            "scheduled_chunks": scheduled_chunks,
             "checkpoint_writes": checkpoint_writes,
             "checkpoint_bytes": checkpoint_bytes,
+            "sidecar_publications": sidecar_publications,
+            "sidecar_bytes": sidecar_bytes,
             "execution_state_writes": execution_state_writes,
             "pool_generation": pool_generation,
+            "worker_initializer_loads": worker_initializer_loads,
+            "maximum_scheduled_attempts_per_chunk": maximum_scheduled_attempts_per_chunk,
             "games_per_second": rate,
             "eta_seconds": remaining / rate if rate > 0 else None,
             **scheduler,
@@ -1724,26 +1834,37 @@ def execute_h2h_schedule(
             )
 
     if pending:
+        execution_state_started = time.perf_counter()
         _write_execution_state(
             cfg,
             plan,
             CompletionState.PARTIAL_RESUMABLE,
             completed_block_count=completed_block_count,
         )
+        execution_state_seconds += time.perf_counter() - execution_state_started
         execution_state_writes += 1
+        sidecar_publications += 1
+        with contextlib.suppress(OSError):
+            sidecar_bytes += sidecar_path(state_path).stat().st_size
     update_progress(state="resuming" if completed_block_count else "working")
 
     def checkpoint_execution_state() -> None:
-        nonlocal execution_state_writes, last_checkpoint_count
+        nonlocal execution_state_seconds, execution_state_writes, last_checkpoint_count
+        nonlocal sidecar_bytes, sidecar_publications
         if completed_block_count - last_checkpoint_count < checkpoint_interval:
             return
+        execution_state_started = time.perf_counter()
         _write_execution_state(
             cfg,
             plan,
             CompletionState.PARTIAL_RESUMABLE,
             completed_block_count=completed_block_count,
         )
+        execution_state_seconds += time.perf_counter() - execution_state_started
         execution_state_writes += 1
+        sidecar_publications += 1
+        with contextlib.suppress(OSError):
+            sidecar_bytes += sidecar_path(state_path).stat().st_size
         last_checkpoint_count = completed_block_count
 
     manifest_path = cfg.strategy_manifest_root_path()
@@ -1776,7 +1897,16 @@ def execute_h2h_schedule(
     scheduler_generation = 0
 
     def scheduler_progress(event: Mapping[str, object]) -> None:
+        nonlocal pool_executor_construction_seconds, pool_shutdown_seconds
         event_name = str(event.get("event", "working"))
+        if event_name == "pool_created":
+            construction = event.get("executor_construction_seconds", 0.0)
+            if isinstance(construction, (int, float)):
+                pool_executor_construction_seconds += float(construction)
+        elif event_name == "pool_complete":
+            shutdown = event.get("pool_shutdown_seconds", 0.0)
+            if isinstance(shutdown, (int, float)):
+                pool_shutdown_seconds += float(shutdown)
         pending_value = event.get("pending", 0)
         pending_futures = pending_value if isinstance(pending_value, int) else 0
         state = {
@@ -1806,47 +1936,95 @@ def execute_h2h_schedule(
             scheduler_active_count = len(active_chunks)
             scheduler_generation = pool_generation
             next_chunks: list[dict[str, Any]] = []
-            tasks = ((block, chunk_games) for block in active_chunks)
+            chunk_plans = [
+                plan_h2h_chunk(block, max_attempts_per_checkpoint=chunk_games)
+                for block in active_chunks
+            ]
+            if any(plan.attempt_count <= 0 for plan in chunk_plans):
+                raise RuntimeError("H2H scheduler produced a non-advancing chunk plan")
+            scheduled_chunks += len(chunk_plans)
+            maximum_scheduled_attempts_per_chunk = max(
+                maximum_scheduled_attempts_per_chunk,
+                *(plan.attempt_count for plan in chunk_plans),
+            )
+            tasks = (
+                (block, plan.attempt_count)
+                for block, plan in zip(active_chunks, chunk_plans, strict=True)
+            )
+            pool_started = time.perf_counter()
 
-            for previous, raw_result in process_map(
-                _simulate_cached_block,
-                tasks,
-                n_jobs=min(worker_count, len(active_chunks)),
-                initializer=_initialize_h2h_worker,
-                initargs=(manifest_path, oracle_game_profile, policy),
-                window=worker_count * cfg.resources.max_in_flight_per_worker,
-                mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
-                memory_guard=memory_guard,
-                progress_callback=scheduler_progress,
-            ):
-                result = _normalize_runner_result(previous, raw_result)
-                _write_block(
-                    cfg,
-                    result,
-                    schedule_path=schedule_path,
-                    roots=roots,
-                )
-                completed_chunks += 1
-                completed_games += int(result["games_completed"]) - int(
-                    previous.get("games_completed", 0)
-                )
-                attempted_games += int(result["games_attempted"]) - int(
-                    previous.get("games_attempted", 0)
-                )
-                checkpoint_writes += 1
-                with contextlib.suppress(OSError):
-                    checkpoint_bytes += _block_path(cfg, result).stat().st_size
-                if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
-                    completed_block_count += 1
-                    terminal_blocks_by_pair[int(result["pair_id"])] += 1
-                    checkpoint_execution_state()
-                else:
-                    next_chunks.append(result)
-                update_progress(
-                    active_blocks=len(active_chunks),
-                    next_generation_blocks=len(next_chunks),
-                    long_tail=(len(active_chunks) <= worker_count or pool_generation > 1),
-                )
+            try:
+                for previous, raw_result in process_map(
+                    _simulate_cached_block,
+                    tasks,
+                    n_jobs=min(worker_count, len(active_chunks)),
+                    initializer=_initialize_h2h_worker,
+                    initargs=(manifest_path, oracle_game_profile, policy),
+                    window=worker_count * cfg.resources.max_in_flight_per_worker,
+                    mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+                    memory_guard=memory_guard,
+                    progress_callback=scheduler_progress,
+                ):
+                    simulation_seconds = float(raw_result.get("_h2h_simulation_seconds", 0.0))
+                    initialization_seconds = float(
+                        raw_result.get("_h2h_worker_initialization_seconds", 0.0)
+                    )
+                    initializer_load = int(raw_result.get("_h2h_worker_initializer_load", 0))
+                    worker_pid = int(raw_result.get("_h2h_worker_pid", 0))
+                    worker_initializer_loads += initializer_load
+                    worker_initialization_seconds += initialization_seconds
+                    simulation_worker_seconds += simulation_seconds
+                    result = _normalize_runner_result(previous, raw_result)
+                    attempted_delta = int(result["games_attempted"]) - int(
+                        previous.get("games_attempted", 0)
+                    )
+                    completed_delta = int(result["games_completed"]) - int(
+                        previous.get("games_completed", 0)
+                    )
+                    safety_delta = int(result["games_safety_limit"]) - int(
+                        previous.get("games_safety_limit", 0)
+                    )
+                    replacement_delta = int(result["replacement_attempt_count"]) - int(
+                        previous.get("replacement_attempt_count", 0)
+                    )
+                    if worker_pid:
+                        worker_attempts[worker_pid] = worker_attempts.get(worker_pid, 0) + (
+                            attempted_delta
+                        )
+                        worker_simulation_seconds[worker_pid] = (
+                            worker_simulation_seconds.get(worker_pid, 0.0) + simulation_seconds
+                        )
+                    checkpoint_started = time.perf_counter()
+                    _write_block(
+                        cfg,
+                        result,
+                        schedule_path=schedule_path,
+                        roots=roots,
+                    )
+                    block_checkpoint_seconds += time.perf_counter() - checkpoint_started
+                    completed_chunks += 1
+                    completed_games += completed_delta
+                    attempted_games += attempted_delta
+                    safety_limit_games += safety_delta
+                    replacement_attempts += replacement_delta
+                    checkpoint_writes += 1
+                    sidecar_publications += 1
+                    with contextlib.suppress(OSError):
+                        checkpoint_bytes += _block_path(cfg, result).stat().st_size
+                        sidecar_bytes += sidecar_path(_block_path(cfg, result)).stat().st_size
+                    if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
+                        completed_block_count += 1
+                        terminal_blocks_by_pair[int(result["pair_id"])] += 1
+                        checkpoint_execution_state()
+                    else:
+                        next_chunks.append(result)
+                    update_progress(
+                        active_blocks=len(active_chunks),
+                        next_generation_blocks=len(next_chunks),
+                        long_tail=(len(active_chunks) <= worker_count or pool_generation > 1),
+                    )
+            finally:
+                pool_generation_wall_seconds += time.perf_counter() - pool_started
             # Canonical submission order is independent of the order in which
             # worker futures completed.
             active_chunks = sorted(
@@ -1863,21 +2041,46 @@ def execute_h2h_schedule(
             current = block
             while True:
                 memory_guard.check_before_schedule()
+                chunk_plan = plan_h2h_chunk(
+                    current,
+                    max_attempts_per_checkpoint=chunk_games,
+                )
+                if chunk_plan.attempt_count <= 0:
+                    raise RuntimeError("H2H scheduler produced a non-advancing chunk plan")
+                scheduled_chunks += 1
+                maximum_scheduled_attempts_per_chunk = max(
+                    maximum_scheduled_attempts_per_chunk,
+                    chunk_plan.attempt_count,
+                )
+                simulation_started = time.perf_counter()
                 result = _normalize_runner_result(
                     current,
-                    block_runner(current, manifest_path, chunk_games),
+                    block_runner(current, manifest_path, chunk_plan.attempt_count),
                 )
+                simulation_worker_seconds += time.perf_counter() - simulation_started
+                checkpoint_started = time.perf_counter()
                 _write_block(cfg, result, schedule_path=schedule_path, roots=roots)
+                block_checkpoint_seconds += time.perf_counter() - checkpoint_started
                 completed_chunks += 1
-                completed_games += int(result["games_completed"]) - int(
+                completed_delta = int(result["games_completed"]) - int(
                     current.get("games_completed", 0)
                 )
-                attempted_games += int(result["games_attempted"]) - int(
+                attempted_delta = int(result["games_attempted"]) - int(
                     current.get("games_attempted", 0)
                 )
+                completed_games += completed_delta
+                attempted_games += attempted_delta
+                safety_limit_games += int(result["games_safety_limit"]) - int(
+                    current.get("games_safety_limit", 0)
+                )
+                replacement_attempts += int(result["replacement_attempt_count"]) - int(
+                    current.get("replacement_attempt_count", 0)
+                )
                 checkpoint_writes += 1
+                sidecar_publications += 1
                 with contextlib.suppress(OSError):
                     checkpoint_bytes += _block_path(cfg, result).stat().st_size
+                    sidecar_bytes += sidecar_path(_block_path(cfg, result)).stat().st_size
                 update_progress(effective_workers=1, active_blocks=1)
                 if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
                     completed_block_count += 1
@@ -1887,6 +2090,7 @@ def execute_h2h_schedule(
                 current = result
 
     completed_records: list[dict[str, Any]] = []
+    final_authentication_started = time.perf_counter()
     if scope is not None:
         scope.update(phase="h2h_final_validation", state="authenticating")
     for record, path in zip(records, block_paths, strict=True):
@@ -1896,6 +2100,7 @@ def execute_h2h_schedule(
         ):
             raise RuntimeError(f"scheduled H2H block did not complete: {path}")
         completed_records.append(block_row)
+    final_block_authentication_seconds += time.perf_counter() - final_authentication_started
     memory_guard.check_before_schedule(force=True)
     combined = pd.DataFrame(completed_records).sort_values(
         ["pair_id", "root_index", "order"], kind="mergesort"
@@ -1905,6 +2110,7 @@ def execute_h2h_schedule(
             combined[column],
             context=f"H2H aggregate {column}",
         )
+    aggregate_publication_started = time.perf_counter()
     sidecar = make_artifact_sidecar(
         cfg,
         output,
@@ -1938,6 +2144,11 @@ def execute_h2h_schedule(
         sidecar=sidecar,
         codec=cfg.parquet_codec,
     )
+    aggregate_publication_seconds += time.perf_counter() - aggregate_publication_started
+    sidecar_publications += 1
+    with contextlib.suppress(OSError):
+        sidecar_bytes += sidecar_path(output).stat().st_size
+    execution_state_started = time.perf_counter()
     _write_execution_state(
         cfg,
         plan,
@@ -1945,7 +2156,12 @@ def execute_h2h_schedule(
         completed_block_count=len(records),
         block_rows=completed_records,
     )
+    execution_state_seconds += time.perf_counter() - execution_state_started
     execution_state_writes += 1
+    sidecar_publications += 1
+    with contextlib.suppress(OSError):
+        sidecar_bytes += sidecar_path(state_path).stat().st_size
+    completion_started = time.perf_counter()
     write_stage_done(
         done,
         inputs=[plan_path, schedule_path],
@@ -1954,9 +2170,19 @@ def execute_h2h_schedule(
         stage="h2h_execute",
         sidecar_artifacts=[state_path, output],
     )
+    completion_publication_seconds += time.perf_counter() - completion_started
     if recorder is not None and scope is not None:
         final_completed_games = sum(int(row["games_completed"]) for row in completed_records)
         final_attempted_games = sum(int(row["games_attempted"]) for row in completed_records)
+        per_worker_attempt_rates = sorted(
+            worker_attempts[pid] / worker_simulation_seconds[pid]
+            for pid in worker_attempts
+            if worker_simulation_seconds.get(pid, 0.0) > 0.0
+        )
+        critical_worker_simulation_seconds = max(
+            worker_simulation_seconds.values(),
+            default=0.0,
+        )
         recorder.record_completion_summary(
             f"{scope.scope}:h2h_execute",
             stage="h2h_execute",
@@ -1968,11 +2194,45 @@ def execute_h2h_schedule(
                 "planned_games": total_planned_games,
                 "completed_games": final_completed_games,
                 "attempted_games": final_attempted_games,
+                "safety_limit_games": sum(
+                    int(row["games_safety_limit"]) for row in completed_records
+                ),
+                "replacement_attempts": sum(
+                    int(row["replacement_attempt_count"]) for row in completed_records
+                ),
+                "scheduled_chunks": scheduled_chunks,
                 "completed_chunks": completed_chunks,
                 "checkpoint_writes": checkpoint_writes,
                 "checkpoint_bytes": checkpoint_bytes,
+                "sidecar_publications": sidecar_publications,
+                "sidecar_bytes": sidecar_bytes,
                 "execution_state_writes": execution_state_writes,
                 "pool_generations": pool_generation,
+                "worker_initializer_loads": worker_initializer_loads,
+                "worker_initialization_seconds": worker_initialization_seconds,
+                "simulation_worker_seconds": simulation_worker_seconds,
+                "critical_worker_simulation_seconds": critical_worker_simulation_seconds,
+                "pool_generation_wall_seconds": pool_generation_wall_seconds,
+                "pool_executor_construction_seconds": pool_executor_construction_seconds,
+                "pool_shutdown_seconds": pool_shutdown_seconds,
+                "pool_scheduling_transfer_and_parent_residual_seconds": max(
+                    0.0,
+                    pool_generation_wall_seconds
+                    - critical_worker_simulation_seconds
+                    - block_checkpoint_seconds,
+                ),
+                "block_checkpoint_seconds": block_checkpoint_seconds,
+                "execution_state_seconds": execution_state_seconds,
+                "source_authentication_seconds": source_authentication_seconds,
+                "final_block_authentication_seconds": final_block_authentication_seconds,
+                "aggregate_publication_seconds": aggregate_publication_seconds,
+                "completion_publication_seconds": completion_publication_seconds,
+                "maximum_scheduled_attempts_per_chunk": (maximum_scheduled_attempts_per_chunk),
+                "per_worker_attempts_per_second": per_worker_attempt_rates,
+                "minimum_worker_attempts_per_second": (
+                    per_worker_attempt_rates[0] if per_worker_attempt_rates else None
+                ),
+                "checkpoint_attempt_limit": chunk_games,
                 "nonviable_blocks": sum(
                     str(row["completion_status"]) == "unresolved_nonviable"
                     for row in completed_records
@@ -1988,9 +2248,11 @@ def execute_h2h_schedule(
 
 
 __all__ = [
+    "DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT",
     "H2H_CONDITIONING",
     "H2H_METHOD_VERSION",
     "H2HExecutionArtifacts",
+    "H2HChunkPlan",
     "H2HScheduleArtifacts",
     "POWER_METHOD_ID",
     "SCORE_TEST_ID",
@@ -1999,4 +2261,5 @@ __all__ = [
     "implemented_score_test_power",
     "independent_score_planning_power",
     "plan_h2h_schedule",
+    "plan_h2h_chunk",
 ]

@@ -195,6 +195,21 @@ changing code or accepting a statistical conclusion.
   row-group count are bound to route identity and downstream manifests. RNG
   diagnostic method v4, cache-key v6, statistical config identity, canonical
   schemas, grouping, eligibility, cap, lag, and coordinate semantics are unchanged.
+  Task 4A replaces H2H's fixed 1,000-attempt publication cadence with a
+  deterministic execution-only upper bound of 5,000 attempts per durable block
+  extension. The planner always advances the authenticated prefix from the
+  current `games_attempted` to the lesser of the frozen cap or that bound.
+  Current integration, production-like, and maximum-planning 2.0x caps are at
+  most 4,382, so viable, replacement, and nonviable branches normally use one
+  worker task, one block publication, and one process-pool generation. Larger
+  future blocks retain fixed 5,000-attempt recovery units. The control remains
+  outside statistical identity and valid prefixes may resume if it changes.
+  H2H method v2, RNG/outcome identity, plan and block schemas, canonical paths,
+  coordinate semantics, and final values are unchanged; block normalization
+  now makes the established terminal column order independent of intermediate
+  checkpoint history. Pool/initializer, simulation, checkpoint, sidecar,
+  execution-state, authentication, aggregation, and shutdown telemetry is
+  reported without entering canonical rows.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

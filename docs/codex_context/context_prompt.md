@@ -109,6 +109,12 @@ Preserve these invariants:
   to the frozen 2.0x attempt cap, keeps no-test pairs in the multiplicity family,
   and evaluates the frozen candidates against the 0.99 incident-attempt
   completion threshold without shrinking the family;
+- H2H execution uses a deterministic execution-only cap of 5,000 attempted
+  coordinates per durable block extension. Current 1,372-2,191 targets and
+  frozen 2.0x caps therefore finish in one pool generation; larger future
+  blocks split into exact contiguous ranges. The cap is outside statistical
+  identity, valid authenticated prefixes may resume under a changed cap, and
+  terminal block column order is independent of checkpoint history;
 - final reporting authenticates the migration inventory as a stage output and
   states TrueSkill's completed-game conditioning and safety-limit exclusion;
 - transient artifact I/O uses bounded, provider-neutral retries, and completed

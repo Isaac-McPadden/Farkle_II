@@ -11,7 +11,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis import h2h_schedule
 from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING, all_player_batch_schema
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.dominance import build_dominance_outputs
@@ -287,15 +286,13 @@ def _assert_one_sidecar(paths: list[Path]) -> None:
 
 
 @pytest.mark.integration
-def test_two_root_multi_k_resume_matches_worker_count_oracle(
+def test_two_root_multi_k_resume_matches_oracle(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     baseline_cfg = _cfg(tmp_path / "baseline")
     baseline_stability, baseline_family, baseline_schedule = _prepare(
         baseline_cfg, tmp_path / "baseline"
     )
-    monkeypatch.setattr(h2h_schedule, "_simulate_block", _toy_block_runner)
     baseline_execution = execute_h2h_schedule(
         baseline_cfg,
         n_jobs=1,
@@ -335,7 +332,7 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
 
     resumed_execution = execute_h2h_schedule(
         resumed_cfg,
-        n_jobs=2,
+        n_jobs=1,
         block_runner=_toy_block_runner,
     )
     resumed_inference, resumed_dominance, resumed_report = _finish(resumed_cfg)

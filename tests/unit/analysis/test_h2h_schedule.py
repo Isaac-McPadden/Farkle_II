@@ -15,10 +15,12 @@ from scipy.stats import norm
 
 from farkle.analysis import h2h_schedule as h2h_schedule_module
 from farkle.analysis.h2h_schedule import (
+    DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT,
     SCORE_TEST_ID,
     execute_h2h_schedule,
     implemented_score_test_power,
     independent_score_planning_power,
+    plan_h2h_chunk,
     plan_h2h_schedule,
 )
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
@@ -102,6 +104,129 @@ def _write_frozen_family(cfg: AppConfig, strategies: tuple[int, ...] = (1, 2, 3)
         **common,
     )
     write_json_artifact_atomic(manifest, manifest_path, sidecar=manifest_sidecar)
+
+
+@pytest.mark.parametrize(
+    ("progress", "limit", "expected_start", "expected_stop", "expected_cap"),
+    [
+        ({"n_completed_required": 1_974, "max_attempts": 3_948}, 5_000, 0, 3_948, True),
+        (
+            {
+                "n_completed_required": 1_974,
+                "max_attempts": 3_948,
+                "games_attempted": 1_000,
+                "games_completed": 990,
+            },
+            5_000,
+            1_000,
+            3_948,
+            True,
+        ),
+        ({"n_completed_required": 20, "max_attempts": 40}, 5_000, 0, 40, True),
+        ({"n_completed_required": 6_000, "max_attempts": 12_000}, 5_000, 0, 5_000, False),
+        (
+            {
+                "n_completed_required": 6_000,
+                "max_attempts": 12_000,
+                "games_attempted": 11_950,
+                "games_completed": 5_950,
+            },
+            5_000,
+            11_950,
+            12_000,
+            True,
+        ),
+    ],
+)
+def test_h2h_chunk_planning_is_deterministic_and_cap_bounded(
+    progress: dict[str, int],
+    limit: int,
+    expected_start: int,
+    expected_stop: int,
+    expected_cap: bool,
+) -> None:
+    first = plan_h2h_chunk(progress, max_attempts_per_checkpoint=limit)
+    second = plan_h2h_chunk(dict(progress), max_attempts_per_checkpoint=limit)
+
+    assert first == second
+    assert first.attempt_index_start == expected_start
+    assert first.attempt_index_stop_exclusive == expected_stop
+    assert first.attempt_count == expected_stop - expected_start
+    assert first.reaches_attempt_cap is expected_cap
+
+
+def test_default_h2h_chunk_bound_covers_frozen_production_planning_range() -> None:
+    plan = plan_h2h_chunk(
+        {"n_completed_required": 2_191, "max_attempts": 4_382},
+    )
+
+    assert DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT == 5_000
+    assert plan.attempt_count == 4_382
+    assert plan.reaches_attempt_cap is True
+
+
+def test_large_chunk_plan_boundaries_cover_exact_attempt_prefix() -> None:
+    block: dict[str, int] = {
+        "n_completed_required": 6_000,
+        "max_attempts": 12_000,
+        "games_attempted": 0,
+        "games_completed": 0,
+    }
+    boundaries = [0]
+    while block["games_attempted"] < block["max_attempts"]:
+        chunk = plan_h2h_chunk(block, max_attempts_per_checkpoint=5_000)
+        assert chunk.attempt_index_start == boundaries[-1]
+        block["games_attempted"] = chunk.attempt_index_stop_exclusive
+        boundaries.append(chunk.attempt_index_stop_exclusive)
+
+    assert boundaries == [0, 5_000, 10_000, 12_000]
+    assert (
+        sum(stop - start for start, stop in zip(boundaries, boundaries[1:], strict=False)) == 12_000
+    )
+
+
+def test_block_progress_column_order_is_independent_of_checkpoint_history() -> None:
+    block: dict[str, Any] = {
+        "family_hash": "a" * 64,
+        "schedule_hash": "b" * 64,
+        "block_id": "block",
+        "pair_id": 0,
+        "root_seed": 11,
+        "root_index": 0,
+        "order": 0,
+        "n_completed_required": 12,
+        "max_attempts": 24,
+        "rng_scheme_version": 2,
+        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+    }
+    fresh = h2h_schedule_module._block_progress(
+        block,
+        games_attempted=12,
+        games_completed=12,
+        games_safety_limit=0,
+        wins_seat1=7,
+        wins_seat2=5,
+    )
+    partial = h2h_schedule_module._block_progress(
+        block,
+        games_attempted=8,
+        games_completed=8,
+        games_safety_limit=0,
+        wins_seat1=5,
+        wins_seat2=3,
+    )
+    resumed = h2h_schedule_module._block_progress(
+        partial,
+        games_attempted=12,
+        games_completed=12,
+        games_safety_limit=0,
+        wins_seat1=7,
+        wins_seat2=5,
+    )
+
+    assert list(fresh) == list(resumed)
+    assert fresh == resumed
+    assert list(fresh).index("wins_b") < list(fresh).index("games_attempted")
 
 
 def test_score_power_is_monotone_in_games_and_effect() -> None:
@@ -785,8 +910,12 @@ def test_worker_initializer_caches_immutable_strategy_manifest(
     h2h_schedule_module._initialize_h2h_worker(Path("canonical.parquet"), None, object())
 
     block = {"block_id": "first"}
-    assert h2h_schedule_module._simulate_cached_block((block, 10)) == (block, block)
-    assert h2h_schedule_module._simulate_cached_block((block, 10)) == (block, block)
+    previous, first = h2h_schedule_module._simulate_cached_block((block, 10))
+    _, second = h2h_schedule_module._simulate_cached_block((block, 10))
+    assert previous == block
+    assert first["_h2h_worker_initializer_load"] == 1
+    assert second["_h2h_worker_initializer_load"] == 0
+    assert first["_h2h_worker_pid"] == second["_h2h_worker_pid"]
     assert reads == [Path("canonical.parquet")]
     assert len(observed_manifests) == 2
     assert all(observed is manifest for observed in observed_manifests)
