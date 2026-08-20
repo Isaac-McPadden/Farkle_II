@@ -70,6 +70,8 @@ from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    is_process_pool_worker,
+    normalize_n_jobs,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.release_identity import (
@@ -452,10 +454,83 @@ def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Pat
                 if child.is_file()
                 and child.resolve() != done_path.resolve()
                 and not child.name.endswith(".sidecar.json")
+                and not _is_atomic_staging_file(child)
             )
         else:
             files.append(path)
     return list(dict.fromkeys(files))
+
+
+_ATOMIC_STAGING_PREFIXES = (
+    "._tmp_",
+    "._artifact_v3_",
+    "._sidecar_v3_",
+    "._manifest_v3_",
+    "._manifest_sidecar_v3_",
+)
+
+
+def _is_atomic_staging_file(path: Path) -> bool:
+    """Return whether *path* is a non-durable atomic-write staging file."""
+
+    return path.name.startswith(_ATOMIC_STAGING_PREFIXES)
+
+
+def _cleanup_interrupted_simulation_staging_files(
+    *,
+    n_dir: Path,
+    row_dir: Path | None,
+    metric_chunk_dir: Path | None,
+    strategy_manifest_path: Path,
+) -> list[Path]:
+    """Remove only recognized staging files left by an interrupted run.
+
+    Atomic writers deliberately publish by replacement, so these names can
+    never be durable artifacts or valid resume units.  A hard worker shutdown
+    can prevent the writer context manager from unlinking them; removing them
+    before resume prevents incomplete bytes from entering final publication.
+    """
+
+    roots = {n_dir.resolve()}
+    if row_dir is not None:
+        roots.add(row_dir.resolve())
+    if metric_chunk_dir is not None:
+        roots.add(metric_chunk_dir.resolve())
+
+    candidates: set[Path] = set()
+    for root in roots:
+        if root.is_dir():
+            candidates.update(
+                path for path in root.rglob("*") if path.is_file() and _is_atomic_staging_file(path)
+            )
+    manifest_parent = strategy_manifest_path.parent
+    if manifest_parent.is_dir():
+        candidates.update(
+            path
+            for path in manifest_parent.iterdir()
+            if path.is_file() and _is_atomic_staging_file(path)
+        )
+
+    removed: list[Path] = []
+    for path in sorted(candidates, key=lambda item: item.as_posix()):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            os.chmod(path, stat.S_IWRITE)
+            path.unlink()
+        removed.append(path)
+    if removed:
+        LOGGER.info(
+            "Removed %s incomplete atomic staging files before simulation resume",
+            len(removed),
+            extra={
+                "stage": "simulation",
+                "staging_files_removed": len(removed),
+            },
+        )
+    return removed
 
 
 def _publish_simulation_manifest_v3(
@@ -1278,6 +1353,13 @@ def run_single_n(
     workload_plan_path = n_dir / "simulation_workload_plan.json"
     row_dir = _resolve_row_output_dir(cfg, n)
     metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
+    if not force:
+        _cleanup_interrupted_simulation_staging_files(
+            n_dir=n_dir,
+            row_dir=row_dir,
+            metric_chunk_dir=metric_chunk_dir,
+            strategy_manifest_path=cfg.strategy_manifest_root_path(),
+        )
     had_unsealed_v3_outputs = is_v3_config(cfg) and _has_unsealed_simulation_outputs(
         n_dir=n_dir,
         row_dir=row_dir,
@@ -1433,6 +1515,35 @@ def run_single_n(
         deterministic_batch_size=workload_plan.shuffles_per_batch,
     )
     resource_policy = resolve_stage_parallel_policy("simulation", cfg.sim, resources=cfg.resources)
+    requested_workers = cfg.sim.n_jobs
+    resolved_workers = normalize_n_jobs(
+        requested_workers,
+        cpu_count=resource_policy.total_cores,
+        default=1,
+    )
+    nested_pool_suppressed = is_process_pool_worker() and resource_policy.process_workers == 1
+    LOGGER.info(
+        "Simulation worker handoff: seed=%s k=%s requested=%s resolved=%s effective=%s "
+        "nested_suppressed=%s parent_pid=%s",
+        cfg.sim.seed,
+        n,
+        requested_workers,
+        resolved_workers,
+        resource_policy.process_workers,
+        nested_pool_suppressed,
+        os.getpid(),
+        extra={
+            "stage": "simulation",
+            "root_seed": cfg.sim.seed,
+            "n_players": n,
+            "requested_workers": requested_workers,
+            "resolved_workers": resolved_workers,
+            "effective_workers": resource_policy.process_workers,
+            "nested_pool_suppressed": nested_pool_suppressed,
+            "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
+            "parent_pid": os.getpid(),
+        },
+    )
     apply_native_thread_limits(resource_policy)
     memory_guard = ProcessTreeMemoryGuard(
         cfg.resources.aggregate_memory_hard_limit_mb,
@@ -1474,6 +1585,14 @@ def run_single_n(
         checkpoint_sidecar=checkpoint_sidecar,
         write_final_metrics_artifact=not is_v3_config(cfg),
         write_workload_plan_artifact=not is_v3_config(cfg),
+        execution_policy={
+            "requested_workers": requested_workers,
+            "resolved_workers": resolved_workers,
+            "effective_workers": resource_policy.process_workers,
+            "nested_pool_suppressed": nested_pool_suppressed,
+            "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
+            "runner_parent_pid": os.getpid(),
+        },
     )
 
     # --- Final checkpoint post-processing ---

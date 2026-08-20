@@ -125,6 +125,20 @@ Preserve these invariants:
   generation, while one top-level `final_byte_deep_release_audit` freshly
   authenticates all root/root/pair bytes, schemas, contexts, configurations,
   completion inventories, and cross-context provenance before success.
+- two-seed orchestration is strictly sequential and rejects
+  `orchestration.parallel_seeds: true` before run-start/health publication;
+  player counts are also sequential, while the active tournament owns the full
+  resolved simulation process budget;
+- a top-level simulation pool is suppressed only when both the process marker
+  and a genuine multiprocessing parent prove nested execution. Process-pool
+  topology is observed (requested/resolved/created/live/peak), mismatches fail
+  early, Windows cancellation owns a bounded terminate/join/kill sequence, and
+  authenticated row/metric manifests independently authorize exact resume;
+- simulation heartbeats and `pipeline_telemetry.json` expose seed, k,
+  shuffle/chunk/game progress, rates/ETA, executor state, pending work,
+  checkpoints, process-tree memory, and elapsed time without artifact-tree
+  scans. Recognized atomic staging files from interrupted workers are never
+  completion inputs and are removed before resume.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

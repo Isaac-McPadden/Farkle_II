@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar, cast
@@ -72,6 +71,7 @@ from farkle.utils.stage_completion import CompletionState, freshness_sha256, res
 from farkle.utils.telemetry import (
     HEARTBEAT_INTERVAL_SECONDS,
     SupervisorHeartbeatRecorder,
+    use_supervisor_recorder,
 )
 from farkle.utils.writer import atomic_path
 
@@ -119,7 +119,8 @@ def _run_timed_phase(
     )
     status = "success"
     try:
-        return action()
+        with use_supervisor_recorder(recorder, scope):
+            return action()
     except BaseException:
         status = "failed"
         raise
@@ -179,7 +180,12 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
-    concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
+    if cfg.orchestration.parallel_seeds:
+        raise ValueError(
+            "orchestration.parallel_seeds=true is unsupported: root seeds must execute "
+            "sequentially so the active tournament receives the full worker budget"
+        )
+    concurrency = 1
     requested: dict[str, int | None] = {
         "simulation": cfg.sim.n_jobs,
         "ingest": cfg.ingest.n_jobs,
@@ -652,6 +658,17 @@ def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
         )
 
 
+def _write_pipeline_telemetry(path: Path, payload: dict[str, object]) -> None:
+    """Publish one bounded operational snapshot without scanning result trees."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as temporary:
+        Path(temporary).write_text(
+            json.dumps(payload, indent=2, sort_keys=True, default=str),
+            encoding="utf-8",
+        )
+
+
 def _final_release_gate(
     root_results: dict[int, _SeedRunStatus],
     pair_context: RootPairRunContext,
@@ -742,6 +759,11 @@ def _run_pipeline_observed(
 
     if len(set(seed_pair)) != 2:
         raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
+    if cfg.orchestration.parallel_seeds:
+        raise ValueError(
+            "orchestration.parallel_seeds=true is rejected before run start; "
+            "two-seed pipelines execute roots sequentially"
+        )
     if oracle_game_profile is None:
         cfg.validate_statistical_contract(require_two_roots=True)
     else:
@@ -816,49 +838,27 @@ def _run_pipeline_observed(
     pipeline_started_at = time.monotonic()
     finalization_timings: list[dict[str, object]] = []
     pair_stage_timings: tuple[dict[str, object], ...] = ()
-    if cfg.orchestration.parallel_seeds:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {}
-            for seed in seed_pair:
-                memory_guard.check_before_schedule()
-                futures[seed] = executor.submit(
-                    _run_one_seed,
-                    cfg,
-                    seed=seed,
-                    seed_pair=seed_pair,
-                    manifest_path=manifest_path,
-                    run_id=run_id,
-                    force=force,
-                    policy_bundle=policy_bundle,
-                    code_identity=code_identity,
-                    telemetry=telemetry,
-                    cli_overrides=cli_overrides,
-                    oracle_game_profile=oracle_game_profile,
-                    authentication_telemetry=authentication_telemetry,
-                )
-            root_results = {seed: futures[seed].result() for seed in seed_pair}
-    else:
-        root_results = {}
-        for seed in seed_pair:
-            memory_guard.check_before_schedule()
-            root_results[seed] = _run_one_seed(
-                cfg,
-                seed=seed,
-                seed_pair=seed_pair,
-                manifest_path=manifest_path,
-                run_id=run_id,
-                force=force,
-                policy_bundle=policy_bundle,
-                code_identity=code_identity,
-                telemetry=telemetry,
-                cli_overrides=cli_overrides,
-                oracle_game_profile=oracle_game_profile,
-                authentication_telemetry=authentication_telemetry,
-            )
-            # Sequential roots are fail-fast for every failure class. Resource
-            # failures additionally prevent any retry outside the owning stage.
-            if not root_results[seed].analysis_ok:
-                break
+    root_results = {}
+    for seed in seed_pair:
+        memory_guard.check_before_schedule()
+        root_results[seed] = _run_one_seed(
+            cfg,
+            seed=seed,
+            seed_pair=seed_pair,
+            manifest_path=manifest_path,
+            run_id=run_id,
+            force=force,
+            policy_bundle=policy_bundle,
+            code_identity=code_identity,
+            telemetry=telemetry,
+            cli_overrides=cli_overrides,
+            oracle_game_profile=oracle_game_profile,
+            authentication_telemetry=authentication_telemetry,
+        )
+        # Sequential roots are fail-fast for every failure class. Resource
+        # failures additionally prevent any retry outside the owning stage.
+        if not root_results[seed].analysis_ok:
+            break
     root_health = {
         str(seed): {
             "simulation": (
@@ -1129,6 +1129,7 @@ def _run_pipeline_observed(
         ),
         "root_workflows": root_health,
         "release_audit": release_audit,
+        "operational_telemetry_artifact": str(pair_root / "pipeline_telemetry.json"),
         "pair_workflow": {
             "status": "complete" if pair_context is not None and pair_error is None else "failed",
             "analysis_root": str(pair_context.analysis_root) if pair_context else None,
@@ -1201,6 +1202,10 @@ def run_pipeline(
         run=f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}",
         interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
         resource_sampler=memory_guard.snapshot,
+        heartbeat_sink=lambda payload: _write_pipeline_telemetry(
+            seed_pair_root(cfg, seed_pair) / "pipeline_telemetry.json",
+            dict(payload),
+        ),
     )
     authentication_telemetry = AuthenticationTelemetry()
     try:

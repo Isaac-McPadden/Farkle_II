@@ -10,13 +10,15 @@ accepting a statistical claim.
 - `src/farkle/game`: scoring, player state, exact turn accounting, and game
   completion behavior.
 - `src/farkle/simulation`: workload sizing, coordinate-owned tournament tasks,
-  checkpoints, row production, and process execution.
+  checkpoints, row production, manifest-authoritative resume, and process
+  execution.
 - `src/farkle/analysis`: streaming ingest/curate/concatenation, estimators,
   diagnostics, candidate freeze, H2H, dominance, agreement, and reporting.
-- `src/farkle/orchestration`: root contexts, root-pair context, and two-root
-  execution.
+- `src/farkle/orchestration`: root contexts, root-pair context, strictly
+  sequential two-root execution, and structured pipeline telemetry.
 - `src/farkle/utils`: RNG namespaces, atomic writers, manifests, sidecars,
-  lifecycle state, streaming loops, and shared statistics.
+  lifecycle state, streaming loops, observed process-pool topology, bounded
+  cancellation, heartbeat transport, and shared statistics.
 - `src/farkle/cli/main.py`: public CLI parsing and dispatch.
 
 ## Analysis modules

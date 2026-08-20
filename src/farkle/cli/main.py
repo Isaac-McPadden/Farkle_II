@@ -29,6 +29,11 @@ from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import configure_logging, setup_info_logging
+from farkle.utils.telemetry import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    SupervisorHeartbeatRecorder,
+    use_supervisor_recorder,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -417,10 +422,30 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "resume": resume_run,
             },
         )
-        if len(cfg.sim.n_players_list) > 1:
-            runner.run_multi(cfg, force=args.force)
-        else:
-            runner.run_single_n(cfg, cfg.sim.n_players_list[0], force=args.force)
+        telemetry = SupervisorHeartbeatRecorder(
+            LOGGER,
+            run=f"simulation_seed_{cfg.sim.seed}",
+            interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
+        )
+        scope = telemetry.begin_scope(
+            f"simulation_seed_{cfg.sim.seed}",
+            run=f"simulation_seed_{cfg.sim.seed}",
+            stage="simulation",
+            phase="simulation_preflight",
+        )
+        status = "success"
+        try:
+            with use_supervisor_recorder(telemetry, scope):
+                if len(cfg.sim.n_players_list) > 1:
+                    runner.run_multi(cfg, force=args.force)
+                else:
+                    runner.run_single_n(cfg, cfg.sim.n_players_list[0], force=args.force)
+        except BaseException:
+            status = "interrupted_or_failed"
+            raise
+        finally:
+            scope.finish(status=status)
+            telemetry.close()
         LOGGER.info("Run command completed", extra={"stage": "cli", "command": "run"})
     elif args.command == "time":
         LOGGER.info(

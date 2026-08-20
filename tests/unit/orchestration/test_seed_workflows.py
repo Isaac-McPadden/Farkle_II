@@ -257,6 +257,56 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     ]
 
 
+def test_root_workflow_intervals_are_strictly_sequential(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        profile=ProfileConfig(
+            purpose="integration",
+            reduced_resolution=True,
+            production_eligible=False,
+            release_eligible=False,
+        ),
+        batching=BatchingConfig(target_batches=20),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    fake_run_one_seed = two_seed_pipeline._run_one_seed
+    events: list[tuple[str, int]] = []
+    active_roots: set[int] = set()
+
+    def observed_run_one_seed(
+        cfg: AppConfig,
+        *,
+        seed: int,
+        **kwargs: Any,
+    ) -> two_seed_pipeline._SeedRunStatus:
+        assert not active_roots
+        active_roots.add(seed)
+        events.append(("start", seed))
+        try:
+            return fake_run_one_seed(cfg, seed=seed, **kwargs)
+        finally:
+            events.append(("finish", seed))
+            active_roots.remove(seed)
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_one_seed", observed_run_one_seed)
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(two_seed_pipeline, "_write_pipeline_health", lambda *_args: None)
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert events == [("start", 11), ("finish", 11), ("start", 22), ("finish", 22)]
+    assert not active_roots
+
+
 def test_pipeline_health_is_not_rewritten_for_heartbeats(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -699,18 +749,44 @@ def test_pipeline_health_rejects_explicitly_invalidated_root_snapshot(
     assert "explicitly invalidated" in health["root_workflows"]["22"]["error"]
 
 
-def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
+def test_parallel_roots_are_rejected_before_budget_publication(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.n_jobs = 8
     cfg.analysis.n_jobs = 6
     cfg.orchestration.parallel_seeds = True
 
-    policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+    with pytest.raises(ValueError, match="parallel_seeds=true"):
+        two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
 
-    assert policy.simulation.process_workers == 2
-    assert policy.analysis.process_workers == 1
-    assert policy.simulation.concurrent_roots == 2
-    assert policy.analysis.concurrent_roots == 2
+
+def test_parallel_roots_are_rejected_before_run_start_or_health_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    cfg.orchestration.parallel_seeds = True
+    health_publications: list[object] = []
+    root_starts: list[int] = []
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_write_pipeline_health",
+        lambda *_args: health_publications.append(object()),
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_run_one_seed",
+        lambda *_args, seed, **_kwargs: root_starts.append(seed),
+    )
+
+    with pytest.raises(ValueError, match="parallel_seeds=true"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert root_starts == []
+    assert health_publications == []
 
 
 def test_worker_sections_own_independent_explicit_budgets() -> None:

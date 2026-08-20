@@ -463,7 +463,9 @@ def test_run_multi_filters_counts_and_calls_worker_once_per_valid(
         lambda **_: ([ThresholdStrategy(300, 3) for _ in range(6)], None),
     )
 
-    worker_calls: list[tuple[int, bool]] = []
+    cfg.sim.n_jobs = 12
+    worker_calls: list[tuple[int, bool, int | None]] = []
+    active_counts: set[int] = set()
 
     def fake_run_single_n(
         cfg: AppConfig,
@@ -473,14 +475,25 @@ def test_run_multi_filters_counts_and_calls_worker_once_per_valid(
         force: bool = False,
     ) -> int:
         assert strategies is not None
-        worker_calls.append((n, force))
-        return 10 * n
+        assert not active_counts
+        active_counts.add(n)
+        try:
+            worker_calls.append((n, force, cfg.sim.n_jobs))
+            return 10 * n
+        finally:
+            active_counts.remove(n)
 
     monkeypatch.setattr(runner, "run_single_n", fake_run_single_n)
     out = runner.run_multi(cfg, force=True)
 
     assert out == {1: 10, 2: 20, 3: 30, 6: 60}
-    assert worker_calls == [(1, True), (2, True), (3, True), (6, True)]
+    assert worker_calls == [
+        (1, True, 12),
+        (2, True, 12),
+        (3, True, 12),
+        (6, True, 12),
+    ]
+    assert not active_counts
 
 
 def test_filter_player_counts_zero_grid_allows_positive_counts(

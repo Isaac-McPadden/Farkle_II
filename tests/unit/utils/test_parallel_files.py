@@ -28,6 +28,14 @@ def _terminate_worker(_value: int) -> int:
     os._exit(7)
 
 
+def _nested_policy_process_workers(_value: int) -> tuple[int, bool]:
+    class WorkerCfg:
+        n_jobs = 8
+
+    policy = parallel.resolve_stage_parallel_policy("analysis", WorkerCfg())
+    return policy.process_workers, parallel.is_process_pool_worker()
+
+
 @pytest.fixture
 def writer_queue() -> mp.Queue:  # type: ignore
     queue: mp.Queue = mp.Queue()
@@ -279,7 +287,7 @@ def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPat
 
     assert raised.value.classification == "allocator_memory_error"
     assert cancelled == [2, 3]
-    assert shutdown == [(True, True)]
+    assert shutdown == [(False, True)]
     assert [item["event"] for item in progress][-2:] == ["cancelling", "cancelled"]
 
 
@@ -741,7 +749,7 @@ def test_persistent_high_water_is_a_resource_failure(monkeypatch: MonkeyPatch) -
     assert raised.value.classification == "persistent_high_water"
 
 
-def test_nested_executor_environment_prevents_process_pool() -> None:
+def test_stale_nested_executor_environment_does_not_collapse_top_level_pool() -> None:
     class DummyCfg:
         n_jobs: int | None = 8
 
@@ -754,4 +762,20 @@ def test_nested_executor_environment_prevents_process_pool() -> None:
             os.environ.pop("FARKLE_PROCESS_POOL_ACTIVE", None)
         else:
             os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = previous
-    assert policy.process_workers == 1
+    assert policy.process_workers == 8
+
+
+@pytest.mark.skipif("spawn" not in mp.get_all_start_methods(), reason="spawn unavailable")
+def test_real_process_map_children_suppress_nested_process_pools() -> None:
+    previous = os.environ.get("FARKLE_PROCESS_POOL_ACTIVE")
+    results = list(
+        parallel.process_map(
+            _nested_policy_process_workers,
+            range(2),
+            n_jobs=2,
+            window=2,
+            mp_context=mp.get_context("spawn"),
+        )
+    )
+    assert results == [(1, True), (1, True)]
+    assert os.environ.get("FARKLE_PROCESS_POOL_ACTIVE") == previous

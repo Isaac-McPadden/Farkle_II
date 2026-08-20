@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "task": "4C",
+  "title": "Simulation execution, sequencing, telemetry, and exact resume remediation",
+  "provenance": {
+    "starting_commit": "baecd8becd564217d43d366bb07f108f76ddb9f3",
+    "starting_worktree": "clean",
+    "platform": "win32",
+    "python": "3.12.10",
+    "multiprocessing_start_method": "spawn",
+    "protected_launcher": true,
+    "commit_or_push_performed": false
+  },
+  "production_incident_evidence": {
+    "preserved_root": "data/results_efficiency_updates_4B_fast_seed_pair_50_51",
+    "health_requested_workers": 12,
+    "health_resolved_workers": 12,
+    "health_effective_workers": 12,
+    "row_manifest_entries": 340,
+    "row_manifest_distinct_worker_pids": 12,
+    "row_manifest_first_utc": "2026-08-20T03:05:44Z",
+    "row_manifest_last_utc": "2026-08-20T03:06:00Z",
+    "worker_pids": [
+      10428,
+      26504,
+      39272,
+      44900,
+      47300,
+      47652,
+      57060,
+      59952,
+      61048,
+      70920,
+      71424,
+      72760
+    ],
+    "conclusion": "The preserved incident did create and use all 12 workers. The health artifact described planned policy, while the late OS snapshot described a later no-worker state. Old telemetry cannot identify the event that removed the workers or the exact parent wait state."
+  },
+  "proven_findings": [
+    "A static planned worker policy was presented as if it were live executor state.",
+    "The production v3 path performed a serial 2000-game throughput calibration before its first pool submission.",
+    "The nested guard trusted an inherited environment marker without verifying a genuine multiprocessing parent.",
+    "Cancellation used unbounded ProcessPoolExecutor shutdown(wait=True) on the Windows interruption path.",
+    "Authenticated row and metric manifests were ignored for resume when the periodic pickle checkpoint was absent.",
+    "Atomic staging files left by hard worker termination could be mistaken for ordinary final-publication inputs.",
+    "The terminal formatter discarded operational logging extra fields and therefore emitted opaque repeated heartbeats."
+  ],
+  "implemented_contract": {
+    "root_seed_execution": "strictly sequential and fail-fast",
+    "parallel_seeds_true": "rejected before run-start or health publication",
+    "player_count_execution": "strictly sequential",
+    "active_player_count_worker_budget": "full resolved simulation budget",
+    "nested_pool_guard": "environment marker plus genuine multiprocessing parent",
+    "pool_topology_mismatch": "early ProcessPoolTopologyError",
+    "interruption": "bounded terminate, join, kill fallback, and manager-thread join",
+    "resume_authority": "authenticated row/metric manifests independently recover durable coordinates",
+    "atomic_staging": "recognized incomplete staging files removed before resume and excluded from completion",
+    "telemetry_artifact": "pipeline_telemetry.json"
+  },
+  "benchmark": {
+    "source": "data/farkle-task4c-simulation-execution-v1/task4c_simulation_execution.json",
+    "source_sha256": "a4745b471aaf132d69cbd7524cfed498b82d903729d19893bb8bc643c610023f",
+    "cpu_fixture": {
+      "root_seed": 94512,
+      "player_count": 2,
+      "strategies": 80,
+      "shuffles": 600,
+      "games_per_shuffle": 40,
+      "games": 24000,
+      "pending_process_blocks": 20
+    },
+    "worker_cases": [
+      {
+        "workers": 1,
+        "simulation_wall_seconds": 86.0,
+        "protected_cli_wall_seconds": 96.25,
+        "simulation_games_per_second": 279.06976744186045,
+        "process_tree_cpu_seconds": 92.171875,
+        "created_workers": 0,
+        "peak_live_workers": 0,
+        "peak_rss_bytes": 511475712,
+        "peak_native_threads": 57
+      },
+      {
+        "workers": 2,
+        "simulation_wall_seconds": 43.0,
+        "protected_cli_wall_seconds": 52.59399999992456,
+        "simulation_games_per_second": 558.1395348837209,
+        "process_tree_cpu_seconds": 103.3125,
+        "created_workers": 2,
+        "peak_live_workers": 2,
+        "full_pool_observed_seconds": 8.061999999918044,
+        "peak_rss_bytes": 982421504,
+        "peak_native_threads": 71
+      },
+      {
+        "workers": 12,
+        "simulation_wall_seconds": 21.0,
+        "protected_cli_wall_seconds": 30.546999999904074,
+        "simulation_games_per_second": 1142.857142857143,
+        "process_tree_cpu_seconds": 182.0,
+        "created_workers": 12,
+        "peak_live_workers": 12,
+        "full_pool_observed_seconds": 14.390999999945052,
+        "worker_drain_to_quiescence_seconds": 2.75,
+        "peak_rss_bytes": 3575504896,
+        "peak_native_threads": 149
+      }
+    ],
+    "simulation_speedup_12_vs_1": 4.095238095238095,
+    "protected_cli_speedup_12_vs_1": 3.1508822470390627,
+    "worker_count_canonical_sha256": "712514720c7f7526e9d0ed30e61d7979cdc2ce8d3b9c69c4bca0aab61f3cb616",
+    "worker_count_logical_sha256": "c1d395355c893e91dd731fc0bf2e486f3a1c96d4d4333762ece3abede3fa2f66",
+    "interruption": {
+      "shutdown_latency_seconds": 0.17099999997299165,
+      "orphan_worker_pids": [],
+      "durable_rows_before_resume": 78,
+      "durable_rows_reused": 78,
+      "maximum_recomputed_games": 48,
+      "canonical_sha256": "a2cca89487e5d6e1532b6c96058f5ca51a2e54e2b1c19f3578157828f272f939",
+      "logical_sha256": "b3a7461e46967280d0f47e0b144c74f815c270ea3fcf59f34fb4b139a3df707e",
+      "canonical_equivalent_to_reference": true,
+      "logical_equivalent_to_reference": true
+    }
+  },
+  "verification": {
+    "focused_contract_suite_after_final_test_changes": "336 passed",
+    "ruff_repository_wide": "passed",
+    "mypy_src_86_files": "passed",
+    "black_changed_python": "passed",
+    "pyright_changed_files": "passed",
+    "benchmark_unit_tests": "passed",
+    "benchmark": "passed",
+    "json_validation": "passed",
+    "git_diff_check": "passed",
+    "known_preexisting_failure": {
+      "tests": "tests/unit/orchestration/test_authenticated_lifecycle_migration.py::test_simulation_completion_mutation_matrix (6 parameters)",
+      "reason": "The test asks accepted Task 4B code to promote unsealed v3 bytes; the unchanged HEAD production path rejects that operation."
+    }
+  },
+  "scientific_identity_changed": false,
+  "canonical_layout_changed": false,
+  "artifact_contract_weakened": false,
+  "historical_results_mutated": false,
+  "full_pipeline_run": false,
+  "task_5_started": false,
+  "recommendation": "Unblock Task 5A after Task 4C review; retain the normal production-readiness stop gate."
+}

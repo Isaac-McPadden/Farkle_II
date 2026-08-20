@@ -293,6 +293,39 @@ def test_interruption_boundaries_never_create_false_completion(tmp_path: Path) -
     assert runner.simulation_is_complete(cfg, 2)
 
 
+def test_interrupted_atomic_staging_files_are_removed_and_never_published(
+    tmp_path: Path,
+) -> None:
+    cfg = make_authenticated_v3_config(tmp_path, name="atomic_resume", root_seed=42)
+    strategy, _workload, row_dir = _prepare(cfg, 1)
+    staging = [
+        row_dir / "._tmp_worker",
+        row_dir / "._artifact_v3_checkpoint",
+        row_dir / "._sidecar_v3_metadata",
+    ]
+    for path in staging:
+        path.write_bytes(b"incomplete")
+    unrelated_hidden = row_dir / ".keep"
+    unrelated_hidden.write_bytes(b"preserve")
+
+    expanded = runner._completion_output_files(
+        [row_dir],
+        runner.simulation_done_path(cfg, 2),
+    )
+    assert not any(path in expanded for path in staging)
+    assert unrelated_hidden in expanded
+
+    removed = runner._cleanup_interrupted_simulation_staging_files(
+        n_dir=cfg.n_dir(2),
+        row_dir=row_dir,
+        metric_chunk_dir=None,
+        strategy_manifest_path=strategy,
+    )
+    assert removed == sorted(staging, key=lambda path: path.as_posix())
+    assert not any(path.exists() for path in staging)
+    assert unrelated_hidden.read_bytes() == b"preserve"
+
+
 @pytest.mark.parametrize("mutation", ["data", "missing_sidecar", "sidecar", "manifest"])
 def test_routine_resume_rejects_mutated_publication(tmp_path: Path, mutation: str) -> None:
     cfg, shards, manifest, _completion = _publish_many(tmp_path, name=f"mutate_{mutation}", count=2)

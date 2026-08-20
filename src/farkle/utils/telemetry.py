@@ -41,6 +41,7 @@ MonotonicClock = Callable[[], float]
 UtcClock = Callable[[], datetime]
 Waiter = Callable[[threading.Event, float], bool]
 ResourceSampler = Callable[[], Mapping[str, object]]
+HeartbeatSink = Callable[[Mapping[str, object]], None]
 
 _CURRENT_SUPERVISOR_RECORDER: ContextVar[SupervisorHeartbeatRecorder | None] = ContextVar(
     "farkle_current_supervisor_recorder",
@@ -63,6 +64,91 @@ def _utc_now() -> datetime:
 
 def _utc_text(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _duration_text(value: object) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return "?"
+    seconds = int(value)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _heartbeat_message(
+    active: _ActiveScope,
+    *,
+    run_elapsed_seconds: float,
+    scope_elapsed_seconds: float,
+    resources: Mapping[str, object],
+) -> str:
+    """Render the primary operational state into the normal terminal message."""
+
+    progress = active.progress
+    seed = progress.get("root_seed", "?")
+    player_count = progress.get("current_player_count", "?")
+    planned_games = progress.get("planned_games")
+    parent_games = progress.get("completed_games", 0)
+    worker_games = progress.get("worker_completed_games", 0)
+    starting_games = progress.get("starting_games", 0)
+    completed_games = max(
+        int(parent_games) if isinstance(parent_games, (int, float)) else 0,
+        (int(starting_games) if isinstance(starting_games, (int, float)) else 0)
+        + (int(worker_games) if isinstance(worker_games, (int, float)) else 0),
+    )
+    percent = progress.get("percent_complete")
+    if isinstance(planned_games, (int, float)) and planned_games > 0:
+        percent = 100.0 * completed_games / float(planned_games)
+    games_text = (
+        f"{completed_games}/{int(planned_games)}"
+        if isinstance(planned_games, (int, float))
+        else str(completed_games)
+    )
+    recent_raw = progress.get("recent_games_per_second", 0.0)
+    cumulative_raw = progress.get("cumulative_games_per_second", 0.0)
+    recent = float(recent_raw) if isinstance(recent_raw, (int, float)) else 0.0
+    cumulative = float(cumulative_raw) if isinstance(cumulative_raw, (int, float)) else 0.0
+    starting = int(starting_games) if isinstance(starting_games, (int, float)) else 0
+    if cumulative <= 0 and scope_elapsed_seconds > 0:
+        cumulative = max(0, completed_games - starting) / scope_elapsed_seconds
+    if recent <= 0:
+        recent = cumulative
+    requested = progress.get("requested_workers", "?")
+    resolved = progress.get("resolved_workers", "?")
+    created = progress.get("created_workers", 0)
+    live = progress.get("live_workers", 0)
+    pending = progress.get("pending_work_units", 0)
+    in_flight = progress.get("in_flight_work_units", 0)
+    checkpoint = progress.get("latest_checkpoint_utc") or "none"
+    checkpoint_games = progress.get("latest_checkpoint_games", 0)
+    rss = resources.get("process_tree_rss_bytes", 0)
+    rss_mib = float(rss) / (1024 * 1024) if isinstance(rss, (int, float)) else 0.0
+    completed_shuffles_raw = progress.get("completed_shuffles", 0)
+    starting_shuffles_raw = progress.get("starting_shuffles", 0)
+    worker_shuffles_raw = progress.get("worker_completed_shuffles", 0)
+    completed_shuffles = max(
+        int(completed_shuffles_raw) if isinstance(completed_shuffles_raw, (int, float)) else 0,
+        (int(starting_shuffles_raw) if isinstance(starting_shuffles_raw, (int, float)) else 0)
+        + (int(worker_shuffles_raw) if isinstance(worker_shuffles_raw, (int, float)) else 0),
+    )
+    percent_value = float(percent) if isinstance(percent, (int, float)) else 0.0
+    return (
+        f"Heartbeat: seed={seed} phase={active.phase} k={player_count} "
+        f"games={games_text} ({percent_value:.1f}%) "
+        f"shuffles={completed_shuffles}/{progress.get('planned_shuffles', '?')} "
+        f"chunks={progress.get('completed_chunks', 0)}/{progress.get('planned_chunks', '?')} "
+        f"rate={recent:.1f}/s recent,{cumulative:.1f}/s avg "
+        f"eta={_duration_text(progress.get('eta_seconds'))} "
+        f"workers={live}/{created}/{resolved} requested={requested} "
+        f"mode={progress.get('executor_mode', 'unknown')} pending={pending} in_flight={in_flight} "
+        f"checkpoint={checkpoint}@{checkpoint_games} rss={rss_mib:.1f}MiB "
+        f"phase_elapsed={_duration_text(scope_elapsed_seconds)} "
+        f"run_elapsed={_duration_text(run_elapsed_seconds)}"
+    )
 
 
 def sample_process_resource_state() -> dict[str, object]:
@@ -292,6 +378,7 @@ class SupervisorHeartbeatRecorder:
         run: str,
         interval_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
         resource_sampler: ResourceSampler | None = None,
+        heartbeat_sink: HeartbeatSink | None = None,
         clock: MonotonicClock = time.monotonic,
         utc_clock: UtcClock = _utc_now,
         waiter: Waiter = _wait_for_event,
@@ -303,6 +390,7 @@ class SupervisorHeartbeatRecorder:
         self.run = run
         self.interval_seconds = max(0.0, float(interval_seconds))
         self._resource_sampler = resource_sampler or sample_process_resource_state
+        self._heartbeat_sink = heartbeat_sink
         self._clock = clock
         self._utc_clock = utc_clock
         self._waiter = waiter
@@ -313,9 +401,7 @@ class SupervisorHeartbeatRecorder:
         self._thread: threading.Thread | None = None
         self._started_at = float(self._clock())
         self._next_deadline = (
-            self._started_at + self.interval_seconds
-            if self.interval_seconds > 0
-            else math.inf
+            self._started_at + self.interval_seconds if self.interval_seconds > 0 else math.inf
         )
         self._active: dict[str, _ActiveScope] = {}
         self._closed = False
@@ -385,7 +471,11 @@ class SupervisorHeartbeatRecorder:
         resource_start = self.resource_snapshot()
         registered = os.getpid() == self.owner_pid
         with self._lock:
-            if registered and scope not in self._active and len(self._active) >= self._max_active_scopes:
+            if (
+                registered
+                and scope not in self._active
+                and len(self._active) >= self._max_active_scopes
+            ):
                 registered = False
                 self._dropped_updates += 1
                 self._record_error_locked(
@@ -632,7 +722,15 @@ class SupervisorHeartbeatRecorder:
             **resources,
         }
         try:
-            self._logger.info("Pipeline heartbeat", extra=extra)
+            message = _heartbeat_message(
+                primary,
+                run_elapsed_seconds=max(0.0, now - self._started_at),
+                scope_elapsed_seconds=max(0.0, now - primary.started_at),
+                resources=resources,
+            )
+            self._logger.info(message, extra=extra)
+            if self._heartbeat_sink is not None:
+                self._heartbeat_sink(extra)
         except Exception as exc:  # noqa: BLE001 - logging cannot fail computation
             with self._lock:
                 self._record_error_locked(

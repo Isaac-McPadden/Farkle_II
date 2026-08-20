@@ -11,6 +11,13 @@ remain in both gates.
 
 - Workload/RNG/resume: `tests/unit/simulation/test_workload_planner.py`,
   `test_run_tournament*.py`, and `tests/unit/utils/test_random.py`.
+- Simulation process topology/sequencing: `tests/unit/utils/test_parallel_files.py`,
+  `tests/unit/orchestration/test_seed_workflows.py`,
+  `tests/unit/simulation/test_runner_branches.py`,
+  `tests/unit/simulation/test_simulation_publication_v3.py`, and
+  `tests/unit/scripts/test_benchmark_task4c_simulation_execution.py`. The real
+  protected Windows-spawn acceptance driver is
+  `scripts/benchmark_task4c_simulation_execution.py`.
 - Row/turn arithmetic: `tests/unit/game/test_engine*.py`,
   `tests/unit/simulation/test_simulation.py`, and
   `tests/unit/analysis/test_all_player_metrics.py`.

@@ -48,6 +48,13 @@ from farkle.utils.manifest import iter_manifest
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.streaming_loop import run_streaming_shard
+from farkle.utils.telemetry import (
+    WorkerProgressEndpoint,
+    current_supervisor_recorder,
+    current_supervisor_scope,
+    install_worker_progress_endpoint,
+    report_worker_progress,
+)
 from farkle.utils.writer import atomic_path
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
@@ -259,6 +266,7 @@ def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     config: TournamentConfig,
     game_profile: GameProfile | None = None,
+    progress_endpoint: WorkerProgressEndpoint | None = None,
 ) -> None:
     """Initialise per-process state."""
 
@@ -266,6 +274,7 @@ def _init_worker(
     if len(strategies) % config.n_players != 0:
         raise ValueError(f"n_players must divide {len(strategies):,}")
     _STATE = WorkerState(_prepare_public_helper_strategies(strategies), config, game_profile)
+    install_worker_progress_endpoint(progress_endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +442,17 @@ def _run_chunk(shuffle_tasks: Sequence[ShuffleTask | int]) -> Counter[int | str]
             raise
         else:
             total.absorb(result)
+            report_worker_progress(
+                "simulation_shuffle_complete",
+                counters={
+                    "worker_completed_shuffles": 1,
+                    "worker_completed_games": (
+                        result.games_attempted
+                        if isinstance(result, OutcomeCounter)
+                        else int(sum(result.values()))
+                    ),
+                },
+            )
     return total
 
 
@@ -548,6 +568,17 @@ def _run_chunk_metrics(
 
         # free memory for this shuffle
         rows.clear()
+        report_worker_progress(
+            "simulation_shuffle_complete",
+            counters={
+                "worker_completed_shuffles": 1,
+                "worker_completed_games": (
+                    wins.games_attempted
+                    if isinstance(wins, OutcomeCounter)
+                    else int(sum(wins.values()))
+                ),
+            },
+        )
 
     return wins_total, sums_total, sq_total
 
@@ -1036,6 +1067,7 @@ def run_tournament(
     checkpoint_sidecar: ArtifactSidecar | None = None,
     write_final_metrics_artifact: bool = True,
     write_workload_plan_artifact: bool = True,
+    execution_policy: Mapping[str, object] | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -1134,13 +1166,36 @@ def run_tournament(
             }
         )
 
-    if oracle_game_profile is None:
-        games_per_sec = _measure_throughput(strategies[: cfg.n_players])
-    else:
-        games_per_sec = _measure_throughput(
-            strategies[: cfg.n_players],
-            game_profile=oracle_game_profile,
+    recorder = current_supervisor_recorder()
+    scope = current_supervisor_scope()
+    policy_metadata = dict(execution_policy or {})
+    if scope is not None:
+        scope.update(
+            phase="simulation_preflight",
+            state="preparing",
+            progress={
+                "root_seed": global_seed,
+                "current_player_count": cfg.n_players,
+                "planned_shuffles": cfg.num_shuffles,
+                "planned_games": cfg.num_shuffles * cfg.games_per_shuffle,
+                **policy_metadata,
+            },
         )
+
+    # Production v3 publication already owns a resolved workload plan before
+    # entering this function.  The historical 2,000-game serial calibration was
+    # only an operational projection, but it delayed the first pool submission
+    # by minutes on pathological sample matchups.  Retain it solely for the
+    # legacy direct API that explicitly asks this function to publish a plan.
+    games_per_sec: float | None = None
+    if workload_plan is not None and write_workload_plan_artifact:
+        if oracle_game_profile is None:
+            games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+        else:
+            games_per_sec = _measure_throughput(
+                strategies[: cfg.n_players],
+                game_profile=oracle_game_profile,
+            )
     if workload_plan is not None:
         if (
             workload_plan.k != cfg.n_players
@@ -1151,7 +1206,8 @@ def run_tournament(
             raise ValueError(
                 "Tournament workload plan does not match the resolved run configuration"
             )
-        workload_plan = workload_plan.with_games_per_second(games_per_sec)
+        if games_per_sec is not None:
+            workload_plan = workload_plan.with_games_per_second(games_per_sec)
         if workload_plan_path is not None and write_workload_plan_artifact:
             write_workload_plan(workload_plan_path, workload_plan)
         LOGGER.info(
@@ -1169,6 +1225,7 @@ def run_tournament(
             "games_per_shuffle": cfg.games_per_shuffle,
             "shuffles_per_process_block": shuffles_per_chunk,
             "projected_games_per_second": games_per_sec,
+            "serial_calibration_performed": games_per_sec is not None,
         },
     )
 
@@ -1199,7 +1256,10 @@ def run_tournament(
             raw_counts, outcome_counts if isinstance(outcome_counts, Mapping) else None
         )
         games_completed = win_totals.games_completed
-    can_resume_from_artifacts = resume and payload is not None
+    # Authenticated row/metric manifests are durable recovery authorities in
+    # their own right.  Requiring a periodic aggregate checkpoint here caused
+    # already published shuffles to be replayed after interruption.
+    can_resume_from_artifacts = resume
 
     collect_rows = row_output_directory is not None
     if collect_rows:
@@ -1345,6 +1405,13 @@ def run_tournament(
     )
 
     resolved_n_jobs = parallel.normalize_n_jobs(n_jobs)
+    if policy_metadata:
+        policy_effective = policy_metadata.get("effective_workers")
+        if policy_effective is not None and int(cast(Any, policy_effective)) != resolved_n_jobs:
+            raise parallel.ProcessPoolTopologyError(
+                "simulation execution-policy handoff mismatch: "
+                f"policy_effective={policy_effective}, run_tournament={resolved_n_jobs}"
+            )
 
     LOGGER.info(
         "Tournament run start",
@@ -1394,6 +1461,110 @@ def run_tournament(
         ],
     ] = {}
     chunk_wrapper = partial(_run_chunk_item, chunk_fn=chunk_fn)
+    telemetry_started = time.monotonic()
+    starting_games = win_totals.games_attempted
+    starting_shuffles = len(completed_shuffle_indices)
+    last_progress_at = telemetry_started
+    last_progress_games = win_totals.games_attempted
+    scheduler_state: dict[str, object] = {
+        "executor_mode": "intentional_serial" if resolved_n_jobs == 1 else "process_pool",
+        "requested_workers": policy_metadata.get("requested_workers", n_jobs),
+        "resolved_workers": policy_metadata.get("resolved_workers", resolved_n_jobs),
+        "effective_workers": resolved_n_jobs,
+        "created_workers": 0,
+        "live_workers": 0,
+        "peak_live_workers": 0,
+        "pending_work_units": 0,
+        "in_flight_work_units": 0,
+        "scheduler_event": "pre_first_submission",
+    }
+    latest_checkpoint_at: str | None = None
+    latest_checkpoint_games = win_totals.games_attempted if payload is not None else 0
+
+    def progress_payload() -> dict[str, object]:
+        elapsed = max(0.0, time.monotonic() - telemetry_started)
+        completed_shuffles = len(completed_shuffle_indices)
+        completed_chunks = len(completed_chunk_indices)
+        completed_games_now = win_totals.games_attempted
+        cumulative_rate = (
+            max(0, completed_games_now - starting_games) / elapsed if elapsed > 0 else 0.0
+        )
+        remaining_games = max(0, total_games - completed_games_now)
+        return {
+            "root_seed": global_seed,
+            "current_player_count": cfg.n_players,
+            "planned_shuffles": cfg.num_shuffles,
+            "completed_shuffles": completed_shuffles,
+            "planned_chunks": (cfg.num_shuffles + shuffles_per_chunk - 1) // shuffles_per_chunk,
+            "completed_chunks": completed_chunks,
+            "planned_games": total_games,
+            "starting_games": starting_games,
+            "starting_shuffles": starting_shuffles,
+            "completed_games": completed_games_now,
+            "percent_complete": (
+                100.0 * completed_games_now / total_games if total_games else 100.0
+            ),
+            "cumulative_games_per_second": cumulative_rate,
+            "recent_games_per_second": scheduler_state.get("recent_games_per_second", 0.0),
+            "eta_seconds": remaining_games / cumulative_rate if cumulative_rate > 0 else None,
+            "latest_checkpoint_utc": latest_checkpoint_at,
+            "latest_checkpoint_games": latest_checkpoint_games,
+            "durable_shuffles": completed_shuffles,
+            "elapsed_phase_seconds": elapsed,
+            **scheduler_state,
+        }
+
+    def update_scope(*, phase: str = "simulation", state: str = "working") -> None:
+        if scope is not None:
+            scope.update(phase=phase, state=state, progress=progress_payload())
+
+    def scheduler_progress(event: Mapping[str, object]) -> None:
+        event_name = str(event.get("event", "working"))
+        for source, target in (
+            ("requested_workers", "requested_workers"),
+            ("resolved_workers", "resolved_workers"),
+            ("effective_workers", "effective_workers"),
+            ("created_workers", "created_workers"),
+            ("live_workers", "live_workers"),
+            ("peak_live_workers", "peak_live_workers"),
+            ("cleanly_terminated_workers", "cleanly_terminated_workers"),
+            ("executor_construction_seconds", "executor_construction_seconds"),
+            ("pool_shutdown_seconds", "pool_shutdown_seconds"),
+            ("pending", "pending_work_units"),
+        ):
+            if source in event:
+                scheduler_state[target] = event[source]
+        scheduler_state["in_flight_work_units"] = event.get(
+            "pending", scheduler_state.get("in_flight_work_units", 0)
+        )
+        scheduler_state["scheduler_event"] = event_name
+        if "executor_mode" in event:
+            scheduler_state["executor_mode"] = event["executor_mode"]
+        phase = (
+            "simulation_pool_startup"
+            if event_name
+            in {
+                "pool_start",
+                "pool_constructed",
+                "pool_ready",
+            }
+            else "simulation"
+        )
+        state = {
+            "schedule_check": "memory_backpressure",
+            "waiting_on_futures": "waiting_on_futures",
+            "cancelling": "cancelling",
+            "cancelled": "interrupted_cleanup",
+            "pool_creation_failed": "pool_creation_failure",
+        }.get(event_name, "working")
+        update_scope(phase=phase, state=state)
+
+    progress_endpoint = (
+        recorder.create_worker_progress_endpoint(scope.scope, mp_context=mp_context)
+        if recorder is not None and scope is not None and resolved_n_jobs > 1
+        else None
+    )
+    update_scope(phase="simulation_pool_startup")
 
     try:
         for chunk_index, block_tasks, result in parallel.process_map(
@@ -1401,10 +1572,11 @@ def run_tournament(
             chunk_items,
             n_jobs=resolved_n_jobs,
             initializer=_init_worker,
-            initargs=(strategies, cfg, oracle_game_profile),
+            initargs=(strategies, cfg, oracle_game_profile, progress_endpoint),
             window=4 * resolved_n_jobs,
             mp_context=mp_context,
             memory_guard=memory_guard,
+            progress_callback=scheduler_progress,
         ):
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
@@ -1539,6 +1711,13 @@ def run_tournament(
             checkpoint_meta["completed_shuffle_indices"] = sorted(completed_shuffle_indices)
             checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)
             now = time.perf_counter()
+            recent_elapsed = max(0.0, time.monotonic() - last_progress_at)
+            recent_games = max(0, win_totals.games_attempted - last_progress_games)
+            scheduler_state["recent_games_per_second"] = (
+                recent_games / recent_elapsed if recent_elapsed > 0 else 0.0
+            )
+            last_progress_at = time.monotonic()
+            last_progress_games = win_totals.games_attempted
             if now - last_ckpt >= cfg.ckpt_every_sec:
                 _save_checkpoint(
                     ckpt_path,
@@ -1562,7 +1741,10 @@ def run_tournament(
                         "path": str(ckpt_path),
                     },
                 )
+                latest_checkpoint_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                latest_checkpoint_games = win_totals.games_attempted
                 last_ckpt = now
+            update_scope()
 
         if (
             (collect_metrics or collect_rows)
@@ -1588,8 +1770,9 @@ def run_tournament(
                 games_completed = win_totals.games_completed
 
     finally:
-        # no central writer to tear down
-        pass
+        if recorder is not None:
+            recorder.close_worker_progress_endpoint(progress_endpoint)
+        install_worker_progress_endpoint(None)
 
     _save_checkpoint(
         ckpt_path,
@@ -1599,6 +1782,10 @@ def run_tournament(
         meta=checkpoint_meta,
         sidecar=checkpoint_sidecar,
     )
+    latest_checkpoint_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    latest_checkpoint_games = win_totals.games_attempted
+    scheduler_state["scheduler_event"] = "checkpoint_publication"
+    update_scope(phase="simulation_checkpoint_publication", state="publishing")
     if (
         write_final_metrics_artifact
         and (collect_metrics or collect_rows)
@@ -1654,3 +1841,9 @@ def run_tournament(
             "checkpoint_path": str(ckpt_path),
         },
     )
+    if recorder is not None and scope is not None:
+        recorder.record_completion_summary(
+            f"{scope.scope}:simulation:k={cfg.n_players}",
+            stage="simulation",
+            summary=progress_payload(),
+        )

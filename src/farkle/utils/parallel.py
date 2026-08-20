@@ -70,6 +70,10 @@ class ResourceFailureError(ResourceSafetyError):
         self.classification = classification
 
 
+class ProcessPoolTopologyError(RuntimeError):
+    """Raised when requested multiprocessing and the observed executor disagree."""
+
+
 @dataclass(frozen=True, slots=True)
 class AggregateMemorySample:
     """OS-boundary memory accounting; values are committed/cgroup bytes, not RSS."""
@@ -660,7 +664,7 @@ def resolve_stage_parallel_policy(
     if context_total_cores is not None:
         total_cores = max(1, context_total_cores)
 
-    if os.environ.get("FARKLE_PROCESS_POOL_ACTIVE") == "1":
+    if is_process_pool_worker():
         active_process_executor = True
 
     concurrent_roots = max(1, int(concurrent_roots))
@@ -767,18 +771,72 @@ def _initialize_process_worker(initializer, initargs: tuple[Any, ...]) -> None:
         initializer(*initargs)
 
 
-def cancel_pending_process_work(executor: Any, futures: Any) -> None:
-    """Cancel queued work, terminate running executor workers, and wait for quiescence."""
+def is_process_pool_worker() -> bool:
+    """Return whether this process is a marked, genuine multiprocessing child.
+
+    The environment marker alone is deliberately insufficient: shells and
+    normally launched protected processes may inherit stale environment state.
+    ``multiprocessing.parent_process`` is populated only for a real
+    multiprocessing child, so the conjunction prevents top-level pool collapse
+    without permitting recursive pools inside executor workers.
+    """
+
+    return bool(
+        os.environ.get("FARKLE_PROCESS_POOL_ACTIVE") == "1" and mp.parent_process() is not None
+    )
+
+
+def _executor_process_snapshot(executor: Any) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Return created and currently live executor PIDs without affecting work."""
+
+    processes = tuple((getattr(executor, "_processes", None) or {}).values())
+    created = tuple(sorted({int(process.pid) for process in processes if process.pid is not None}))
+    live = tuple(
+        sorted(
+            int(process.pid)
+            for process in processes
+            if process.pid is not None and process.is_alive()
+        )
+    )
+    return created, live
+
+
+def cancel_pending_process_work(
+    executor: Any,
+    futures: Any,
+    *,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Cancel queued work and force the executor process set to quiescence."""
 
     for future in futures:
-        future.cancel()
+        with contextlib.suppress(Exception):
+            future.cancel()
     processes = tuple((getattr(executor, "_processes", None) or {}).values())
     for process in processes:
         with contextlib.suppress(Exception):
             if process.is_alive():
                 process.terminate()
+    # ``shutdown(wait=True)`` can wait forever after an interrupted Windows
+    # result pipe.  Signal executor teardown without waiting, then own a bounded
+    # terminate/kill/join sequence for the concrete worker processes.
     with contextlib.suppress(Exception):
-        executor.shutdown(wait=True, cancel_futures=True)
+        executor.shutdown(wait=False, cancel_futures=True)
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    for process in processes:
+        with contextlib.suppress(Exception):
+            process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for process in processes:
+        with contextlib.suppress(Exception):
+            if process.is_alive():
+                process.kill()
+    for process in processes:
+        with contextlib.suppress(Exception):
+            process.join(timeout=max(0.0, deadline - time.monotonic()))
+    manager = getattr(executor, "_executor_manager_thread", None)
+    if manager is not None:
+        with contextlib.suppress(Exception):
+            manager.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 def process_map(
@@ -811,7 +869,24 @@ def process_map(
     resolved_jobs = normalize_n_jobs(n_jobs, default=1)
     submitted = 0
     completed = 0
-    report("pool_start", worker_count=resolved_jobs, window=max(1, int(window)))
+    requested_jobs = n_jobs
+    multiprocessing_parent = mp.parent_process()
+    report(
+        "pool_start",
+        requested_workers=requested_jobs,
+        resolved_workers=resolved_jobs,
+        worker_count=resolved_jobs,
+        window=max(1, int(window)),
+        executor_mode="intentional_serial" if resolved_jobs == 1 else "process_pool",
+        nested_pool_suppressed=is_process_pool_worker() and resolved_jobs == 1,
+        executor_parent_pid=os.getpid(),
+        executor_thread_name=threading.current_thread().name,
+        executor_thread_ident=threading.get_ident(),
+        process_pool_marker=os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
+        multiprocessing_parent_pid=(
+            multiprocessing_parent.pid if multiprocessing_parent is not None else None
+        ),
+    )
     if resolved_jobs == 1:
         # Single-process path: still run initializer so modules relying on
         # per-process globals (e.g., run_tournament._STATE) are set up.
@@ -840,25 +915,57 @@ def process_map(
                 if classification is not None and not isinstance(exc, ResourceFailureError):
                     raise ResourceFailureError(classification, str(exc)) from exc
                 raise
-        report("pool_complete", submitted=submitted, completed=completed, pending=0)
+        report(
+            "pool_complete",
+            submitted=submitted,
+            completed=completed,
+            pending=0,
+            requested_workers=requested_jobs,
+            resolved_workers=resolved_jobs,
+            created_workers=0,
+            live_workers=0,
+            peak_live_workers=0,
+            cleanly_terminated_workers=0,
+            executor_mode="intentional_serial",
+        )
         return
     if window <= 0:
         window = resolved_jobs * 4
 
     executor_construction_started = time.perf_counter()
-    executor = ProcessPoolExecutor(
-        max_workers=resolved_jobs,
-        initializer=_initialize_process_worker,
-        initargs=(initializer, tuple(initargs)),
-        mp_context=mp_context,
-    )
+    try:
+        executor = ProcessPoolExecutor(
+            max_workers=resolved_jobs,
+            initializer=_initialize_process_worker,
+            initargs=(initializer, tuple(initargs)),
+            mp_context=mp_context,
+        )
+    except BaseException as exc:
+        report(
+            "pool_creation_failed",
+            requested_workers=requested_jobs,
+            resolved_workers=resolved_jobs,
+            created_workers=0,
+            live_workers=0,
+            exception_type=type(exc).__name__,
+            executor_construction_seconds=time.perf_counter() - executor_construction_started,
+            executor_mode="process_pool",
+        )
+        raise
     report(
-        "pool_created",
+        "pool_constructed",
+        requested_workers=requested_jobs,
+        resolved_workers=resolved_jobs,
         worker_count=resolved_jobs,
+        created_workers=0,
+        live_workers=0,
         executor_construction_seconds=time.perf_counter() - executor_construction_started,
+        executor_mode="process_pool",
     )
     clean_shutdown = False
     futs: list[Any] = []
+    created_worker_pids: set[int] = set()
+    peak_live_workers = 0
     try:
         it = iter(items)
         # prefill the window
@@ -882,12 +989,53 @@ def process_map(
                 )
             except StopIteration:
                 break
+        created_pids, live_pids = _executor_process_snapshot(executor)
+        created_worker_pids.update(created_pids)
+        peak_live_workers = max(peak_live_workers, len(live_pids))
+        expected_workers = min(resolved_jobs, submitted)
+        report(
+            "pool_ready" if expected_workers else "pool_no_work",
+            requested_workers=requested_jobs,
+            resolved_workers=resolved_jobs,
+            effective_workers=expected_workers,
+            created_workers=len(created_pids),
+            live_workers=len(live_pids),
+            peak_live_workers=peak_live_workers,
+            worker_pids=created_pids,
+            submitted=submitted,
+            completed=completed,
+            pending=len(futs),
+            executor_construction_seconds=time.perf_counter() - executor_construction_started,
+            executor_mode="process_pool" if expected_workers else "no_pending_work",
+        )
+        topology_observable = hasattr(executor, "_processes")
+        if (
+            topology_observable
+            and expected_workers
+            and (len(created_pids) != expected_workers or len(live_pids) != expected_workers)
+        ):
+            raise ProcessPoolTopologyError(
+                "process-pool topology mismatch before first result: "
+                f"requested={requested_jobs!r}, resolved={resolved_jobs}, "
+                f"expected={expected_workers}, created={len(created_pids)}, "
+                f"live={len(live_pids)}, parent_pid={os.getpid()}, "
+                f"thread={threading.current_thread().name!r}"
+            )
         while futs:
+            created_pids, live_pids = _executor_process_snapshot(executor)
+            created_worker_pids.update(created_pids)
+            peak_live_workers = max(peak_live_workers, len(live_pids))
             report(
                 "waiting_on_futures",
                 submitted=submitted,
                 completed=completed,
                 pending=len(futs),
+                requested_workers=requested_jobs,
+                resolved_workers=resolved_jobs,
+                created_workers=len(created_worker_pids),
+                live_workers=len(live_pids),
+                peak_live_workers=peak_live_workers,
+                executor_mode="process_pool",
             )
             done = next(as_completed(futs))
             futs.remove(done)
@@ -899,6 +1047,12 @@ def process_map(
                     submitted=submitted,
                     completed=completed,
                     pending=len(futs),
+                    requested_workers=requested_jobs,
+                    resolved_workers=resolved_jobs,
+                    created_workers=len(created_worker_pids),
+                    live_workers=len(_executor_process_snapshot(executor)[1]),
+                    peak_live_workers=peak_live_workers,
+                    executor_mode="process_pool",
                 )
                 yield result
             except BaseException as exc:
@@ -943,9 +1097,27 @@ def process_map(
                 submitted=submitted,
                 completed=completed,
                 pending=len(futs),
+                requested_workers=requested_jobs,
+                resolved_workers=resolved_jobs,
+                created_workers=len(created_worker_pids),
+                live_workers=len(_executor_process_snapshot(executor)[1]),
+                peak_live_workers=peak_live_workers,
+                executor_mode="process_pool",
             )
             cancel_pending_process_work(executor, futs)
-            report("cancelled", submitted=submitted, completed=completed, pending=0)
+            report(
+                "cancelled",
+                submitted=submitted,
+                completed=completed,
+                pending=0,
+                requested_workers=requested_jobs,
+                resolved_workers=resolved_jobs,
+                created_workers=len(created_worker_pids),
+                live_workers=0,
+                peak_live_workers=peak_live_workers,
+                cleanly_terminated_workers=len(created_worker_pids),
+                executor_mode="process_pool",
+            )
         else:
             shutdown_started = time.perf_counter()
             report(
@@ -960,6 +1132,13 @@ def process_map(
                 submitted=submitted,
                 completed=completed,
                 pending=0,
+                requested_workers=requested_jobs,
+                resolved_workers=resolved_jobs,
+                created_workers=len(created_worker_pids),
+                live_workers=0,
+                peak_live_workers=peak_live_workers,
+                cleanly_terminated_workers=len(created_worker_pids),
+                executor_mode="process_pool",
                 pool_shutdown_seconds=time.perf_counter() - shutdown_started,
             )
 
@@ -967,6 +1146,7 @@ def process_map(
 __all__ = [
     "ParallelNestingContext",
     "ProcessTreeMemoryGuard",
+    "ProcessPoolTopologyError",
     "AggregateMemorySample",
     "ResourceFailureError",
     "ResourceSafetyError",
@@ -977,6 +1157,7 @@ __all__ = [
     "classify_resource_exception",
     "cancel_pending_process_work",
     "normalize_n_jobs",
+    "is_process_pool_worker",
     "process_map",
     "process_tree_native_thread_count",
     "process_tree_rss_bytes",
