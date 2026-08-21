@@ -16,6 +16,7 @@ from farkle.config import (
     assign_config_sha,
     compute_config_sha,
 )
+from farkle.orchestration import run_contexts
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -152,6 +153,41 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     assert payload["profile"]["production_eligible"] is True
     assert payload["profile"]["release_eligible"] is True
     assert payload["profile"]["workload_by_k"]["2"]["achieved_resolution"] <= 0.03
+
+
+def test_exact_resume_preserves_run_context_across_host_memory_samples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _root_context(tmp_path, 11)
+    code_identity = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+    worker_counts = {"analysis": {"effective_n_jobs": 1}}
+    samples = iter(
+        (
+            {"backend": "none", "effective_hard_limit_mb": None, "available_mb": 8000},
+            {"backend": "none", "effective_hard_limit_mb": None, "available_mb": 7000},
+        )
+    )
+    monkeypatch.setattr(run_contexts, "memory_boundary_provenance", lambda _cfg: next(samples))
+
+    write_run_context_atomic(
+        context,
+        code_identity=code_identity,
+        worker_counts=worker_counts,
+    )
+    original = context.run_context_path.read_bytes()
+    write_run_context_atomic(
+        context,
+        code_identity=code_identity,
+        worker_counts=worker_counts,
+    )
+
+    assert context.run_context_path.read_bytes() == original
 
 
 def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -> None:

@@ -41,6 +41,51 @@ def _context(tmp_path: Path, root: int) -> SeedRunContext:
     return SeedRunContext.from_config(cfg)
 
 
+def test_existing_pair_identity_conflict_fails_before_resume_publication(
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+    )
+    assign_config_sha(cfg)
+    pair_root = tmp_path / "pair"
+    pair_root.mkdir()
+    clean = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+    dirty = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="development_dirty",
+        dirty_fingerprint_sha256="b" * 64,
+    )
+    (pair_root / "run_context.json").write_text(
+        json.dumps(
+            {
+                "public_config_sha256": cfg.config_sha,
+                "code_identity": {
+                    "commit": clean.commit,
+                    "policy": clean.policy,
+                    "state": clean.state,
+                    "dirty_fingerprint_sha256": clean.dirty_fingerprint_sha256,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="prevents exact resume before publication"):
+        two_seed_pipeline._require_existing_resume_identity(
+            pair_root,
+            cfg=cfg,
+            code_identity=dirty,
+        )
+
+
 def test_run_per_root_analysis_stops_before_h2h(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -444,6 +444,7 @@ def _run_chunk(shuffle_tasks: Sequence[ShuffleTask | int]) -> Counter[int | str]
             total.absorb(result)
             report_worker_progress(
                 "simulation_shuffle_complete",
+                event_id=f"simulation:{task.root_seed}:{task.k}:{task.shuffle_index}",
                 counters={
                     "worker_completed_shuffles": 1,
                     "worker_completed_games": (
@@ -570,6 +571,7 @@ def _run_chunk_metrics(
         rows.clear()
         report_worker_progress(
             "simulation_shuffle_complete",
+            event_id=f"simulation:{task.root_seed}:{task.k}:{task.shuffle_index}",
             counters={
                 "worker_completed_shuffles": 1,
                 "worker_completed_games": (
@@ -1506,7 +1508,11 @@ def run_tournament(
             ),
             "cumulative_games_per_second": cumulative_rate,
             "recent_games_per_second": scheduler_state.get("recent_games_per_second", 0.0),
-            "eta_seconds": remaining_games / cumulative_rate if cumulative_rate > 0 else None,
+            "eta_seconds": (
+                0.0
+                if remaining_games == 0
+                else (remaining_games / cumulative_rate if cumulative_rate > 0 else None)
+            ),
             "latest_checkpoint_utc": latest_checkpoint_at,
             "latest_checkpoint_games": latest_checkpoint_games,
             "durable_shuffles": completed_shuffles,
@@ -1729,7 +1735,11 @@ def run_tournament(
                 )
                 checkpoint_progress.maybe_log(
                     win_totals.games_attempted,
-                    detail=f"chunk {chunk_index + 1}/{remaining_chunk_count}, checkpoint {ckpt_path.name}",
+                    detail=(
+                        f"chunk {len(completed_chunk_indices)}/"
+                        f"{(cfg.num_shuffles + shuffles_per_chunk - 1) // shuffles_per_chunk}, "
+                        f"checkpoint {ckpt_path.name}"
+                    ),
                     extra={
                         "stage": "simulation",
                         "chunk_index": chunk_index,

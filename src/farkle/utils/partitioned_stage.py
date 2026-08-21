@@ -688,6 +688,7 @@ def run_partitioned_stage(
 
     reused = 0
     scheduled = 0
+    durable_completed_keys: set[tuple[UnitCoordinate, ...]] = set()
     execution_attempts: list[dict[str, Any]] = []
     telemetry_path = root / "_execution" / "execution_telemetry.json"
 
@@ -799,11 +800,7 @@ def run_partitioned_stage(
                     },
                 )
             mp_context = resolve_mp_context(mp_start_method)
-            if (
-                recorder is not None
-                and enable_worker_progress
-                and effective_workers > 1
-            ):
+            if recorder is not None and enable_worker_progress and effective_workers > 1:
                 endpoint = recorder.create_worker_progress_endpoint(
                     scope_name,
                     mp_context=mp_context,
@@ -829,7 +826,7 @@ def run_partitioned_stage(
                 elapsed_now = max(0.0, time.monotonic() - attempt_started)
                 rate = completed_now / elapsed_now if elapsed_now > 0 else 0.0
                 remaining = (
-                    max(0, progress_total_units - reused - completed_now)
+                    max(0, progress_total_units - reused - len(durable_completed_keys))
                     if progress_total_units is not None
                     else None
                 )
@@ -842,6 +839,8 @@ def run_partitioned_stage(
                         "total_units": progress_total_units,
                         "reused_units": reused,
                         "scheduled_units": scheduled,
+                        "durable_units": reused + len(durable_completed_keys),
+                        "completed_units_this_run": len(durable_completed_keys),
                         "attempt": attempt_number,
                         "requested_workers": requested_workers,
                         "effective_workers": workers,
@@ -849,15 +848,13 @@ def run_partitioned_stage(
                         "queued_units": max(0, pending_now - workers),
                         "units_per_second": rate,
                         "eta_seconds": (
-                            remaining / rate
-                            if remaining is not None and rate > 0
-                            else None
+                            remaining / rate if remaining is not None and rate > 0 else None
                         ),
                         **event,
                     },
                 )
 
-            for _completed_key in process_map(
+            for completed_key in process_map(
                 _execute_unit,
                 tasks,
                 n_jobs=effective_workers,
@@ -868,7 +865,20 @@ def run_partitioned_stage(
                 memory_guard=guard,
                 progress_callback=scheduler_progress,
             ):
+                durable_completed_keys.add(tuple(completed_key))
                 guard.check_before_schedule()
+                if scope is not None:
+                    scope.update(
+                        phase=execution_phase,
+                        state="working",
+                        progress={
+                            "total_units": progress_total_units,
+                            "reused_units": reused,
+                            "scheduled_units": scheduled,
+                            "durable_units": reused + len(durable_completed_keys),
+                            "completed_units_this_run": len(durable_completed_keys),
+                        },
+                    )
             attempt_record["outcome"] = "complete"
             break
         except ResourceSafetyError as exc:
@@ -883,19 +893,13 @@ def run_partitioned_stage(
             if scope is not None:
                 scope.update(
                     phase=execution_phase,
-                    state=(
-                        "resource_retry_pending"
-                        if attempt_index == 0
-                        else "resource_failure"
-                    ),
+                    state=("resource_retry_pending" if attempt_index == 0 else "resource_failure"),
                     progress={
                         "attempt": attempt_index + 1,
                         "effective_workers": effective_workers,
                         "failure_classification": classification,
                         "next_worker_count": (
-                            max(1, effective_workers // 2)
-                            if attempt_index == 0
-                            else None
+                            max(1, effective_workers // 2) if attempt_index == 0 else None
                         ),
                     },
                 )

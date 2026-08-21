@@ -22,7 +22,10 @@ remain in both gates.
   `tests/unit/simulation/test_simulation.py`, and
   `tests/unit/analysis/test_all_player_metrics.py`.
 - Scopes/sidecars/state: `tests/unit/utils/test_artifact_contract.py`,
-  `test_stage_registry.py`, `test_stage_state.py`, and `test_release_audit.py`.
+  `test_stage_registry.py`, `test_stage_state.py`, `test_release_audit.py`,
+  `test_authenticated_graph.py`, and `test_partitioned_stage.py`. Completion
+  namespace tests use the production `_bootstrap_top_n_ranges/units` and
+  `_joint_discrepancy_ranges/units` layouts.
 - Performance/screening: `test_performance.py` and `test_screening.py`.
 - Seat/game/RNG/roll: `test_seat_analysis.py`, `test_game_stats*.py`,
   `test_rng_diagnostics_branches.py`, and `test_roll_enumeration.py`.
@@ -32,7 +35,10 @@ remain in both gates.
   `test_h2h_schedule.py`, `test_h2h_inference.py`, and `test_dominance.py`.
 - Agreement/reporting: `test_structure_agreement.py` and
   `test_structure_reporting.py`.
-- Full workflow: `tests/integration/test_structure_toy_oracle.py`.
+- Full workflow: `tests/integration/test_structure_toy_oracle.py` and
+  `tests/integration/test_simulation_to_report_oracle.py`; the latter requires
+  a fresh-byte final audit, successful pipeline health and `run_end`, then a
+  byte-stable ordinary replay.
 
 ## Review questions
 

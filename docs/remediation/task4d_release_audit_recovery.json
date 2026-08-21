@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "task": "4D",
+  "title": "Release-audit recovery and telemetry correctness",
+  "date": "2026-08-20",
+  "provenance": {
+    "starting_head": "6496720a912cb5df0ec2cd3beef90ea1c267e092",
+    "starting_worktree": "clean",
+    "commit_or_push_performed": false,
+    "task5_started": false
+  },
+  "root_cause": {
+    "classification": "deterministic false positive",
+    "detail": "The explicit canonical completion inventory was compared with recursively discovered done-like files classified by suffix, which incorrectly promoted PartitionedStage unit stamps into the canonical stage namespace.",
+    "post_snapshot_injection": false
+  },
+  "completion_namespace": {
+    "kinds": [
+      "canonical_stage_completion",
+      "partition_unit_resumability",
+      "active_configuration_state",
+      "checkpoint_or_operational_state",
+      "unrelated_or_malformed_done_like",
+      "not_completion_like"
+    ],
+    "partition_unit_rule": "Exact PartitionedStage unit-stamp envelope plus its adjacent declared output; suffix alone is insufficient.",
+    "partition_units_in_canonical_graph": false,
+    "canonical_fresh_byte_authentication_preserved": true,
+    "missing_mutated_extra_relocated_duplicated_fail_closed": true,
+    "contract_or_method_version_changed": false,
+    "preserved_tree_counts": {
+      "root_52": {"canonical": 12, "partition_units": 166, "operational": 34, "active_config": 1, "unrelated": 0},
+      "root_53": {"canonical": 12, "partition_units": 166, "operational": 34, "active_config": 1, "unrelated": 0},
+      "pair_analysis": {"canonical": 9, "partition_units": 20, "operational": 0, "active_config": 0, "unrelated": 0}
+    }
+  },
+  "telemetry": {
+    "authoritative_completed_counters": "parent-owned durable state",
+    "worker_progress_role": "observational only",
+    "deduplication": "bounded exact semantic event IDs across PIDs and retries",
+    "out_of_order_unique_events_retained": true,
+    "unknown_denominator_or_eta": "indeterminate",
+    "terminal_log_and_sink_coherent_snapshot": true,
+    "context_fields": ["seed", "root_pair", "stage", "phase", "player_count", "execution_scope"],
+    "maximum_event_ids_retained": 250000
+  },
+  "preserved_recovery": {
+    "root": "data/results_efficiency_updates_4B_fast_seed_pair_52_53",
+    "force": false,
+    "final_status": "blocked_by_authenticated_identity_before_publication",
+    "second_attempt_seconds": 7.9,
+    "public_config_sha_conflict": "91ad5... != fce4b...",
+    "code_identity_conflict": "clean commit 6496720... != development_dirty fingerprint 063c...",
+    "second_attempt_pair_manifest_mtime_unchanged": true,
+    "second_attempt_pair_health_mtime_unchanged": true,
+    "second_attempt_pair_run_context_mtime_unchanged": true,
+    "canonical_stage_recomputed": false,
+    "process_tree_quiescent": true,
+    "first_attempt_operational_mutation_disclosed": true,
+    "representative_canonical_artifacts": [
+      {"artifact": "root_52_simulation_2p_completion", "sha256": "6e03cda...aa42", "mtime_ns": 1787220869343266300, "bytes": 10632, "unchanged": true},
+      {"artifact": "root_52_metrics_completion", "sha256": "0500fc...965a", "mtime_ns": 1787221152596197900, "bytes": 54924, "unchanged": true},
+      {"artifact": "root_53_simulation_5p_completion", "sha256": "76a016...fc0f", "mtime_ns": 1787221762568183000, "bytes": 10632, "unchanged": true},
+      {"artifact": "root_53_screening_completion", "sha256": "f8a8c3...872a", "mtime_ns": 1787222414337691200, "bytes": 4924, "unchanged": true},
+      {"artifact": "pair_root_stability_completion", "sha256": "0c083f...53f2", "mtime_ns": 1787222472492117200, "bytes": 21795, "unchanged": true},
+      {"artifact": "pair_reporting_completion", "sha256": "bbc40e...29ff", "mtime_ns": 1787222786062200000, "bytes": 2351, "unchanged": true},
+      {"artifact": "pair_root_discrepancies_parquet", "sha256": "2c9e90...7927f", "mtime_ns": 1787222466023909900, "bytes": 27421, "unchanged": true}
+    ]
+  },
+  "equivalent_release_gate": {
+    "production_shaped_twenty_unit_fixture_final_audit": "passed",
+    "partition_units_reused": {"bootstrap_top_n": 10, "joint_discrepancy": 10},
+    "raw_simulation_to_report_oracle": "passed",
+    "oracle_runtime_seconds": 187.8,
+    "final_fresh_byte_audit": "passed",
+    "pipeline_health": "complete_success",
+    "last_manifest_event": "run_end/complete_success",
+    "ordinary_replay_byte_stable": true,
+    "stop_gate_satisfied": true
+  },
+  "tests": {
+    "expanded_regression": {"passed": 261, "failed": 0, "seconds": 288.7},
+    "end_to_end_oracle": {"passed": 1, "failed": 0, "seconds": 187.8},
+    "ruff_repository_wide": "passed",
+    "mypy_src": {"status": "passed", "source_files": 87},
+    "black_changed_python": {"status": "passed", "files": 16},
+    "pyright_changed_files": {"status": "passed", "errors": 0},
+    "git_diff_check": "passed",
+    "json_validation": "passed"
+  },
+  "benchmark": {
+    "source": "data/farkle-task4c-task4d-telemetry-v1/task4c_simulation_execution.json",
+    "source_sha256": "5939fc7f016017442951b89d17861b75b1f71ead6ce94007af04286d6db02c75",
+    "cases": [
+      {"workers": 1, "simulation_seconds": 82.0, "simulation_games_per_second": 292.6829268292683, "protected_wall_seconds": 90.90599999995902, "created_workers": 0, "peak_live_workers": 0},
+      {"workers": 2, "simulation_seconds": 37.0, "simulation_games_per_second": 648.6486486486486, "protected_wall_seconds": 45.563000000081956, "created_workers": 2, "peak_live_workers": 2},
+      {"workers": 12, "simulation_seconds": 22.0, "simulation_games_per_second": 1090.909090909091, "protected_wall_seconds": 31.515999999945052, "created_workers": 12, "peak_live_workers": 12}
+    ],
+    "simulation_speedup_12_vs_1": 3.727272727272727,
+    "legacy_speedup_at_least_4x": false,
+    "multiprocessing_materially_faster": true,
+    "twelve_worker_throughput_change_vs_task4c_percent": -4.54545454545455,
+    "twelve_worker_protected_wall_change_vs_task4c_percent": 3.17216420766906,
+    "material_regression": false,
+    "all_workers_cleanly_terminated": true,
+    "canonical_outputs_byte_identical": true,
+    "logical_outputs_equivalent": true,
+    "interruption": {"durable_rows_before_resume": 74, "durable_rows_reused": 74, "maximum_recomputed_games": 48, "shutdown_seconds": 0.28100000007543713, "orphan_worker_pids": [], "resume_byte_equivalent": true, "resume_logically_equivalent": true}
+  },
+  "known_unrelated_baselines_not_expanded": [
+    "Task 4B: six repository-wide Black files",
+    "Task 4B: 28 repository-wide Pyright test errors",
+    "Task 4B: one stage-registry tuple-versus-list assertion failure",
+    "Task 4C: six test_simulation_completion_mutation_matrix failures"
+  ],
+  "changed_files": {
+    "production": [
+      "src/farkle/analysis/release_audit.py",
+      "src/farkle/analysis/stage_runner.py",
+      "src/farkle/orchestration/run_contexts.py",
+      "src/farkle/orchestration/two_seed_pipeline.py",
+      "src/farkle/simulation/run_tournament.py",
+      "src/farkle/utils/authenticated_graph.py",
+      "src/farkle/utils/completion_files.py",
+      "src/farkle/utils/partitioned_stage.py",
+      "src/farkle/utils/telemetry.py"
+    ],
+    "tests": [
+      "tests/helpers/simulation_to_report_oracle.py",
+      "tests/unit/analysis/test_stage_runner.py",
+      "tests/unit/orchestration/test_seed_workflows.py",
+      "tests/unit/test_run_contexts.py",
+      "tests/unit/utils/test_authenticated_graph.py",
+      "tests/unit/utils/test_partitioned_stage.py",
+      "tests/unit/utils/test_telemetry.py"
+    ],
+    "documentation": [
+      "docs/remediation/task4d_release_audit_recovery_report.md",
+      "docs/remediation/task4d_release_audit_recovery.json",
+      "docs/codex_context/context_prompt.md",
+      "docs/codex_context/metadata.md",
+      "docs/codex_context/testing_and_review_map.md"
+    ]
+  },
+  "remaining_risks": [
+    "The first preserved-root recovery attempt changed operational provenance before the missing early preflight was discovered; sampled canonical artifacts remained unchanged.",
+    "Future stage-layout changes must preserve the executable inventory as the canonical authority and extend namespace tests.",
+    "Worker event-ID retention is bounded; authoritative completion counters remain parent-owned after observational ID eviction.",
+    "Short benchmark speedup ratios remain sensitive to serial timing and host load."
+  ]
+}

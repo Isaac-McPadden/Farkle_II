@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from queue import Empty, Full
 from typing import Any
@@ -36,6 +36,7 @@ MAX_ACTIVE_TELEMETRY_SCOPES = 128
 MAX_COMPLETED_PROGRESS_SUMMARIES = 128
 MAX_PROGRESS_FIELDS = 64
 WORKER_PROGRESS_QUEUE_CAPACITY = 256
+MAX_WORKER_PROGRESS_EVENT_IDS = 250_000
 
 MonotonicClock = Callable[[], float]
 UtcClock = Callable[[], datetime]
@@ -52,6 +53,7 @@ _CURRENT_SUPERVISOR_SCOPE: ContextVar[SupervisorScope | None] = ContextVar(
     default=None,
 )
 _WORKER_PROGRESS_ENDPOINT: WorkerProgressEndpoint | None = None
+_WORKER_PROGRESS_SEQUENCE = 0
 
 
 def _wait_for_event(event: threading.Event, timeout: float) -> bool:
@@ -80,7 +82,7 @@ def _duration_text(value: object) -> str:
 
 
 def _heartbeat_message(
-    active: _ActiveScope,
+    active: Mapping[str, object],
     *,
     run_elapsed_seconds: float,
     scope_elapsed_seconds: float,
@@ -88,35 +90,77 @@ def _heartbeat_message(
 ) -> str:
     """Render the primary operational state into the normal terminal message."""
 
-    progress = active.progress
-    seed = progress.get("root_seed", "?")
-    player_count = progress.get("current_player_count", "?")
+    raw_progress = active.get("progress")
+    progress = raw_progress if isinstance(raw_progress, Mapping) else {}
+    stage = str(active.get("stage", "unknown"))
+    phase = str(active.get("phase", stage))
+    state = str(active.get("state", "working"))
+    context_parts: list[str] = []
+    seed = progress.get("root_seed", progress.get("seed"))
+    if seed is not None:
+        context_parts.append(f"seed={seed}")
+    root_pair = progress.get("root_pair")
+    if root_pair is not None:
+        context_parts.append(f"roots={root_pair}")
+    player_count = progress.get("current_player_count", progress.get("player_count"))
+    if player_count is not None:
+        context_parts.append(f"k={player_count}")
+    execution_scope = progress.get("execution_scope")
+    if execution_scope is not None:
+        context_parts.append(f"scope={execution_scope}")
+    parts = [f"Heartbeat: stage={stage}", f"phase={phase}", f"state={state}", *context_parts]
+
     planned_games = progress.get("planned_games")
-    parent_games = progress.get("completed_games", 0)
-    worker_games = progress.get("worker_completed_games", 0)
-    starting_games = progress.get("starting_games", 0)
-    completed_games = max(
-        int(parent_games) if isinstance(parent_games, (int, float)) else 0,
-        (int(starting_games) if isinstance(starting_games, (int, float)) else 0)
-        + (int(worker_games) if isinstance(worker_games, (int, float)) else 0),
+    parent_games = progress.get("completed_games")
+    completed_games = (
+        int(parent_games)
+        if isinstance(parent_games, (int, float)) and not isinstance(parent_games, bool)
+        else None
     )
-    percent = progress.get("percent_complete")
+    determinate = False
     if isinstance(planned_games, (int, float)) and planned_games > 0:
-        percent = 100.0 * completed_games / float(planned_games)
-    games_text = (
-        f"{completed_games}/{int(planned_games)}"
-        if isinstance(planned_games, (int, float))
-        else str(completed_games)
-    )
+        if completed_games is not None and 0 <= completed_games <= int(planned_games):
+            determinate = True
+            percent = 100.0 * completed_games / float(planned_games)
+            parts.append(f"games={completed_games}/{int(planned_games)} ({percent:.1f}%)")
+        else:
+            parts.append("games=indeterminate")
+    elif completed_games is not None:
+        parts.append(f"games={completed_games} (total indeterminate)")
+
+    for completed_key, total_key, label in (
+        ("completed_shuffles", "planned_shuffles", "shuffles"),
+        ("completed_chunks", "planned_chunks", "chunks"),
+        ("completed_chunks", "scheduled_chunks", "chunks"),
+        ("durable_units", "total_units", "durable_units"),
+    ):
+        completed_value = progress.get(completed_key)
+        total_value = progress.get(total_key)
+        if not (
+            isinstance(completed_value, (int, float))
+            and not isinstance(completed_value, bool)
+            and isinstance(total_value, (int, float))
+            and not isinstance(total_value, bool)
+            and total_value >= 0
+        ):
+            continue
+        if 0 <= completed_value <= total_value:
+            parts.append(f"{label}={int(completed_value)}/{int(total_value)}")
+        else:
+            parts.append(f"{label}=indeterminate")
+        if label == "chunks":
+            break
+
     recent_raw = progress.get("recent_games_per_second", 0.0)
     cumulative_raw = progress.get("cumulative_games_per_second", 0.0)
     recent = float(recent_raw) if isinstance(recent_raw, (int, float)) else 0.0
     cumulative = float(cumulative_raw) if isinstance(cumulative_raw, (int, float)) else 0.0
-    starting = int(starting_games) if isinstance(starting_games, (int, float)) else 0
-    if cumulative <= 0 and scope_elapsed_seconds > 0:
-        cumulative = max(0, completed_games - starting) / scope_elapsed_seconds
-    if recent <= 0:
-        recent = cumulative
+    if recent > 0 or cumulative > 0:
+        parts.append(f"rate={max(0.0, recent):.1f}/s recent,{max(0.0, cumulative):.1f}/s avg")
+    eta = progress.get("eta_seconds")
+    eta_text = _duration_text(eta) if determinate else "?"
+    parts.append(f"eta={eta_text if eta_text != '?' else 'indeterminate'}")
+
     requested = progress.get("requested_workers", "?")
     resolved = progress.get("resolved_workers", "?")
     created = progress.get("created_workers", 0)
@@ -127,28 +171,24 @@ def _heartbeat_message(
     checkpoint_games = progress.get("latest_checkpoint_games", 0)
     rss = resources.get("process_tree_rss_bytes", 0)
     rss_mib = float(rss) / (1024 * 1024) if isinstance(rss, (int, float)) else 0.0
-    completed_shuffles_raw = progress.get("completed_shuffles", 0)
-    starting_shuffles_raw = progress.get("starting_shuffles", 0)
-    worker_shuffles_raw = progress.get("worker_completed_shuffles", 0)
-    completed_shuffles = max(
-        int(completed_shuffles_raw) if isinstance(completed_shuffles_raw, (int, float)) else 0,
-        (int(starting_shuffles_raw) if isinstance(starting_shuffles_raw, (int, float)) else 0)
-        + (int(worker_shuffles_raw) if isinstance(worker_shuffles_raw, (int, float)) else 0),
+    if any(
+        value != default
+        for value, default in ((requested, "?"), (resolved, "?"), (created, 0), (live, 0))
+    ):
+        parts.append(f"workers={live}/{created}/{resolved} requested={requested}")
+        parts.append(
+            f"mode={progress.get('executor_mode', 'unknown')} pending={pending} in_flight={in_flight}"
+        )
+    if checkpoint != "none":
+        parts.append(f"checkpoint={checkpoint}@{checkpoint_games}")
+    parts.extend(
+        (
+            f"rss={rss_mib:.1f}MiB",
+            f"phase_elapsed={_duration_text(scope_elapsed_seconds)}",
+            f"run_elapsed={_duration_text(run_elapsed_seconds)}",
+        )
     )
-    percent_value = float(percent) if isinstance(percent, (int, float)) else 0.0
-    return (
-        f"Heartbeat: seed={seed} phase={active.phase} k={player_count} "
-        f"games={games_text} ({percent_value:.1f}%) "
-        f"shuffles={completed_shuffles}/{progress.get('planned_shuffles', '?')} "
-        f"chunks={progress.get('completed_chunks', 0)}/{progress.get('planned_chunks', '?')} "
-        f"rate={recent:.1f}/s recent,{cumulative:.1f}/s avg "
-        f"eta={_duration_text(progress.get('eta_seconds'))} "
-        f"workers={live}/{created}/{resolved} requested={requested} "
-        f"mode={progress.get('executor_mode', 'unknown')} pending={pending} in_flight={in_flight} "
-        f"checkpoint={checkpoint}@{checkpoint_games} rss={rss_mib:.1f}MiB "
-        f"phase_elapsed={_duration_text(scope_elapsed_seconds)} "
-        f"run_elapsed={_duration_text(run_elapsed_seconds)}"
-    )
+    return " ".join(parts)
 
 
 def sample_process_resource_state() -> dict[str, object]:
@@ -240,6 +280,8 @@ class WorkerProgressEndpoint:
         *,
         counters: Mapping[str, int | float] | None = None,
         state: str = "working",
+        event_id: str | None = None,
+        sequence: int | None = None,
     ) -> bool:
         """Try one bounded update; failure or queue pressure never affects work."""
 
@@ -251,6 +293,8 @@ class WorkerProgressEndpoint:
             "state": str(state),
             "worker_pid": os.getpid(),
             "counters": dict(counters or {}),
+            "event_id": event_id,
+            "sequence": sequence,
         }
         try:
             self.queue.put_nowait(message)
@@ -266,13 +310,17 @@ class _WorkerProgressChannel:
     queue: Any
     scope: str
     messages_received: int = 0
+    unique_messages: int = 0
+    duplicate_messages: int = 0
+    seen_event_ids: set[str] = field(default_factory=set)
 
 
 def install_worker_progress_endpoint(endpoint: WorkerProgressEndpoint | None) -> None:
     """Install a process-local nonlogging endpoint from a pool initializer."""
 
-    global _WORKER_PROGRESS_ENDPOINT
+    global _WORKER_PROGRESS_ENDPOINT, _WORKER_PROGRESS_SEQUENCE
     _WORKER_PROGRESS_ENDPOINT = endpoint
+    _WORKER_PROGRESS_SEQUENCE = 0
     if endpoint is not None:
         # A full/broken telemetry pipe must never delay worker shutdown.
         with suppress(Exception):
@@ -284,11 +332,22 @@ def report_worker_progress(
     *,
     counters: Mapping[str, int | float] | None = None,
     state: str = "working",
+    event_id: str | None = None,
 ) -> bool:
     """Submit one optional worker update without logging or blocking."""
 
+    global _WORKER_PROGRESS_SEQUENCE
     endpoint = _WORKER_PROGRESS_ENDPOINT
-    return bool(endpoint and endpoint.emit(phase, counters=counters, state=state))
+    if endpoint is None:
+        return False
+    _WORKER_PROGRESS_SEQUENCE += 1
+    return endpoint.emit(
+        phase,
+        counters=counters,
+        state=state,
+        event_id=event_id,
+        sequence=_WORKER_PROGRESS_SEQUENCE,
+    )
 
 
 @contextmanager
@@ -464,6 +523,7 @@ class SupervisorHeartbeatRecorder:
         stage: str,
         phase: str,
         state: str = "working",
+        progress: Mapping[str, object] | None = None,
     ) -> SupervisorScope:
         """Register or replace one bounded, coalesced active scope."""
 
@@ -494,7 +554,7 @@ class SupervisorHeartbeatRecorder:
                     phase_changed_at=now,
                     heartbeat_count=0,
                     resource_start=resource_start,
-                    progress={},
+                    progress=dict(list(dict(progress or {}).items())[:MAX_PROGRESS_FIELDS]),
                 )
         return SupervisorScope(self, scope, registered=registered)
 
@@ -685,37 +745,44 @@ class SupervisorHeartbeatRecorder:
                 return False
             while self._next_deadline <= now:
                 self._next_deadline += self.interval_seconds
-            active = [self._active[key] for key in sorted(self._active)]
-            if not active:
+            active_items = [self._active[key] for key in sorted(self._active)]
+            if not active_items:
                 return False
-            for item in active:
+            for item in active_items:
                 item.heartbeat_count += 1
             self._heartbeat_count += 1
             heartbeat_count = self._heartbeat_count
+            active_payload: list[dict[str, Any]] = [
+                {
+                    "scope": item.scope,
+                    "run": item.run,
+                    "stage": item.stage,
+                    "phase": item.phase,
+                    "state": item.state,
+                    "elapsed_seconds": max(0.0, now - item.started_at),
+                    "seconds_since_phase_change": max(0.0, now - item.phase_changed_at),
+                    "progress": dict(item.progress),
+                }
+                for item in active_items
+            ]
         resources = self.resource_snapshot()
-        primary = active[0]
-        active_payload = [
-            {
-                "scope": item.scope,
-                "run": item.run,
-                "stage": item.stage,
-                "phase": item.phase,
-                "state": item.state,
-                "elapsed_seconds": max(0.0, now - item.started_at),
-                "seconds_since_phase_change": max(0.0, now - item.phase_changed_at),
-                "progress": dict(item.progress),
-            }
-            for item in active
-        ]
+        primary = max(
+            active_payload,
+            key=lambda item: (
+                len(item["progress"]),
+                item["phase"] not in {"action", "working"},
+                item["scope"],
+            ),
+        )
         extra: dict[str, Any] = {
             "telemetry_kind": "heartbeat",
-            "run": primary.run if len(active) == 1 else self.run,
-            "scope": primary.scope if len(active) == 1 else "aggregate",
-            "stage": primary.stage if len(active) == 1 else "multiple",
-            "phase": primary.phase if len(active) == 1 else "multiple",
-            "state": primary.state if len(active) == 1 else "working",
+            "run": primary["run"] if len(active_payload) == 1 else self.run,
+            "scope": primary["scope"] if len(active_payload) == 1 else "aggregate",
+            "stage": primary["stage"],
+            "phase": primary["phase"],
+            "state": primary["state"],
             "elapsed_seconds": max(0.0, now - self._started_at),
-            "active_scope_count": len(active),
+            "active_scope_count": len(active_payload),
             "active_scopes": active_payload,
             "owner_pid": self.owner_pid,
             "heartbeat_count": heartbeat_count,
@@ -725,7 +792,7 @@ class SupervisorHeartbeatRecorder:
             message = _heartbeat_message(
                 primary,
                 run_elapsed_seconds=max(0.0, now - self._started_at),
-                scope_elapsed_seconds=max(0.0, now - primary.started_at),
+                scope_elapsed_seconds=float(primary["elapsed_seconds"]),
                 resources=resources,
             )
             self._logger.info(message, extra=extra)
@@ -831,8 +898,34 @@ class SupervisorHeartbeatRecorder:
                     channel.messages_received += 1
                     progress = dict(active.progress)
                     progress["worker_messages_received"] = channel.messages_received
+                    raw_event_id = message.get("event_id")
+                    worker_pid = int(message.get("worker_pid", 0))
+                    sequence = message.get("sequence")
+                    event_id = (
+                        str(raw_event_id)
+                        if isinstance(raw_event_id, str) and raw_event_id
+                        else (f"{worker_pid}:{sequence}" if isinstance(sequence, int) else None)
+                    )
+                    if event_id is not None and event_id in channel.seen_event_ids:
+                        channel.duplicate_messages += 1
+                        progress["worker_duplicate_messages"] = channel.duplicate_messages
+                        active.progress = dict(list(progress.items())[:MAX_PROGRESS_FIELDS])
+                        continue
+                    if event_id is not None:
+                        if len(channel.seen_event_ids) >= MAX_WORKER_PROGRESS_EVENT_IDS:
+                            self._dropped_updates += 1
+                            self._record_error_locked(
+                                "worker_event_capacity",
+                                "worker progress event-id capacity exceeded",
+                            )
+                            continue
+                        channel.seen_event_ids.add(event_id)
+                    channel.unique_messages += 1
+                    progress["worker_unique_messages"] = channel.unique_messages
                     progress["worker_last_phase"] = str(message.get("phase", "unknown"))
-                    progress["worker_last_pid"] = int(message.get("worker_pid", 0))
+                    progress["worker_last_pid"] = worker_pid
+                    if event_id is not None:
+                        progress["worker_last_event_id"] = event_id
                     if isinstance(counters, Mapping):
                         for key, value in list(counters.items())[:MAX_PROGRESS_FIELDS]:
                             if isinstance(value, bool) or not isinstance(value, (int, float)):

@@ -173,6 +173,18 @@ class StageRunner:
             )
         telemetry_cleanup_seconds = 0.0
         stage_timings: list[StageTimingSummary] = []
+        execution_scope = context.run_metadata.get("execution_scope")
+        telemetry_context: dict[str, object] = {}
+        if "seed" in context.run_metadata:
+            telemetry_context["root_seed"] = context.run_metadata["seed"]
+        elif execution_scope in {"root", "single_root"}:
+            telemetry_context["root_seed"] = context.config.sim.seed
+        if "root_pair" in context.run_metadata:
+            telemetry_context["root_pair"] = context.run_metadata["root_pair"]
+        elif execution_scope == "root_pair":
+            telemetry_context["root_pair"] = list(context.config.sim.seed_list or [])
+        if execution_scope is not None:
+            telemetry_context["execution_scope"] = execution_scope
 
         try:
             validate_manifest_contract(manifest_path)
@@ -217,6 +229,15 @@ class StageRunner:
                     stage=item.name,
                     phase="stage_start_publication",
                     state="publishing",
+                    progress={
+                        **telemetry_context,
+                        **(
+                            {"root_pair": item.metadata["root_pair"]}
+                            if "root_pair" in item.metadata
+                            else {}
+                        ),
+                        "active_stage": item.name,
+                    },
                 )
                 context.logger.info(
                     "Stage start: %s/%s",
@@ -245,7 +266,7 @@ class StageRunner:
                         )
 
                     try:
-                        scope.update(phase="action", state="working")
+                        scope.update(phase=item.name, state="working")
                         phase_started = float(context.monotonic_clock())
                         try:
                             with use_supervisor_recorder(recorder, scope):
@@ -354,9 +375,7 @@ class StageRunner:
                             "error": f"{type(exc).__name__}: {exc}",
                             **(
                                 {
-                                    "missing_outputs": [
-                                        str(path) for path in exc.missing_outputs
-                                    ],
+                                    "missing_outputs": [str(path) for path in exc.missing_outputs],
                                 }
                                 if isinstance(exc, StageValidationError)
                                 else {}
@@ -398,16 +417,12 @@ class StageRunner:
                             started_utc=_utc_text(stage_started_utc),
                             ended_utc=_utc_text(context.utc_clock()),
                             elapsed_seconds=max(0.0, stage_ended_at - stage_started_at),
-                            stage_start_publication_seconds=durations[
-                                "stage_start_publication"
-                            ],
+                            stage_start_publication_seconds=durations["stage_start_publication"],
                             action_seconds=durations["action"],
                             output_validation_seconds=durations["output_validation"],
                             completion_read_seconds=durations["completion_read"],
                             authentication_seconds=durations["authentication"],
-                            stage_end_publication_seconds=durations[
-                                "stage_end_publication"
-                            ],
+                            stage_end_publication_seconds=durations["stage_end_publication"],
                             cleanup_seconds=cleanup_seconds,
                             heartbeat_count=scope_summary.heartbeat_count,
                             resource_start=scope_summary.resource_start,

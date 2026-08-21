@@ -28,6 +28,7 @@ from farkle.utils.authentication_telemetry import (
     active_authentication_telemetry,
     record_authentication_open,
 )
+from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
 from farkle.utils.stage_completion import CompletionState, freshness_sha256
 
 _COMPLETE_STATUS: Final = CompletionState.COMPLETE_VALID.value
@@ -272,6 +273,20 @@ def capture_authenticated_graph_snapshot(
         raise SnapshotUseError("completion inventory contains duplicate stage keys")
     if set(stage_states) != {name for name, _ in completion_paths}:
         raise SnapshotUseError("stage-state and completion inventories disagree")
+    namespace = CompletionNamespace.build(
+        graph_root=graph_root,
+        analysis_root=analysis_root,
+        canonical_paths=(path for _stage, path in completion_paths),
+    )
+    invalid_completion_paths = [
+        path
+        for _stage, path in completion_paths
+        if namespace.classify(path) is not CompletionFileKind.CANONICAL_STAGE
+    ]
+    if invalid_completion_paths:
+        raise SnapshotUseError(
+            f"completion inventory contains noncanonical paths: {invalid_completion_paths}"
+        )
 
     persisted = load_run_context(run_context_path, active_config_path=active_config_path)
     record_authentication_open(run_context_path)

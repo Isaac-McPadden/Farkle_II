@@ -21,7 +21,7 @@ from farkle.analysis.release_audit import (
     AuthenticatedReleaseAuditTarget,
     audit_authenticated_release_graphs,
 )
-from farkle.config import ArtifactScope
+from farkle.config import ArtifactScope, ResourcesConfig
 from farkle.orchestration.run_contexts import SeedRunContext, write_run_context_atomic
 from farkle.orchestration.seed_utils import write_active_config
 from farkle.utils.artifact_contract import sha256_file, sidecar_path
@@ -38,6 +38,13 @@ from farkle.utils.authenticated_graph import (
 from farkle.utils.authentication_telemetry import (
     AuthenticationTelemetry,
     use_authentication_telemetry,
+)
+from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
+from farkle.utils.partitioned_stage import (
+    PartitionedStageIdentity,
+    PartitionedUnit,
+    run_partitioned_stage,
+    validate_final_manifest,
 )
 from farkle.utils.release_identity import publish_native_manifest_v3, write_v3_stage_completion
 from farkle.utils.stage_completion import CompletionState, resolve_stage_state
@@ -62,7 +69,12 @@ def _json_mutate(path: Path, action: Callable[[dict[str, Any]], None]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _build_graph(tmp_path: Path) -> GraphFixture:
+def _build_graph(
+    tmp_path: Path,
+    *,
+    scope: str = "root",
+    roots: tuple[int, ...] = (11,),
+) -> GraphFixture:
     cfg = make_authenticated_v3_config(tmp_path, name="task4b", player_counts=(2,))
     code = clean_test_code_identity()
     context = SeedRunContext.from_config(cfg)
@@ -135,8 +147,8 @@ def _build_graph(tmp_path: Path) -> GraphFixture:
     with use_authentication_telemetry(telemetry):
         snapshot = capture_authenticated_graph_snapshot(
             cfg=cfg,
-            scope="root",
-            roots=(11,),
+            scope=scope,
+            roots=roots,
             graph_root=cfg.analysis_dir,
             analysis_root=cfg.analysis_dir,
             run_context_path=context.run_context_path,
@@ -157,6 +169,117 @@ def _build_graph(tmp_path: Path) -> GraphFixture:
         completion=completion,
         telemetry=telemetry,
     )
+
+
+def _partition_identity(stage_name: str) -> PartitionedStageIdentity:
+    return PartitionedStageIdentity(
+        stage_name=stage_name,
+        root_seed=11,
+        input_identities=(("source", "a" * 64),),
+        statistical_config_sha256="b" * 64,
+        code_identity_sha256="c" * 64,
+        schema_version=1,
+        method_version=1,
+    )
+
+
+def _partition_resources() -> ResourcesConfig:
+    return ResourcesConfig(
+        scheduler_memory_budget_mb=256,
+        parent_process_memory_mb=64,
+        logical_cpu_budget=1,
+        native_threads_per_worker=1,
+        estimated_worker_memory_mb={"partitioned_stage": 32},
+        stage_batch_bytes={"partitioned_stage": 4096},
+    )
+
+
+def _range_units() -> tuple[PartitionedUnit, ...]:
+    return tuple(
+        PartitionedUnit(
+            (start, start + 50),
+            f"replicates_{start:08d}_{start + 50:08d}.npy",
+        )
+        for start in range(0, 500, 50)
+    )
+
+
+def _write_range_unit(unit: PartitionedUnit, path: Path) -> None:
+    path.write_bytes(json.dumps(list(unit.key)).encode("ascii"))
+
+
+def test_pair_final_audit_accepts_production_shaped_partition_unit_trees(
+    tmp_path: Path,
+) -> None:
+    fixture = _build_graph(tmp_path, scope="pair", roots=(11, 12))
+    partition_results = []
+    for directory, stage_name in (
+        ("_bootstrap_top_n_ranges", "root_stability_top_n"),
+        ("_joint_discrepancy_ranges", "root_stability_joint_discrepancy"),
+    ):
+        root = fixture.completion.parent / "cross_seed" / directory
+        partition_results.append(
+            (
+                root,
+                _partition_identity(stage_name),
+                run_partitioned_stage(
+                    root=root,
+                    identity=_partition_identity(stage_name),
+                    unit_source=lambda: iter(_range_units()),
+                    writer=_write_range_unit,
+                    resources=_partition_resources(),
+                    requested_workers=1,
+                ),
+            )
+        )
+
+    namespace = CompletionNamespace.build(
+        graph_root=fixture.snapshot.graph_root,
+        analysis_root=fixture.snapshot.analysis_root,
+        canonical_paths=(fixture.completion,),
+    )
+    stamps = sorted(fixture.snapshot.graph_root.rglob("*.unit.done.json"))
+    assert len(stamps) == 20
+    assert {namespace.classify(path) for path in stamps} == {CompletionFileKind.PARTITION_UNIT}
+    assert _audit(fixture)["status"] == "passed"
+
+    for root, identity, first in partition_results:
+        resumed = run_partitioned_stage(
+            root=root,
+            identity=identity,
+            unit_source=lambda: iter(_range_units()),
+            writer=_write_range_unit,
+            resources=_partition_resources(),
+            requested_workers=1,
+        )
+        assert resumed.reused_units == 10
+        assert resumed.completed_units == 0
+        assert validate_final_manifest(
+            first.manifest_path,
+            root=root,
+            identity=identity,
+            unit_source=lambda: iter(_range_units()),
+        ) == (first.manifest_sha256, 10)
+
+
+def test_final_audit_rejects_missing_relocated_and_duplicated_completion(
+    tmp_path: Path,
+) -> None:
+    for mutation in ("missing", "relocated", "duplicated"):
+        fixture = _build_graph(tmp_path / mutation)
+        original = fixture.completion
+        relocated = original.parent.parent / "relocated" / original.name
+        relocated.parent.mkdir(parents=True)
+        if mutation == "missing":
+            original.unlink()
+        elif mutation == "relocated":
+            original.replace(relocated)
+        else:
+            shutil.copyfile(original, relocated)
+
+        result = _audit(fixture)
+        assert result["status"] == "failed"
+        assert any("completion inventory" in failure for failure in result["failures"])
 
 
 def _audit(fixture: GraphFixture, *, current_code: Any | None = None) -> dict[str, Any]:

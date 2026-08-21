@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-15`
+- Reconciled date: `2026-08-20`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -223,6 +223,20 @@ changing code or accepting a statistical conclusion.
   and rejects any post-snapshot mutation. Artifact contract v3, accepted
   `3/2/2/2/2/2` identity, schemas, paths, statistical methods, and lifecycle
   hash values are unchanged.
+  Task 4D centralizes semantic completion-file classification. Canonical
+  simulation and executable stage completions remain the exact freshly audited
+  inventory; typed PartitionedStage unit stamps and adjacent outputs remain
+  authenticated resume state outside that canonical namespace, while active
+  configuration, checkpoints/substages, and malformed done-like files retain
+  separate classifications. Missing, relocated, duplicated, mutated, and extra
+  canonical completions still fail closed. Telemetry now reports only
+  parent-authoritative durable completion counters, deduplicates semantic worker
+  events across retries/processes, carries root/seed/stage/phase/scope context,
+  uses explicit indeterminate states, and publishes log/sink terminal data from
+  one coherent snapshot. Two-seed no-force resume rejects pair config/code
+  identity conflicts before publication and preserves compatible run-context
+  bytes across changing host-memory samples. No statistical, RNG, artifact,
+  schema, method, path, or version identity changed.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

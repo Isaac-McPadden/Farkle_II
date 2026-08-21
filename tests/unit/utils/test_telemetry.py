@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import farkle.utils.telemetry as telemetry_module
 from farkle.utils.parallel import process_map
 from farkle.utils.telemetry import (
     SupervisorHeartbeatRecorder,
@@ -100,14 +101,14 @@ def test_fake_clock_heartbeat_schedule_coalesces_scopes_and_missed_deadlines(
         assert recorder.emit_if_due() is False
 
     heartbeats = [
-        record for record in caplog.records if getattr(record, "telemetry_kind", None) == "heartbeat"
+        record
+        for record in caplog.records
+        if getattr(record, "telemetry_kind", None) == "heartbeat"
     ]
     assert len(heartbeats) == 2
     assert all(record.__dict__["active_scope_count"] == 2 for record in heartbeats)
     assert heartbeats[0].__dict__["scope"] == "aggregate"
-    active = {
-        item["scope"]: item for item in heartbeats[0].__dict__["active_scopes"]
-    }
+    active = {item["scope"]: item for item in heartbeats[0].__dict__["active_scopes"]}
     assert active["root_48"]["phase"] == "completion_authentication"
     assert heartbeats[0].__dict__["owner_pid"] == os.getpid()
 
@@ -156,7 +157,9 @@ def test_owner_pid_and_bounded_scope_capacity_never_emit_from_non_owner(
     with caplog.at_level(logging.INFO, logger=logger.name):
         assert non_owner.emit_if_due() is False
     assert not [
-        record for record in caplog.records if getattr(record, "telemetry_kind", None) == "heartbeat"
+        record
+        for record in caplog.records
+        if getattr(record, "telemetry_kind", None) == "heartbeat"
     ]
 
 
@@ -223,6 +226,82 @@ def test_worker_endpoint_is_nonblocking_when_full_closed_or_broken() -> None:
     assert broken.emit("broken", counters={"units": 1}) is False
 
 
+def test_duplicate_retried_and_out_of_order_worker_events_do_not_inflate_progress(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("tests.telemetry.reconciliation")
+    snapshots: list[dict[str, object]] = []
+    recorder = SupervisorHeartbeatRecorder(
+        logger,
+        run="root_52",
+        interval_seconds=1.0,
+        resource_sampler=_resources,
+        heartbeat_sink=lambda payload: snapshots.append(dict(payload)),
+        autostart=False,
+    )
+    scope = recorder.begin_scope(
+        "simulation",
+        run="root_52",
+        stage="simulation",
+        phase="simulation",
+        progress={
+            "root_seed": 52,
+            "current_player_count": 2,
+            "planned_games": 100,
+            "completed_games": 40,
+            "planned_shuffles": 10,
+            "completed_shuffles": 4,
+            "planned_chunks": 5,
+            "completed_chunks": 2,
+        },
+    )
+    channel_queue: queue.Queue[object] = queue.Queue()
+    recorder._worker_channels.append(  # noqa: SLF001 - focused channel reconciliation test
+        telemetry_module._WorkerProgressChannel(queue=channel_queue, scope=scope.scope)
+    )
+    messages = (
+        ("shuffle:7", 101, 1, 10),
+        ("shuffle:7", 202, 1, 10),  # retried duplicate on another worker
+        ("shuffle:9", 101, 3, 20),
+        ("shuffle:8", 101, 2, 5),  # delayed and out of order, but unique
+    )
+    for event_id, worker_pid, sequence, games in messages:
+        channel_queue.put_nowait(
+            {
+                "phase": "simulation_shuffle_complete",
+                "worker_pid": worker_pid,
+                "sequence": sequence,
+                "event_id": event_id,
+                "counters": {
+                    "worker_completed_shuffles": 1,
+                    "worker_completed_games": games,
+                },
+            }
+        )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        assert recorder.emit_if_due(force=True)
+
+    record = next(
+        item for item in caplog.records if getattr(item, "telemetry_kind", None) == "heartbeat"
+    )
+    progress = record.__dict__["active_scopes"][0]["progress"]
+    assert progress["worker_messages_received"] == 4
+    assert progress["worker_unique_messages"] == 3
+    assert progress["worker_duplicate_messages"] == 1
+    assert progress["worker_completed_shuffles"] == 3
+    assert progress["worker_completed_games"] == 35
+    assert progress["completed_games"] == 40
+    assert "games=40/100 (40.0%)" in record.getMessage()
+    assert "shuffles=4/10" in record.getMessage()
+    assert "chunks=2/5" in record.getMessage()
+    assert "seed=?" not in record.getMessage()
+    assert snapshots[0]["active_scopes"] == record.__dict__["active_scopes"]
+
+    scope.finish(status="success")
+    recorder.close()
+
+
 @pytest.mark.skipif("spawn" not in mp.get_all_start_methods(), reason="spawn unavailable")
 def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     caplog: pytest.LogCaptureFixture,
@@ -269,7 +348,9 @@ def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     assert worker_pids and os.getpid() not in worker_pids
     assert any(sent for _pid, sent in results)
     heartbeats = [
-        record for record in caplog.records if getattr(record, "telemetry_kind", None) == "heartbeat"
+        record
+        for record in caplog.records
+        if getattr(record, "telemetry_kind", None) == "heartbeat"
     ]
     assert heartbeats
     assert {record.process for record in heartbeats} == {os.getpid()}

@@ -416,13 +416,89 @@ def test_bounded_workers_never_emit_heartbeat_logs(
     recorder.close()
 
     heartbeats = [
-        record for record in caplog.records if getattr(record, "telemetry_kind", None) == "heartbeat"
+        record
+        for record in caplog.records
+        if getattr(record, "telemetry_kind", None) == "heartbeat"
     ]
     assert heartbeats
     assert worker_pids
     assert all(pid != os.getpid() for pid in worker_pids)
     assert {record.__dict__["owner_pid"] for record in heartbeats} == {os.getpid()}
     assert {record.process for record in heartbeats} == {os.getpid()}
+
+
+def test_stage_context_survives_sequential_root_and_pair_stage_transitions(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    logger = logging.getLogger("tests.stage_runner.context")
+    recorder = SupervisorHeartbeatRecorder(
+        logger,
+        run="context",
+        interval_seconds=1.0,
+        resource_sampler=_fixed_resources,
+        autostart=False,
+    )
+
+    def action(_cfg: AppConfig) -> None:
+        assert recorder.emit_if_due(force=True)
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        StageRunner.run(
+            [StagePlanItem("metrics", action), StagePlanItem("screening", action)],
+            StageRunContext(
+                config=AppConfig(io=IOConfig(results_dir_prefix=tmp_path)),
+                manifest_path=tmp_path / "root.jsonl",
+                run_label="root_52",
+                run_metadata={"seed": 52, "execution_scope": "root"},
+                telemetry=recorder,
+                logger=logger,
+            ),
+        )
+        StageRunner.run(
+            [
+                StagePlanItem(
+                    "root_stability",
+                    action,
+                    metadata={"root_pair": [52, 53]},
+                )
+            ],
+            StageRunContext(
+                config=AppConfig(io=IOConfig(results_dir_prefix=tmp_path)),
+                manifest_path=tmp_path / "pair.jsonl",
+                run_label="pair_52_53",
+                run_metadata={"execution_scope": "root_pair"},
+                telemetry=recorder,
+                logger=logger,
+            ),
+        )
+
+    heartbeats = [
+        record
+        for record in caplog.records
+        if getattr(record, "telemetry_kind", None) == "heartbeat"
+    ]
+    assert [record.__dict__["stage"] for record in heartbeats] == [
+        "metrics",
+        "screening",
+        "root_stability",
+    ]
+    assert [record.__dict__["phase"] for record in heartbeats] == [
+        "metrics",
+        "screening",
+        "root_stability",
+    ]
+    assert [
+        record.__dict__["active_scopes"][0]["progress"].get("root_seed") for record in heartbeats
+    ] == [
+        52,
+        52,
+        None,
+    ]
+    assert heartbeats[-1].__dict__["active_scopes"][0]["progress"]["root_pair"] == [52, 53]
+    assert all("phase=action" not in record.getMessage() for record in heartbeats)
+
+    recorder.close()
 
 
 def test_telemetry_does_not_change_authenticated_fixture_outputs_or_identity(

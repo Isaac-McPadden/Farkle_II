@@ -32,7 +32,7 @@ from farkle.orchestration.seed_utils import (
 )
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
-from farkle.utils.artifact_contract import sha256_file
+from farkle.utils.artifact_contract import read_json_file_with_retry, sha256_file
 from farkle.utils.artifacts import read_json_artifact
 from farkle.utils.authenticated_contract import (
     CodeIdentity,
@@ -107,6 +107,7 @@ def _run_timed_phase(
     action: Callable[[], _T],
     run: str = "two_seed_pipeline",
     state: str = "working",
+    progress: dict[str, object] | None = None,
 ) -> _T:
     """Run one named parent phase and retain its final operational summary."""
 
@@ -116,6 +117,7 @@ def _run_timed_phase(
         stage=name,
         phase=name,
         state=state,
+        progress=progress,
     )
     status = "success"
     try:
@@ -562,6 +564,7 @@ def _run_one_seed(
             root_timings,
             name=f"root_{seed}_simulation",
             run=f"root_{seed}",
+            progress={"root_seed": seed, "execution_scope": "root"},
             action=run_simulation,
         )
         append_manifest_event(
@@ -588,6 +591,7 @@ def _run_one_seed(
             root_timings,
             name=f"root_{seed}_analysis",
             run=f"root_{seed}",
+            progress={"root_seed": seed, "execution_scope": "root"},
             action=lambda: _run_per_seed_analysis(
                 root_cfg,
                 seed=seed,
@@ -615,6 +619,7 @@ def _run_one_seed(
             name=f"root_{seed}_authenticated_graph_snapshot",
             run=f"root_{seed}",
             state="authenticating",
+            progress={"root_seed": seed, "execution_scope": "root"},
             action=lambda: _build_root_authenticated_snapshot(
                 context,
                 plan,
@@ -666,6 +671,40 @@ def _write_pipeline_telemetry(path: Path, payload: dict[str, object]) -> None:
         Path(temporary).write_text(
             json.dumps(payload, indent=2, sort_keys=True, default=str),
             encoding="utf-8",
+        )
+
+
+def _require_existing_resume_identity(
+    pair_root: Path,
+    *,
+    cfg: AppConfig,
+    code_identity: CodeIdentity,
+) -> None:
+    """Reject an incompatible existing pair before any resume publication."""
+
+    context_path = pair_root / "run_context.json"
+    if not context_path.is_file():
+        return
+    payload = read_json_file_with_retry(context_path)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"existing pair run context is malformed: {context_path}")
+    current_code = {
+        "commit": code_identity.commit,
+        "policy": code_identity.policy,
+        "state": code_identity.state,
+        "dirty_fingerprint_sha256": code_identity.dirty_fingerprint_sha256,
+    }
+    conflicts: list[str] = []
+    if payload.get("public_config_sha256") != cfg.config_sha:
+        conflicts.append(
+            "public config SHA " f"{payload.get('public_config_sha256')} != {cfg.config_sha}"
+        )
+    if payload.get("code_identity") != current_code:
+        conflicts.append(f"code identity {payload.get('code_identity')} != {current_code}")
+    if conflicts:
+        raise RuntimeError(
+            "existing authenticated result identity prevents exact resume before publication: "
+            + "; ".join(conflicts)
         )
 
 
@@ -790,12 +829,36 @@ def _run_pipeline_observed(
             else CodeIdentityPolicy.RELEASE_CLEAN
         ),
     )
+    policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     pair_root = seed_pair_root(cfg, seed_pair)
+    if not force:
+        preview_root_contexts = cast(
+            tuple[SeedRunContext, SeedRunContext],
+            tuple(
+                SeedRunContext.from_config(
+                    _build_seed_cfg(
+                        cfg,
+                        seed_pair=seed_pair,
+                        seed=seed,
+                        policy_bundle=policy_bundle,
+                    )
+                )
+                for seed in seed_pair
+            ),
+        )
+        preview_pair_context = RootPairRunContext.from_root_contexts(
+            preview_root_contexts,
+            pair_root=pair_root,
+        )
+        _require_existing_resume_identity(
+            pair_root,
+            cfg=preview_pair_context.config,
+            code_identity=code_identity,
+        )
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     health_path = pair_root / "pipeline_health.json"
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
     validate_manifest_contract(manifest_path)
-    policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
     profile_metadata = resolved_profile_metadata(cfg)
@@ -939,6 +1002,7 @@ def _run_pipeline_observed(
                 finalization_timings,
                 name="pair_analysis",
                 run=f"root_pair_{seed_pair[0]}_{seed_pair[1]}",
+                progress={"root_pair": list(seed_pair), "execution_scope": "root_pair"},
                 action=lambda: analysis.run_root_pair_analysis(
                     pair_context,
                     force=force,
@@ -959,6 +1023,7 @@ def _run_pipeline_observed(
                 finalization_timings,
                 name="pair_authenticated_graph_snapshot",
                 state="authenticating",
+                progress={"root_pair": list(seed_pair), "execution_scope": "root_pair"},
                 action=lambda: _build_pair_authenticated_snapshot(
                     pair_context,
                     analysis.build_root_pair_stage_plan(pair_context, force=False),
@@ -999,6 +1064,7 @@ def _run_pipeline_observed(
                 finalization_timings,
                 name=f"root_{seed}_authenticated_graph_snapshot_reuse",
                 state="authenticating",
+                progress={"root_seed": seed, "execution_scope": "root"},
                 action=reuse_root_snapshot,
             )
             root_health[str(seed)]["lifecycle_sha256"] = graph_snapshot.lifecycle_sha256
@@ -1031,6 +1097,7 @@ def _run_pipeline_observed(
             finalization_timings,
             name="final_byte_deep_release_audit",
             state="authenticating",
+            progress={"root_pair": list(seed_pair), "execution_scope": "release"},
             action=lambda: _final_release_gate(
                 root_results,
                 pair_context,
@@ -1049,6 +1116,7 @@ def _run_pipeline_observed(
             finalization_timings,
             name="resource_final_check",
             state="authenticating",
+            progress={"root_pair": list(seed_pair), "execution_scope": "release"},
             action=lambda: memory_guard.check_before_schedule(force=True),
         )
     except ResourceSafetyError as exc:
@@ -1147,6 +1215,7 @@ def _run_pipeline_observed(
         finalization_timings,
         name="pipeline_health_publish",
         state="publishing",
+        progress={"root_pair": list(seed_pair), "execution_scope": "release"},
         action=lambda: _write_pipeline_health(health_path, health),
     )
     _run_timed_phase(
@@ -1154,6 +1223,7 @@ def _run_pipeline_observed(
         finalization_timings,
         name="run_end_manifest_publish",
         state="publishing",
+        progress={"root_pair": list(seed_pair), "execution_scope": "release"},
         action=lambda: append_manifest_event(
             manifest_path,
             {

@@ -125,6 +125,14 @@ Preserve these invariants:
   generation, while one top-level `final_byte_deep_release_audit` freshly
   authenticates all root/root/pair bytes, schemas, contexts, configurations,
   completion inventories, and cross-context provenance before success.
+- completion-like files have one semantic namespace contract: executable-plan
+  stage completions and simulation lifecycle stamps are canonical; typed
+  partition-unit stamps with their adjacent output are resumability state;
+  active-config completions, checkpoints, substages, and malformed done-like
+  files remain distinct. Release auditing freshly authenticates the exact
+  canonical inventory and fails on missing, relocated, duplicated, mutated, or
+  unexpected canonical completions without treating durable unit stamps as
+  canonical graph additions;
 - two-seed orchestration is strictly sequential and rejects
   `orchestration.parallel_seeds: true` before run-start/health publication;
   player counts are also sequential, while the active tournament owns the full
@@ -134,11 +142,20 @@ Preserve these invariants:
   topology is observed (requested/resolved/created/live/peak), mismatches fail
   early, Windows cancellation owns a bounded terminate/join/kill sequence, and
   authenticated row/metric manifests independently authorize exact resume;
-- simulation heartbeats and `pipeline_telemetry.json` expose seed, k,
-  shuffle/chunk/game progress, rates/ETA, executor state, pending work,
-  checkpoints, process-tree memory, and elapsed time without artifact-tree
-  scans. Recognized atomic staging files from interrupted workers are never
-  completion inputs and are removed before resume.
+- simulation heartbeats and `pipeline_telemetry.json` expose seed, root pair,
+  scope, active stage/phase, k, shuffle/chunk/game progress, rates/ETA,
+  executor state, pending work, checkpoints, process-tree memory, and elapsed
+  time without artifact-tree scans. Parent-owned durable counters are the only
+  displayed completion numerators; semantic worker event IDs deduplicate
+  delayed, retried, duplicate, and out-of-order observations. Unknown
+  denominators and ETA are explicitly indeterminate, and terminal log/sink
+  output comes from one locked snapshot. Recognized atomic staging files from
+  interrupted workers are never completion inputs and are removed before resume;
+- ordinary two-seed resume checks the existing authenticated pair public-config
+  and code identity before health, manifest, context, or active-config
+  publication. Compatible no-force replay preserves authenticated run-context
+  bytes when only live host-memory telemetry changes; incompatible identity
+  fails before publication.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

@@ -24,6 +24,7 @@ from farkle.utils.authenticated_graph import (
     SnapshotUseError,
 )
 from farkle.utils.authentication_telemetry import active_authentication_telemetry
+from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
 
 _SIDECAR_SUFFIX: Final = ".sidecar.json"
 _STATE_SUFFIXES: Final = (".checkpoint.json", ".done.json")
@@ -217,6 +218,7 @@ def _build_audit_index(
     root: Path,
     *,
     completion_paths: Iterable[Path] | None = None,
+    analysis_root: Path | None = None,
 ) -> tuple[_AuditIndex, list[str]]:
     """Traverse *root* once and construct its fail-closed canonical index."""
 
@@ -232,20 +234,33 @@ def _build_audit_index(
         if path.name.endswith(_SIDECAR_SUFFIX)
         and not any(part.startswith("_") for part in path.relative_to(root).parts)
     )
+    explicit_completion_paths = (
+        tuple(sorted(Path(path).resolve() for path in completion_paths))
+        if completion_paths is not None
+        else ()
+    )
+    resolved_analysis_root = (
+        Path(analysis_root).resolve()
+        if analysis_root is not None
+        else ((root / "analysis").resolve() if (root / "analysis").is_dir() else root.resolve())
+    )
+    namespace = CompletionNamespace.build(
+        graph_root=root,
+        analysis_root=resolved_analysis_root,
+        canonical_paths=explicit_completion_paths,
+    )
     if completion_paths is None:
         resolved_completion_paths = tuple(
-            path
-            for path in files
-            if path.name.endswith(".done.json") and path.parent.parent == root
+            path for path in files if namespace.classify(path) is CompletionFileKind.CANONICAL_STAGE
         )
     else:
-        resolved_completion_paths = tuple(sorted(Path(path).resolve() for path in completion_paths))
+        resolved_completion_paths = explicit_completion_paths
     failures: list[str] = []
     if completion_paths is not None:
         discovered_completion_paths = {
             path.resolve()
             for path in files
-            if path.name.endswith(".done.json") and path.name != "active_config.done.json"
+            if namespace.classify(path) is CompletionFileKind.CANONICAL_STAGE
         }
         expected_completion_paths = set(resolved_completion_paths)
         if discovered_completion_paths != expected_completion_paths:
@@ -640,6 +655,7 @@ def audit_authenticated_release_graphs(
         index, root_failures = _build_audit_index(
             snapshot.graph_root,
             completion_paths=(item.path for item in snapshot.completions),
+            analysis_root=snapshot.analysis_root,
         )
         root_failures.extend(_validate_audit_index(index))
         root_failures.extend(_compare_snapshot_index(snapshot, index))

@@ -312,6 +312,7 @@ def snapshot_stable_workflow_files(
     excluded = {
         (pair_context.pair_root / ORCHESTRATION_MANIFEST).resolve(),
         (pair_context.pair_root / "pipeline_health.json").resolve(),
+        (pair_context.pair_root / "pipeline_telemetry.json").resolve(),
         *(
             context.analysis_root.joinpath(context.config.manifest_name).resolve()
             for context in contexts

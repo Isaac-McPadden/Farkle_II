@@ -309,6 +309,52 @@ def test_corrupt_and_missing_units_are_quarantined_and_rebuilt(tmp_path: Path) -
     assert any((root / "quarantine").iterdir())
 
 
+def test_malformed_and_tampered_unit_stamps_fail_manifest_validation_and_resume(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "stage"
+    initial = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+    )
+    malformed = root / "units" / "part-001.bin.unit.done.json"
+    tampered = root / "units" / "part-002.bin.unit.done.json"
+    malformed.write_text("{not-json", encoding="utf-8")
+    payload = json.loads(tampered.read_text(encoding="utf-8"))
+    payload["output_sha256"] = "0" * 64
+    tampered.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert (
+        validate_final_manifest(
+            initial.manifest_path,
+            root=root,
+            identity=_identity(),
+            unit_source=_unit_source,
+        )
+        is None
+    )
+    repaired = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+    )
+    assert repaired.reused_units == 10
+    assert repaired.completed_units == 2
+    assert validate_final_manifest(
+        repaired.manifest_path,
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+    ) == (repaired.manifest_sha256, 12)
+
+
 def test_identity_change_invalidates_every_unit(tmp_path: Path) -> None:
     root = tmp_path / "stage"
     run_partitioned_stage(

@@ -272,6 +272,64 @@ def write_run_context_atomic(
         "analysis_root": str(context.analysis_root),
         "active_config": str(context.active_config_path),
     }
+    worker_counts_payload = (
+        {
+            str(stage): {str(key): value for key, value in counts.items()}
+            for stage, counts in worker_counts.items()
+        }
+        if worker_counts is not None
+        else None
+    )
+
+    # Exact no-force resume must not churn authenticated provenance merely
+    # because host-available memory telemetry changed between invocations.
+    # Reuse is allowed only when every caller-controlled identity and execution
+    # input is unchanged; explicit execution-policy changes still republish.
+    if context.run_context_path.is_file() and worker_counts_payload is not None:
+        existing = load_run_context(
+            context.run_context_path,
+            active_config_path=(
+                context.active_config_path if context.active_config_path.is_file() else None
+            ),
+        )
+        existing_execution = existing.get("execution_controls")
+        stable_execution = {
+            "sim_n_jobs": cfg.sim.n_jobs,
+            "sim_mp_start_method": cfg.sim.mp_start_method,
+            "sim_chunk_seconds": cfg.sim.desired_sec_per_chunk,
+            "sim_checkpoint_seconds": cfg.sim.ckpt_every_sec,
+            "ingest_n_jobs": cfg.ingest.n_jobs,
+            "analysis_n_jobs": cfg.analysis.n_jobs,
+            "analysis_mp_start_method": cfg.analysis.mp_start_method,
+            "head2head_n_jobs": cfg.head2head.n_jobs,
+            "parallel_seeds": cfg.orchestration.parallel_seeds,
+            "resources": asdict(cfg.resources),
+            "worker_counts": worker_counts_payload,
+        }
+        existing_stable_execution = (
+            {key: existing_execution.get(key) for key in stable_execution}
+            if isinstance(existing_execution, Mapping)
+            else None
+        )
+        expected_extension = (
+            {"game_profile_sha256": cfg._game_profile_sha256}
+            if cfg._game_profile_sha256 is not None
+            else None
+        )
+        if (
+            existing.get("run_lineage_sha256") == lineage_sha
+            and existing.get("public_config_sha256") == cfg.config_sha
+            and existing.get("resource_config_sha256") == identity_sha256(asdict(cfg.resources))
+            and existing.get("profile_config_sha256") == identity_sha256(asdict(cfg.profile))
+            and existing.get("parent_lifecycle_roots") == list(parent_lifecycle_roots)
+            and existing.get("resolved_paths") == resolved_paths
+            and existing.get("resolved_stage_layout") == cfg.stage_layout.to_resolved_layout()
+            and existing.get("code_identity") == _code_payload(code_identity)
+            and existing.get("cli_overrides") == list(cli_overrides)
+            and existing.get("lineage_extensions") == expected_extension
+            and existing_stable_execution == stable_execution
+        ):
+            return lineage_sha
 
     def default_worker_metadata(stage: str, section: Any) -> dict[str, int | None]:
         requested = getattr(section, "n_jobs", None)
@@ -311,11 +369,8 @@ def write_run_context_atomic(
         ),
         "os_memory_boundary": boundary,
         "worker_counts": (
-            {
-                str(stage): {str(key): value for key, value in counts.items()}
-                for stage, counts in worker_counts.items()
-            }
-            if worker_counts is not None
+            worker_counts_payload
+            if worker_counts_payload is not None
             else {
                 "simulation": default_worker_metadata("simulation", cfg.sim),
                 "ingest": default_worker_metadata("ingest", cfg.ingest),
