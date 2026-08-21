@@ -2,7 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir_prefix: "results_efficiency_updates_4B_fast"
+  results_dir_prefix: "results_efficiency_updates_4D_fast"
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:
