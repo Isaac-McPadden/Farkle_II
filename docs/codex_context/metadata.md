@@ -237,6 +237,20 @@ changing code or accepting a statistical conclusion.
   identity conflicts before publication and preserves compatible run-context
   bytes across changing host-memory samples. No statistical, RNG, artifact,
   schema, method, path, or version identity changed.
+  Task 5A adds a standalone owned, resumable production-capacity benchmark and
+  readiness gate. Current executable production dimensions are 5,160 strategies,
+  eight sequential player counts, 39,013,900 games and 177,504,000 exposures per
+  root, 34,400 row groups, 1,075 width-32 route units, 216,517,900 count-route
+  records, and a 150-candidate H2H envelope with 11,175 pairs, 44,700 blocks, and
+  97,937,700 completed games. Route coarsening means current production reducers
+  have three fan-in-32 merge generations, while a bounded 32,769-run structural
+  fixture covers the four-pass implementation. Reconciliation against the healthy
+  27m43s telemetry envelope (about 27m52s CLI wall) projects 10.47 days central,
+  7.48-16.44 days plausible, and 19.73 days conservative on the synchronized tree.
+  RNG is 66.7% and simulation 25.4% of the central critical path. The resulting
+  verdict is `not_capacity_ready`; no Task 5B trigger, production execution,
+  optimization, local scratch architecture, or statistical-scope change follows
+  automatically.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

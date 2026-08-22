@@ -156,6 +156,17 @@ Preserve these invariants:
   publication. Compatible no-force replay preserves authenticated run-context
   bytes when only live host-memory telemetry changes; incompatible identity
   fails before publication.
+- Task 5A's bounded capacity gate derives the current production plan as 5,160
+  strategies, 39,013,900 games and 177,504,000 player exposures per root,
+  34,400 source row groups, and 1,075 route units at the accepted width of 32.
+  Current fan-in-32 RNG reduction has three production merge generations per
+  reducer route (the historical four-pass count predates route coarsening). The
+  150-candidate envelope has 11,175 pairs, 44,700 blocks, and 97,937,700 planned
+  completed H2H games. The machine/storage projection is 10.47 days central,
+  7.48-16.44 days plausible, and 19.73 days conservative; the readiness verdict
+  is `not_capacity_ready`. This is capacity evidence only: it does not authorize
+  Task 5B, a production run, optimization, local scratch, or statistical-scope
+  changes.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and
