@@ -54,6 +54,11 @@ def test_small_benchmark_uses_actual_routes_and_proves_exact_equivalence(
     assert coarsened["reducer_route_unit_opens"] == 32
     assert baseline["selection_membership_loads"] == 8
     assert coarsened["selection_membership_loads"] == 2
+    assert baseline["raw_count_records"] == coarsened["raw_count_records"] == 24
+    assert coarsened["routed_count_records"] <= baseline["routed_count_records"]
+    assert baseline["raw_stats_records"] == coarsened["raw_stats_records"] == 24
+    assert baseline["route_arrow_batches"] == 128
+    assert coarsened["route_arrow_batches"] == 32
     assert baseline["exact_equivalence_digest"] == coarsened["exact_equivalence_digest"]
     assert payload["summary"]["exact_equivalence_across_range_sizes"] == {"8": True}
     assert (root / "warmup" / "measurement.json").is_file()
@@ -98,3 +103,21 @@ def test_summary_uses_medians_and_checks_repetition_digests() -> None:
     assert group["median_wall_seconds"] == 2.0
     assert group["maximum_peak_process_tree_rss_bytes"] == 103
     assert group["repetition_digests_identical"] is True
+
+
+def test_production_mix_uses_every_k_and_full_fixed_width_records(tmp_path: Path) -> None:
+    payload = benchmark.run_benchmark(
+        tmp_path / "farkle-task3b-production-mix",
+        scales=(8,),
+        range_sizes=(8,),
+        repetitions=1,
+        include_two_workers=False,
+        diagnostic_partitions=2,
+        production_k_mix=True,
+    )
+    measurement = next(item for item in payload["measurements"] if not item["scenario"]["warmup"])
+
+    assert measurement["source_rows_by_k"] == {str(k): 1 for k in benchmark.PRODUCTION_GAMES_BY_K}
+    assert measurement["raw_count_records"] == 58
+    assert measurement["raw_stats_records"] == 58
+    assert measurement["routed_stats_records"] == 58

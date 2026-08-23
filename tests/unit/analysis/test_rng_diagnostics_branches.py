@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -171,6 +172,69 @@ def test_route_range_plan_crosses_source_boundaries_deterministically() -> None:
     assert units == tuple(rng_diagnostics._row_group_units(sources, row_groups_per_unit=3))
 
 
+def test_byte_route_plan_is_contiguous_bounded_and_rejects_oversized_group() -> None:
+    sources = tuple((index, "source.parquet", index) for index in range(5))
+    units = tuple(
+        rng_diagnostics._byte_bounded_row_group_units(
+            sources,
+            (40, 50, 20, 80, 10),
+            target_bytes=100,
+            hard_bytes=120,
+        )
+    )
+    assert [unit.key for unit in units] == [(0, 2), (2, 4), (4, 5)]
+    assert [
+        ordinal
+        for unit in units
+        for ordinal, _source, _row_group in rng_diagnostics._sources_for_route_unit(unit, sources)
+    ] == list(range(5))
+    with pytest.raises(rng_diagnostics.ResourceSafetyError, match="hard limit"):
+        tuple(
+            rng_diagnostics._byte_bounded_row_group_units(
+                sources[:1], (121,), target_bytes=100, hard_bytes=120
+            )
+        )
+
+
+def test_compiled_matchup_digest_matches_hashlib_exactly() -> None:
+    composite = np.asarray(
+        [
+            [2, 13, 31, *([-1] * 10)],
+            [12, *range(1, 13)],
+            [3, 7, 7, 9, *([-1] * 9)],
+        ],
+        dtype=np.int32,
+    )
+    expected = np.asarray(
+        [
+            int.from_bytes(
+                hashlib.blake2b(
+                    row.astype("<i4").tobytes(), digest_size=8, person=b"farkle-m"
+                ).digest(),
+                "little",
+            )
+            for row in composite
+        ],
+        dtype=np.uint64,
+    )
+    np.testing.assert_array_equal(rng_diagnostics._blake2b_matchup_ids(composite), expected)
+
+
+def test_compiled_lag_accumulator_is_bitwise_identical_to_scalar() -> None:
+    values = np.asarray([1.0, 0.0, 4.25, -2.0, 8.0, 8.0, 3.5], dtype=np.float64)
+    lags = (1, 2, 5)
+    scalar = rng_diagnostics._OnlineMetric(lags)
+    for value in values:
+        scalar.push(float(value))
+    compiled = rng_diagnostics._compiled_metric(values, lags)
+    np.testing.assert_array_equal(compiled.pair_count, scalar.pair_count)
+    for name in ("sum_x", "sum_y", "sum_x2", "sum_y2", "sum_xy"):
+        np.testing.assert_array_equal(getattr(compiled, name), getattr(scalar, name))
+    assert [compiled.result(index) for index in range(len(lags))] == [
+        scalar.result(index) for index in range(len(lags))
+    ]
+
+
 def test_coarsened_route_recovers_every_partition_across_row_groups_and_batches(
     tmp_path: Path,
 ) -> None:
@@ -220,7 +284,7 @@ def test_coarsened_route_recovers_every_partition_across_row_groups_and_batches(
     expected = rng_diagnostics._count_records(arrays)
     np.testing.assert_array_equal(actual, expected)
     assert len(set(batches_per_partition)) == 1
-    assert batches_per_partition[0] > 2
+    assert batches_per_partition[0] == 1
 
 
 def test_coarsened_route_streams_uneven_row_groups_within_batch_budget(
@@ -549,7 +613,9 @@ def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path
     assert rng_summary["source_row_groups_total"] == 6
     assert rng_summary["count_route_units_total"] == 1
     assert rng_summary["stats_route_units_total"] == 1
-    assert rng_summary["route_row_groups_per_unit"] == 32
+    assert rng_summary["route_planner"] == "expanded_bytes"
+    assert rng_summary["max_route_row_groups_per_unit"] == 6
+    assert rng_summary["route_unit_target_bytes"] == 64 * 1024 * 1024
     assert rng_summary["partitions"] == 4
     assert rng_summary["reconciled_from"] == ("authenticated_rng_outputs_and_partition_manifests")
     scope.finish(status="success")
@@ -672,6 +738,17 @@ def test_merge_memmaps_are_closed_after_success_and_failure(tmp_path: Path) -> N
     observation_input_a.unlink()
     observation_input_b.unlink()
     observation_output.unlink()
+
+
+def test_bounded_merge_groups_always_make_progress(tmp_path: Path) -> None:
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"run-{index}.bin"
+        path.write_bytes(b"x" * 6)
+        paths.append(path)
+    groups = list(rng_diagnostics._bounded_merge_groups(paths, max_input_bytes=10))
+    assert [len(group) for group in groups] == [2, 2, 1]
+    assert [path for group in groups for path in group] == paths
 
 
 def test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion(
@@ -867,7 +944,8 @@ def test_route_telemetry_reconciles_source_row_groups_and_durable_units(
     assert summary["stats_route_units_total"] == 2
     assert summary["stats_route_units_completed"] == 2
     assert summary["stats_route_source_row_groups_completed"] == 8
-    assert summary["route_row_groups_per_unit"] == 4
+    assert summary["route_planner"] == "fixed_row_groups"
+    assert summary["max_route_row_groups_per_unit"] == 4
     scope.finish(status="success")
     recorder.close()
 

@@ -31,13 +31,14 @@ from farkle.orchestration.profile_metadata import (
 )
 from farkle.utils.writer import atomic_path
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 OWNERSHIP_MARKER: Final = ".task5a-owned.json"
 OWNED_NAME_PREFIX: Final = "farkle-task5a-"
-DEFAULT_ROOT: Final = Path("data/farkle-task5a-production-capacity-v1")
+DEFAULT_ROOT: Final = Path("data/farkle-task5a-production-capacity-v2")
 PRODUCTION_CONFIG: Final = Path("configs/farkle_mega_config.yaml")
 FAST_CONFIG: Final = Path("configs/fast_config.yaml")
 INTEGRATION_ROOT: Final = Path("data/results_efficiency_updates_4D_fast_seed_pair_54_55")
+RNG_ARCHITECTURE_CONSERVATIVE_SPEEDUP: Final = 5.05968538155931
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -89,8 +90,36 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
     shuffles_by_k = {int(k): int(v["required_shuffles"]) for k, v in workload.items()}
     games = sum(games_by_k.values())
     exposures = sum(k * count for k, count in games_by_k.items())
-    row_groups = sum(shuffles_by_k.values())
-    route_units = math.ceil(row_groups / rng_diagnostics._ROUTE_ROW_GROUPS_PER_UNIT)
+    simulation_shards = sum(shuffles_by_k.values())
+    combine_row_groups_by_k = {
+        k: math.ceil(value / int(cfg.row_group_size)) for k, value in games_by_k.items()
+    }
+    row_group_rows: list[tuple[int, int]] = []
+    for k in sorted(games_by_k):
+        remaining = games_by_k[k]
+        while remaining:
+            rows = min(int(cfg.row_group_size), remaining)
+            row_group_rows.append((k, rows))
+            remaining -= rows
+    row_groups = len(row_group_rows)
+    route_target_bytes = int(cfg.resources.stage_batch_bytes["rng_diagnostics_route_unit"])
+    route_hard_bytes = int(cfg.resources.stage_batch_bytes["rng_diagnostics_route_unit_hard"])
+    observation_itemsize = rng_diagnostics._observation_dtype(cfg.combine_max_players).itemsize
+    count_itemsize = rng_diagnostics._count_dtype(cfg.combine_max_players).itemsize
+    expanded_bytes = [rows * (k + 1) * observation_itemsize for k, rows in row_group_rows]
+    source_inventory = tuple(
+        (ordinal, f"combined-{k}p.parquet", ordinal)
+        for ordinal, (k, _rows) in enumerate(row_group_rows)
+    )
+    planned_units = tuple(
+        rng_diagnostics._byte_bounded_row_group_units(
+            source_inventory,
+            expanded_bytes,
+            target_bytes=route_target_bytes,
+            hard_bytes=route_hard_bytes,
+        )
+    )
+    route_units = len(planned_units)
     reducers = int(cfg.analysis.rng_diagnostic_partitions)
     candidate_count = int(profile["maximum_candidate_count"])
     h2h = _project_h2h_at_candidate_count(
@@ -108,23 +137,39 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
     stats_records_lower = exposures
     stats_records_central = min(count_records, round(exposures + 0.10 * games))
     source_widths = {k: games_by_k[k] // shuffles_by_k[k] for k in games_by_k}
-    per_reducer_runs = route_units  # writer deliberately flushes once per route file
+    route_k_intersections = sum(
+        len({row_group_rows[index][0] for index in range(int(unit.key[0]), int(unit.key[1]))})
+        for unit in planned_units
+    )
+    routed_count_records = games + int(profile["strategy_count"]) * route_k_intersections
+    reduce_run_bytes = int(cfg.resources.stage_batch_bytes["rng_diagnostics_reduce_run"])
+    count_runs_per_reducer = math.ceil(
+        routed_count_records * count_itemsize / reducers / reduce_run_bytes
+    )
+    stats_runs_per_reducer = math.ceil(
+        stats_records_central * observation_itemsize / reducers / reduce_run_bytes
+    )
+    per_reducer_runs = max(count_runs_per_reducer, stats_runs_per_reducer)
     production_merge = merge_topology(per_reducer_runs)
+    count_merge = merge_topology(count_runs_per_reducer)
+    stats_merge = merge_topology(stats_runs_per_reducer)
     four_pass_fixture = merge_topology(32**3 + 1)
     bootstrap_units = math.ceil(int(cfg.screening.bootstrap_replicates) / 50)
     checkpoint_limit = 5_000
     checkpoints_per_block = math.ceil(
         int(h2h["maximum_total_attempts"]) / int(h2h["total_block_count"]) / checkpoint_limit
     )
-    source_files = row_groups
+    source_files = simulation_shards
+    combined_files = len(games_by_k)
     # Per source shard: parquet + sidecar. Route/reducer outputs also have unit stamps.
     root_files = (
         2 * source_files
+        + 2 * combined_files
         + 2 * (2 * route_units + 2 * reducers)
         + 650  # measured fixed root analysis/config/completion/manifest envelope
     )
     pair_files = 2 * int(h2h["total_block_count"]) + 125
-    root_canonical_artifacts = source_files + 250
+    root_canonical_artifacts = source_files + combined_files + 250
     pair_canonical_artifacts = int(h2h["total_block_count"]) + 80
     root_completions = len(profile["player_counts"]) + 9
     pair_completions = 9
@@ -142,13 +187,17 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
         "shuffles_by_k_per_root": {
             str(k): _label(v, "derived", "shuffles") for k, v in shuffles_by_k.items()
         },
+        "combine_row_groups_by_k_per_root": {
+            str(k): _label(v, "derived", "row groups") for k, v in combine_row_groups_by_k.items()
+        },
         "source_row_group_width_by_k": {
             str(k): _label(v, "derived", "rows") for k, v in source_widths.items()
         },
         "attempted_games_per_root": _label(games, "derived", "games"),
         "completed_games_per_root": _label(games, "projected", "games"),
         "player_exposures_per_root": _label(exposures, "derived", "player-game exposures"),
-        "source_parquet_files_per_root": _label(source_files, "derived", "files"),
+        "simulation_source_parquet_files_per_root": _label(source_files, "derived", "files"),
+        "source_parquet_files_per_root": _label(combined_files, "derived", "files"),
         "source_rows_per_root": _label(games, "derived", "rows"),
         "source_row_groups_per_root": _label(row_groups, "derived", "row groups"),
         "source_parquet_bytes_per_root": {
@@ -159,11 +208,25 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
             "unit": "bytes",
         },
         "rng_source_row_groups": _label(row_groups, "derived", "row groups"),
-        "rng_route_row_groups_per_unit": _label(
-            rng_diagnostics._ROUTE_ROW_GROUPS_PER_UNIT, "configured", "row groups/unit"
+        "rng_route_target_expanded_bytes": _label(route_target_bytes, "configured", "bytes"),
+        "rng_route_hard_expanded_bytes": _label(route_hard_bytes, "configured", "bytes"),
+        "rng_route_max_expanded_bytes": _label(
+            max(sum(expanded_bytes[int(unit.key[0]) : int(unit.key[1])]) for unit in planned_units),
+            "derived",
+            "bytes",
+        ),
+        "rng_route_max_row_groups_per_unit": _label(
+            max(int(unit.key[1]) - int(unit.key[0]) for unit in planned_units),
+            "derived",
+            "row groups/unit",
         ),
         "rng_route_units_per_route_per_root": _label(route_units, "derived", "route units"),
         "rng_count_route_records_per_root": _label(count_records, "derived", "records"),
+        "rng_routed_count_records_per_root": {
+            "upper": routed_count_records,
+            "evidence": "derived upper bound after complete route-unit reduction",
+            "unit": "records",
+        },
         "rng_stats_route_records_per_root": {
             "central": stats_records_central,
             "lower": stats_records_lower,
@@ -174,13 +237,19 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
         "rng_reducers_per_route": _label(reducers, "configured", "reducers"),
         "rng_reducer_opens_per_root": _label(2 * reducers * route_units, "derived", "opens"),
         "rng_initial_spills_per_root": _label(
-            2 * reducers * per_reducer_runs, "projected", "spill files"
+            reducers * (count_runs_per_reducer + stats_runs_per_reducer),
+            "projected",
+            "spill files",
         ),
         "rng_merge_fan_in": _label(rng_diagnostics._RUN_MERGE_FAN_IN, "configured", "runs"),
         "rng_actual_merge_topology_per_reducer_route": production_merge,
+        "rng_count_merge_topology_per_reducer": count_merge,
+        "rng_stats_merge_topology_per_reducer": stats_merge,
         "rng_four_pass_structural_fixture": four_pass_fixture,
         "rng_merge_outputs_per_root": _label(
-            2 * reducers * int(production_merge["merge_outputs"]), "derived", "temporary files"
+            reducers * (int(count_merge["merge_outputs"]) + int(stats_merge["merge_outputs"])),
+            "derived",
+            "temporary files",
         ),
         "performance_bootstrap_units_per_root": _label(
             bootstrap_units, "derived", "partition units"
@@ -351,8 +420,10 @@ def build_projection(dimensions: Mapping[str, Any], inventory: Mapping[str, Any]
     exposure_rate = fast_exposures / fast["simulation"] * 1.10
     simulation = 2 * exposures / exposure_rate
 
-    # RNG: use actual count+stats route density and end-to-end stage time. Current
-    # production has three merge generations versus two at the integration scale.
+    # RNG: retain the accepted record-density extrapolation as the historical
+    # reference, then apply the lower of the paired Task 6 architecture speedups.
+    # This avoids pretending that the bounded benchmark independently represents
+    # every production k while still replacing uniform 1,557-record/s scaling.
     fast_route_records = _median(
         [
             float(root["route"]["01_count_route"]["rows"])
@@ -361,7 +432,8 @@ def build_projection(dimensions: Mapping[str, Any], inventory: Mapping[str, Any]
         ]
     )
     rng_record_rate = fast_route_records / (fast["rng_diagnostics"] / 2)
-    rng = 2 * (count_records + stats_records) / rng_record_rate * 1.18
+    legacy_rng = 2 * (count_records + stats_records) / rng_record_rate * 1.18
+    rng = legacy_rng / RNG_ARCHITECTURE_CONSERVATIVE_SPEEDUP
 
     # Other analyses are a mix of fixed exact enumeration, source-file opens,
     # sequential scans, bootstrap ranges, and strategy-sized matrices. The central
@@ -430,7 +502,20 @@ def build_projection(dimensions: Mapping[str, Any], inventory: Mapping[str, Any]
             "rng_route_records_per_second": {
                 "estimate": rng_record_rate,
                 "cases": ["Task3B source-unit sweep", "Task4D roots 54/55"],
-                "uncertainty": "-35%/+39% plus explicit 18% third-merge-generation factor",
+                "uncertainty": "historical reference before Task 6 architecture factor",
+            },
+            "rng_architecture_speedup": {
+                "estimate": RNG_ARCHITECTURE_CONSERVATIVE_SPEEDUP,
+                "cases": [
+                    "Task6 256-row-group paired benchmark",
+                    "Task6 1024-row-group paired benchmark",
+                    "Task6 32768-game dense benchmark",
+                ],
+                "uncertainty": (
+                    "uses the lower paired speedup; bounded evidence is not a full "
+                    "production execution"
+                ),
+                "historical_rng_seconds": legacy_rng,
             },
             "other_analysis_group_weight": 0.70,
             "other_analysis_sqrt_row_weight": 0.30,
@@ -584,6 +669,7 @@ def run(output_root: Path, *, force: bool = False) -> dict[str, Any]:
             "task4b": "docs/remediation/task4b_authenticated_graph.json",
             "task4c": "docs/remediation/task4c_simulation_execution.json",
             "task4d": "docs/remediation/task4d_release_audit_recovery.json",
+            "task6_rng_architecture": ("docs/remediation/task6_rng_architecture_benchmark.json"),
         },
         "cleanup": {"owned_root_retained": str(resolved), "historical_roots_mutated": False},
     }

@@ -20,12 +20,15 @@ accumulator graph with a deterministic external-partition pipeline.
 
 ## Bounded execution and lifecycle
 
-Projected fixed-width columns are scanned in byte-bounded batches. Source row
-groups route compact integer records into stable hash partitions and receive
-hash-bound unit stamps. Eligibility partitions perform exact external
-sort/reduction before lag state exists. A deterministic semantic priority
-selects eligible matchups under the configured cap while retaining only a
-bounded frontier in memory.
+Projected fixed-width columns are scanned in byte-bounded batches. Combine
+coalesces physical row groups to its configured target, and route-layout v3
+greedily groups canonical row groups by expanded observation bytes. Each route
+unit reuses one Parquet reader per source file and publishes one contiguous
+Arrow batch per stable partition with a hash-bound unit stamp. Count keys are
+reduced exactly across the complete route unit before durable partitioning.
+Eligibility partitions perform exact external sort/reduction before lag state
+exists. A deterministic semantic priority selects eligible matchups under the
+configured cap while retaining only a bounded frontier in memory.
 
 The 64-bit BLAKE2 matchup digest is a compact deterministic partition and
 display value, not a complete identity. Every count, eligibility, selection,
@@ -34,10 +37,11 @@ canonical key: `k` plus the sorted participant-ID multiset padded to the fixed
 stage width. Digest equality therefore cannot merge distinct matchups, while
 different seat orders of the same matchup aggregate into one group.
 
-The second route contains selected observations only. Each independent result
-partition externally sorts its own observations, then processes one group at a
-time with online moments and a fixed NumPy ring per applicable metric up to the
-maximum lag. The shared resource policy caps processes by the central logical-
+The second route contains selected observations only. Matchup BLAKE2b IDs are
+computed by an exact compiled fixed-width kernel. Reducers fill runs across
+route-file boundaries, use bounded array merges rather than Python record
+heaps, and apply a compiled segmented online-moment scan in semantic coordinate
+order. The shared resource policy caps processes by the central logical-
 CPU budget and per-stage scheduling estimates, limits native threads, and uses
 the configured process-tree warning, explicit aggregate hard limit, and host-
 available reserve. Those execution values do not alter diagnostic estimands or
@@ -50,6 +54,10 @@ completion is published last. Arrow readers and external-merge memmaps are
 closed explicitly before worker temporary directories are removed; if cleanup
 also fails during exception unwinding, the processing exception remains the
 reported failure.
+
+Route-layout v3 and partition-checkpoint schema v3 are operationally
+incompatible with v2 checkpoints. RNG method v4, cache-key v6, output schemas,
+statistical configuration identity, and analytical semantics remain unchanged.
 
 ## Output and completion migration
 

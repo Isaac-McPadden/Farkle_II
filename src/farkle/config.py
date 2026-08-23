@@ -429,6 +429,10 @@ class ResourcesConfig:
             "performance_bootstrap": 160,
             "trueskill": 192,
             "head2head": 128,
+            "rng_diagnostics_count_route": 256,
+            "rng_diagnostics_eligibility": 512,
+            "rng_diagnostics_stats_route": 256,
+            "rng_diagnostics_stats": 512,
             "partitioned_stage": 128,
         }
     )
@@ -441,6 +445,10 @@ class ResourcesConfig:
             "all_player_metrics": 16 * 1024 * 1024,
             "performance": 16 * 1024 * 1024,
             "trueskill": 16 * 1024 * 1024,
+            "rng_diagnostics_source": 32 * 1024 * 1024,
+            "rng_diagnostics_route_unit": 64 * 1024 * 1024,
+            "rng_diagnostics_route_unit_hard": 96 * 1024 * 1024,
+            "rng_diagnostics_reduce_run": 256 * 1024 * 1024,
             "partitioned_stage": 16 * 1024 * 1024,
         }
     )

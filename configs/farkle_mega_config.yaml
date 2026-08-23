@@ -176,6 +176,10 @@ resources:
     performance_bootstrap: 160
     trueskill: 192
     head2head: 128
+    rng_diagnostics_count_route: 256
+    rng_diagnostics_eligibility: 1536
+    rng_diagnostics_stats_route: 256
+    rng_diagnostics_stats: 1536
     partitioned_stage: 128
   stage_batch_bytes:
     ingest: 33554432
@@ -185,4 +189,8 @@ resources:
     all_player_metrics: 16777216
     performance: 16777216
     trueskill: 16777216
+    rng_diagnostics_source: 33554432
+    rng_diagnostics_route_unit: 67108864
+    rng_diagnostics_route_unit_hard: 100663296
+    rng_diagnostics_reduce_run: 268435456
     partitioned_stage: 16777216

@@ -127,6 +127,24 @@ def test_partitioned_concat_is_logically_equivalent_and_deterministic(tmp_path: 
     assert {path: path.read_bytes() for path in stable} == stable
 
 
+def test_combine_emits_full_configured_row_groups_except_final(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, (1,))
+    cfg.ingest.row_group_size = 3
+    _write_curated(cfg, 1, [_row(1, index) for index in range(8)])
+
+    combine.run(cfg)
+
+    metadata = pq.read_metadata(cfg.combined_rows_by_k(1))
+    assert [metadata.row_group(index).num_rows for index in range(metadata.num_row_groups)] == [
+        3,
+        3,
+        2,
+    ]
+    assert pq.read_table(cfg.combined_rows_by_k(1)).equals(
+        pa.Table.from_pylist([_row(1, index) for index in range(8)], schema=expected_schema_for(12))
+    )
+
+
 def test_combine_resolves_each_curated_source_once_per_invocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

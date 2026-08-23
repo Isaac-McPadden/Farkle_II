@@ -44,7 +44,7 @@ from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, 
 from farkle.utils.types import Compression
 
 LOGGER = logging.getLogger(__name__)
-_COMBINE_SCHEMA_VERSION = 2
+_COMBINE_SCHEMA_VERSION = 3
 _COMBINE_METHOD_VERSION = 2
 
 
@@ -211,6 +211,8 @@ class _PartitionWriter:
         snapshot = {item.k: item for item in self.sources}[k]
         source = snapshot.parquet.artifact_path
         source_columns = expected_schema_for(k).names
+        pending: list[pa.Table] = []
+        pending_rows = 0
         with pq.ParquetWriter(output, self.target, compression=self.compression) as writer:
             for _row_group, _batch_index, table in iter_parquet_tables_by_bytes(
                 source,
@@ -224,7 +226,18 @@ class _PartitionWriter:
                     if table.schema.equals(self.target, check_metadata=False)
                     else _pad_to_schema(table, self.target)
                 )
-                writer.write_table(normalized, row_group_size=self.batch_rows)
+                pending.append(normalized)
+                pending_rows += normalized.num_rows
+                while pending_rows >= self.batch_rows:
+                    combined = pending[0] if len(pending) == 1 else pa.concat_tables(pending)
+                    complete = combined.slice(0, self.batch_rows)
+                    writer.write_table(complete, row_group_size=self.batch_rows)
+                    remainder = combined.slice(self.batch_rows)
+                    pending = [remainder] if remainder.num_rows else []
+                    pending_rows = remainder.num_rows
+            if pending_rows:
+                combined = pending[0] if len(pending) == 1 else pa.concat_tables(pending)
+                writer.write_table(combined, row_group_size=self.batch_rows)
 
 
 @dataclass(frozen=True, slots=True)

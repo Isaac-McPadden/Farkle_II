@@ -184,8 +184,8 @@ changing code or accepting a statistical conclusion.
   planned completed games. Reports, run contexts, health, and the H2H power plan
   expose the profile and resolved workload; non-production integration runs
   cannot become release-eligible merely from a clean code identity.
-  Task 3B advances only the RNG partition checkpoint schema to v2 and introduces
-  route-layout v2. The canonical source-row-group sequence is divided into
+  Task 3B advanced only the RNG partition checkpoint schema to v2 and introduced
+  route-layout v2. The canonical source-row-group sequence was divided into
   contiguous half-open ranges of at most 32 row groups, including cross-file
   ranges. Route workers retain byte-bounded projected reads and process one row
   group at a time. Arrow route metadata authenticates the repeated
@@ -237,13 +237,15 @@ changing code or accepting a statistical conclusion.
   identity conflicts before publication and preserves compatible run-context
   bytes across changing host-memory samples. No statistical, RNG, artifact,
   schema, method, path, or version identity changed.
-  Task 5A adds a standalone owned, resumable production-capacity benchmark and
-  readiness gate. Current executable production dimensions are 5,160 strategies,
+  Task 5A added a standalone owned, resumable pre-optimization
+  production-capacity benchmark and readiness gate. Historical executable
+  dimensions were 5,160 strategies,
   eight sequential player counts, 39,013,900 games and 177,504,000 exposures per
-  root, 34,400 row groups, 1,075 width-32 route units, 216,517,900 count-route
+  root, 34,400 pre-coalescing row groups, 1,075 width-32 route units, and
+  216,517,900 count-route
   records, and a 150-candidate H2H envelope with 11,175 pairs, 44,700 blocks, and
-  97,937,700 completed games. Route coarsening means current production reducers
-  have three fan-in-32 merge generations, while a bounded 32,769-run structural
+  97,937,700 completed games. Route coarsening meant historical production
+  reducers had three fan-in-32 merge generations, while a bounded 32,769-run structural
   fixture covers the four-pass implementation. Reconciliation against the healthy
   27m43s telemetry envelope (about 27m52s CLI wall) projects 10.47 days central,
   7.48-16.44 days plausible, and 19.73 days conservative on the synchronized tree.
@@ -251,6 +253,23 @@ changing code or accepting a statistical conclusion.
   verdict is `not_capacity_ready`; no Task 5B trigger, production execution,
   optimization, local scratch architecture, or statistical-scope change follows
   automatically.
+  The subsequent RNG architecture optimization advances combine physical-layout
+  checkpoints and RNG partition/route layouts to v3 without changing combine
+  method v2 or RNG diagnostic method v4. Combine now emits 64,000-row physical
+  groups; the production dimensions imply 613 combined row groups and 393
+  deterministic 64 MiB byte-planned route units per root, with a 78,208,000-byte
+  maximum projected unit below the 96 MiB hard ceiling. Route-local exact count
+  reduction, partition-contiguous IPC, reader reuse, cross-route spill filling,
+  bounded vectorized merges, exact compiled personalized BLAKE2b, and compiled
+  sequential lag moments preserve historical final benchmark digests. The owned
+  Task 6 benchmark measured 5.06x and 9.06x width-32 speedups at 256 and 1,024
+  sparse row groups and separately exercised the complete production `k` mix
+  with full 12-seat records. A 32-versus-64 partition check made 64 partitions
+  24.5% slower, so production remains at 32. The refreshed capacity projection
+  is 33.1 hours for two-root RNG and 114.50 hours central for the full pipeline,
+  with a 9.03-day planning upper and a retained `not_capacity_ready` verdict.
+  Reducer scratch already resolves to local OS temp, and Task 3A's 6.3% location
+  effect remains below the 10% scratch gate.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

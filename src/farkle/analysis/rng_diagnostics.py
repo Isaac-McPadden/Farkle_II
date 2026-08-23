@@ -21,12 +21,11 @@ per game.  Reference bands are descriptive and make no independence claim.
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import logging
 import sys
 from collections.abc import Generator, Iterator, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -37,6 +36,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
+from numba import njit
 
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig, ArtifactScope
@@ -83,9 +83,12 @@ _EXPECTED_NOTE = (
 )
 _BAND_METHOD = "zero_centered_1.96_over_sqrt_lagged_pairs_descriptive_reference_band"
 _DIAGNOSTIC_METHOD_VERSION = 4
-_PARTITION_SCHEMA_VERSION = 2
-_ROUTE_LAYOUT_VERSION = 2
+_PARTITION_SCHEMA_VERSION = 3
+_ROUTE_LAYOUT_VERSION = 3
 _ROUTE_ROW_GROUPS_PER_UNIT = 32
+_DEFAULT_ROUTE_UNIT_BYTES = 64 * 1024 * 1024
+_DEFAULT_ROUTE_UNIT_HARD_BYTES = 96 * 1024 * 1024
+_DEFAULT_REDUCE_RUN_BYTES = 256 * 1024 * 1024
 _GAME_COORDINATE_COLUMNS = ("root_seed", "k", "shuffle_index", "game_index")
 _SEAT_COORDINATE_COLUMNS = (*_GAME_COORDINATE_COLUMNS, "seat_index")
 _SEQUENCE_DEFINITION = "externally_partitioned_rng_v2_semantic_coordinate_then_group_filter"
@@ -94,7 +97,105 @@ _GROUP_STRATEGY = 0
 _GROUP_MATCHUP = 1
 _MISSING_STRATEGY = -1
 _RUN_MERGE_FAN_IN = 32
-_RUN_WRITE_ROWS = 8_192
+
+_BLAKE2B_IV = np.asarray(
+    [
+        0x6A09E667F3BCC908,
+        0xBB67AE8584CAA73B,
+        0x3C6EF372FE94F82B,
+        0xA54FF53A5F1D36F1,
+        0x510E527FADE682D1,
+        0x9B05688C2B3E6C1F,
+        0x1F83D9ABFB41BD6B,
+        0x5BE0CD19137E2179,
+    ],
+    dtype=np.uint64,
+)
+_BLAKE2B_SIGMA = np.asarray(
+    [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+        [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+        [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+        [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+        [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+        [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+        [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+        [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+        [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+    ],
+    dtype=np.uint8,
+)
+_BLAKE2B_PERSONAL0 = np.uint64(0x6D2D656C6B726166)
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _rotate_right_64(value: np.uint64, shift: int) -> np.uint64:
+    return (value >> np.uint64(shift)) | (value << np.uint64(64 - shift))
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _blake2b_mix(
+    state: np.ndarray,
+    a: int,
+    b: int,
+    c: int,
+    d: int,
+    first: Any,
+    second: Any,
+) -> None:
+    state[a] = state[a] + state[b] + first
+    state[d] = _rotate_right_64(state[d] ^ state[a], 32)
+    state[c] = state[c] + state[d]
+    state[b] = _rotate_right_64(state[b] ^ state[c], 24)
+    state[a] = state[a] + state[b] + second
+    state[d] = _rotate_right_64(state[d] ^ state[a], 16)
+    state[c] = state[c] + state[d]
+    state[b] = _rotate_right_64(state[b] ^ state[c], 63)
+
+
+@njit(cache=True, nogil=True)
+def _blake2b_matchup_ids_kernel(composite: np.ndarray) -> np.ndarray:
+    """Return hashlib-compatible personalized BLAKE2b-64 IDs for int32 rows."""
+
+    result = np.empty(composite.shape[0], dtype=np.uint64)
+    message_bytes = composite.shape[1] * 4
+    for row_index in range(composite.shape[0]):
+        message = np.zeros(16, dtype=np.uint64)
+        for column in range(composite.shape[1]):
+            value = np.uint64(np.int64(composite[row_index, column]) & np.int64(0xFFFFFFFF))
+            word = column // 2
+            if column % 2:
+                message[word] |= value << np.uint64(32)
+            else:
+                message[word] = value
+        chain = _BLAKE2B_IV.copy()
+        chain[0] ^= np.uint64(0x01010008)
+        chain[6] ^= _BLAKE2B_PERSONAL0
+        state = np.empty(16, dtype=np.uint64)
+        state[:8] = chain
+        state[8:] = _BLAKE2B_IV
+        state[12] ^= np.uint64(message_bytes)
+        state[14] ^= np.uint64(0xFFFFFFFFFFFFFFFF)
+        for round_index in range(12):
+            sigma = _BLAKE2B_SIGMA[round_index]
+            _blake2b_mix(state, 0, 4, 8, 12, message[sigma[0]], message[sigma[1]])
+            _blake2b_mix(state, 1, 5, 9, 13, message[sigma[2]], message[sigma[3]])
+            _blake2b_mix(state, 2, 6, 10, 14, message[sigma[4]], message[sigma[5]])
+            _blake2b_mix(state, 3, 7, 11, 15, message[sigma[6]], message[sigma[7]])
+            _blake2b_mix(state, 0, 5, 10, 15, message[sigma[8]], message[sigma[9]])
+            _blake2b_mix(state, 1, 6, 11, 12, message[sigma[10]], message[sigma[11]])
+            _blake2b_mix(state, 2, 7, 8, 13, message[sigma[12]], message[sigma[13]])
+            _blake2b_mix(state, 3, 4, 9, 14, message[sigma[14]], message[sigma[15]])
+        result[row_index] = chain[0] ^ state[0] ^ state[8]
+    return result
+
+
+def _blake2b_matchup_ids(composite: np.ndarray) -> np.ndarray:
+    with np.errstate(over="ignore"):
+        return _blake2b_matchup_ids_kernel(composite)
 
 
 @dataclass(frozen=True)
@@ -214,38 +315,63 @@ class _CountRouteWriter:
             route_kind="count",
             partition_count=self.partition_count,
         )
-        with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            for _ordinal, source, row_group in covered:
-                batches = _iter_row_group_batches(
-                    Path(source),
-                    row_group,
-                    columns=self.columns,
-                    batch_bytes=self.batch_bytes,
-                    expansion=max(2, len(self.strat_cols) + 1),
-                )
-                with closing(batches):
-                    for batch in batches:
-                        arrays = _extract_batch_arrays(
-                            batch,
-                            winner_col=self.winner_col,
-                            strat_cols=self.strat_cols,
-                            expected_root_seed=self.expected_root_seed,
-                        )
-                        records = _count_records(arrays)
-                        partitions = _stable_partitions(records, self.partition_count)
-                        for partition in range(self.partition_count):
-                            writer.write_batch(
-                                _count_records_to_batch(records[partitions == partition], schema)
-                            )
+        partials: list[np.ndarray] = []
+        pending: list[np.ndarray] = []
+        pending_bytes = 0
+        raw_records = 0
+        batch_reduced_records = 0
+        source_batches = 0
+        for batch, row_group_complete in _iter_covered_batches(
+            covered,
+            columns=self.columns,
+            batch_bytes=self.batch_bytes,
+            expansion=max(2, len(self.strat_cols) + 1),
+        ):
+            arrays = _extract_batch_arrays(
+                batch,
+                winner_col=self.winner_col,
+                strat_cols=self.strat_cols,
+                expected_root_seed=self.expected_root_seed,
+            )
+            source_batches += 1
+            raw_records += int(np.count_nonzero(arrays.seats >= 0)) + batch.num_rows
+            records = _count_records(arrays)
+            batch_reduced_records += records.size
+            if pending and pending_bytes + records.nbytes > self.batch_bytes:
+                partials.append(_reduce_count_array(np.concatenate(pending)))
+                pending = []
+                pending_bytes = 0
+            pending.append(records)
+            pending_bytes += records.nbytes
+            if row_group_complete:
                 report_worker_progress(
                     "rng_count_route_source_row_group_complete",
                     counters={"source_row_groups_completed": 1},
+                )
+        if pending:
+            partials.append(_reduce_count_array(np.concatenate(pending)))
+        if partials:
+            records = _reduce_count_array(
+                partials[0] if len(partials) == 1 else np.concatenate(partials)
+            )
+        else:
+            records = np.empty(0, dtype=_count_dtype(len(self.strat_cols)))
+        partitions = _stable_partitions(records, self.partition_count)
+        with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
+            for partition in range(self.partition_count):
+                writer.write_batch(
+                    _count_records_to_batch(records[partitions == partition], schema)
                 )
         report_worker_progress(
             "rng_count_route_unit_complete",
             counters={
                 "durable_route_units_completed": 1,
                 "route_row_groups_covered": len(covered),
+                "source_arrow_batches": source_batches,
+                "raw_count_records": raw_records,
+                "batch_reduced_count_records": batch_reduced_records,
+                "routed_count_records": records.size,
+                "route_arrow_batches": self.partition_count,
             },
         )
 
@@ -266,9 +392,9 @@ class _EligibilityWriter:
             runs: list[Path] = []
             spill_bytes = 0
             max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
+            pending: list[np.ndarray] = []
+            pending_bytes = 0
             for route_path_text in self.count_route_paths:
-                pending: list[np.ndarray] = []
-                pending_bytes = 0
                 route_path = Path(route_path_text)
                 for batch in _iter_route_partition_batches(
                     route_path,
@@ -286,12 +412,12 @@ class _EligibilityWriter:
                         pending_bytes = 0
                     pending.append(records)
                     pending_bytes += records.nbytes
-                if pending:
-                    spill_bytes += _write_count_spill(pending, temp, runs)
                 report_worker_progress(
                     "rng_count_reduce_route_open",
                     counters={"reducer_route_units_opened": 1},
                 )
+            if pending:
+                spill_bytes += _write_count_spill(pending, temp, runs)
             report_worker_progress(
                 "rng_count_spill_complete",
                 counters={
@@ -300,7 +426,9 @@ class _EligibilityWriter:
                     "route_units_scanned": len(self.count_route_paths),
                 },
             )
-            merged = _collapse_count_runs(runs, temp, dtype)
+            merged = _collapse_count_runs(
+                runs, temp, dtype, max_merge_input_bytes=max_spill_bytes * 2
+            )
             _write_eligibility_partition(
                 merged,
                 path,
@@ -341,39 +469,54 @@ class _StatsRouteWriter:
             route_kind="stats",
             partition_count=self.partition_count,
         )
-        with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
-            for _ordinal, source, row_group in covered:
-                batches = _iter_row_group_batches(
-                    Path(source),
-                    row_group,
-                    columns=self.columns,
-                    batch_bytes=self.batch_bytes,
-                    expansion=max(2, len(self.strat_cols) + 1),
-                )
-                with closing(batches):
-                    for batch in batches:
-                        arrays = _extract_batch_arrays(
-                            batch,
-                            winner_col=self.winner_col,
-                            strat_cols=self.strat_cols,
-                            expected_root_seed=self.expected_root_seed,
-                        )
-                        records = _observation_records(arrays)
-                        partitions = _stable_partitions(records, self.partition_count)
-                        for partition in range(self.partition_count):
-                            subset = records[partitions == partition]
-                            if subset.size:
-                                subset = subset[_membership_mask(subset, memberships[partition])]
-                            writer.write_batch(_observation_records_to_batch(subset, schema))
+        partition_chunks: list[list[np.ndarray]] = [[] for _ in range(self.partition_count)]
+        raw_records = 0
+        routed_records = 0
+        source_batches = 0
+        for batch, row_group_complete in _iter_covered_batches(
+            covered,
+            columns=self.columns,
+            batch_bytes=self.batch_bytes,
+            expansion=max(2, len(self.strat_cols) + 1),
+        ):
+            arrays = _extract_batch_arrays(
+                batch,
+                winner_col=self.winner_col,
+                strat_cols=self.strat_cols,
+                expected_root_seed=self.expected_root_seed,
+            )
+            source_batches += 1
+            records = _observation_records(arrays)
+            raw_records += records.size
+            partitions = _stable_partitions(records, self.partition_count)
+            for partition in np.unique(partitions):
+                partition_index = int(partition)
+                subset = records[partitions == partition]
+                subset = subset[_membership_mask(subset, memberships[partition_index])]
+                if subset.size:
+                    partition_chunks[partition_index].append(subset)
+                    routed_records += subset.size
+            if row_group_complete:
                 report_worker_progress(
                     "rng_stats_route_source_row_group_complete",
                     counters={"source_row_groups_completed": 1},
                 )
+        empty = np.empty(0, dtype=_observation_dtype(len(self.strat_cols)))
+        with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
+            for chunks in partition_chunks:
+                records = (
+                    chunks[0] if len(chunks) == 1 else np.concatenate(chunks) if chunks else empty
+                )
+                writer.write_batch(_observation_records_to_batch(records, schema))
         report_worker_progress(
             "rng_stats_route_unit_complete",
             counters={
                 "durable_route_units_completed": 1,
                 "route_row_groups_covered": len(covered),
+                "source_arrow_batches": source_batches,
+                "raw_stats_records": raw_records,
+                "routed_stats_records": routed_records,
+                "route_arrow_batches": self.partition_count,
             },
         )
 
@@ -393,9 +536,9 @@ class _StatsPartitionWriter:
             runs: list[Path] = []
             spill_bytes = 0
             max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
+            pending: list[np.ndarray] = []
+            pending_bytes = 0
             for route_path_text in self.stats_route_paths:
-                pending: list[np.ndarray] = []
-                pending_bytes = 0
                 route_path = Path(route_path_text)
                 for batch in _iter_route_partition_batches(
                     route_path,
@@ -413,12 +556,12 @@ class _StatsPartitionWriter:
                         pending_bytes = 0
                     pending.append(records)
                     pending_bytes += records.nbytes
-                if pending:
-                    spill_bytes += _write_observation_spill(pending, temp, runs)
                 report_worker_progress(
                     "rng_stats_reduce_route_open",
                     counters={"reducer_route_units_opened": 1},
                 )
+            if pending:
+                spill_bytes += _write_observation_spill(pending, temp, runs)
             report_worker_progress(
                 "rng_stats_spill_complete",
                 counters={
@@ -427,7 +570,9 @@ class _StatsPartitionWriter:
                     "route_units_scanned": len(self.stats_route_paths),
                 },
             )
-            merged = _collapse_observation_runs(runs, temp, dtype)
+            merged = _collapse_observation_runs(
+                runs, temp, dtype, max_merge_input_bytes=max_spill_bytes * 2
+            )
             _write_stats_partition(
                 merged,
                 path,
@@ -558,32 +703,75 @@ def run(
         *strat_cols,
     )
     partitions = int(cfg.analysis.rng_diagnostic_partitions)
+    ordered_k = tuple(sorted({int(k) for k in cfg.sim.n_players_list}))
+    if len(ordered_k) != len(data_partitions):
+        raise ValueError("RNG diagnostics combine partition inventory does not match configured k")
+    observation_itemsize = _observation_dtype(len(strat_cols)).itemsize
+    row_group_inventory: list[tuple[str, int, int]] = []
+    for path, k in zip(data_partitions, ordered_k, strict=True):
+        with pq.ParquetFile(path) as parquet:
+            for row_group in range(parquet.num_row_groups):
+                rows = int(parquet.metadata.row_group(row_group).num_rows)
+                row_group_inventory.append(
+                    (str(path), row_group, rows * (k + 1) * observation_itemsize)
+                )
     row_group_sources = tuple(
-        (ordinal, str(path), row_group)
-        for ordinal, (path, row_group) in enumerate(
-            (path, row_group)
-            for path in data_partitions
-            for row_group in range(_parquet_num_row_groups(path))
-        )
+        (ordinal, source, row_group)
+        for ordinal, (source, row_group, _expanded) in enumerate(row_group_inventory)
+    )
+    row_group_expanded_bytes = tuple(
+        expanded for _source, _row_group, expanded in row_group_inventory
     )
     row_groups = len(row_group_sources)
-    route_row_groups_per_unit = (
-        _ROUTE_ROW_GROUPS_PER_UNIT
-        if _route_row_groups_per_unit is None
-        else int(_route_row_groups_per_unit)
+    source_batch_bytes = int(
+        cfg.resources.stage_batch_bytes.get(
+            "rng_diagnostics_source",
+            cfg.resources.stage_batch_bytes.get(
+                "rng_diagnostics", cfg.resources.stage_batch_bytes["analysis"]
+            ),
+        )
     )
-    route_units = tuple(
-        _row_group_units(row_group_sources, row_groups_per_unit=route_row_groups_per_unit)
+    route_target_bytes = int(
+        cfg.resources.stage_batch_bytes.get("rng_diagnostics_route_unit", _DEFAULT_ROUTE_UNIT_BYTES)
     )
+    route_hard_bytes = max(
+        route_target_bytes,
+        int(
+            cfg.resources.stage_batch_bytes.get(
+                "rng_diagnostics_route_unit_hard", _DEFAULT_ROUTE_UNIT_HARD_BYTES
+            )
+        ),
+    )
+    reduce_run_bytes = int(
+        cfg.resources.stage_batch_bytes.get("rng_diagnostics_reduce_run", _DEFAULT_REDUCE_RUN_BYTES)
+    )
+    if _route_row_groups_per_unit is None:
+        route_units = tuple(
+            _byte_bounded_row_group_units(
+                row_group_sources,
+                row_group_expanded_bytes,
+                target_bytes=route_target_bytes,
+                hard_bytes=route_hard_bytes,
+            )
+        )
+        planner: dict[str, int | str] = {
+            "kind": "expanded_bytes",
+            "target_bytes": route_target_bytes,
+            "hard_bytes": route_hard_bytes,
+        }
+    else:
+        fixed_width = int(_route_row_groups_per_unit)
+        route_units = tuple(_row_group_units(row_group_sources, row_groups_per_unit=fixed_width))
+        planner = {"kind": "fixed_row_groups", "row_groups_per_unit": fixed_width}
     route_unit_count = len(route_units)
+    max_route_row_groups = max(
+        (int(unit.key[1]) - int(unit.key[0]) for unit in route_units), default=0
+    )
     route_layout_sha = _route_layout_sha256(
         row_group_sources,
-        row_groups_per_unit=route_row_groups_per_unit,
-    )
-    batch_bytes = int(
-        cfg.resources.stage_batch_bytes.get(
-            "rng_diagnostics", cfg.resources.stage_batch_bytes["analysis"]
-        )
+        units=route_units,
+        expanded_bytes=row_group_expanded_bytes,
+        planner=planner,
     )
     stage_root = cfg.rng_stage_dir / "checkpoints" / stage_config_sha[:20]
     source_sha = sha256_file(data_file)
@@ -599,7 +787,10 @@ def run(
             progress={
                 "source_row_groups_total": row_groups,
                 "durable_route_units_total": route_unit_count,
-                "route_row_groups_per_unit": route_row_groups_per_unit,
+                "route_planner": planner["kind"],
+                "route_unit_target_bytes": route_target_bytes,
+                "route_unit_hard_bytes": route_hard_bytes,
+                "max_route_row_groups_per_unit": max_route_row_groups,
             },
         )
     count_route = run_partitioned_stage(
@@ -618,7 +809,7 @@ def run(
             winner_col,
             strat_cols,
             partitions,
-            batch_bytes,
+            source_batch_bytes,
             root_seed,
         ),
         resources=cfg.resources,
@@ -653,7 +844,7 @@ def run(
             len(strat_cols),
             minimum_observations,
             root_seed,
-            max(256, batch_bytes // max(1, _count_dtype(len(strat_cols)).itemsize)),
+            max(256, reduce_run_bytes // max(1, _count_dtype(len(strat_cols)).itemsize)),
         ),
         resources=cfg.resources,
         requested_workers=cfg.analysis.n_jobs,
@@ -713,7 +904,10 @@ def run(
             progress={
                 "source_row_groups_total": row_groups,
                 "durable_route_units_total": route_unit_count,
-                "route_row_groups_per_unit": route_row_groups_per_unit,
+                "route_planner": planner["kind"],
+                "route_unit_target_bytes": route_target_bytes,
+                "route_unit_hard_bytes": route_hard_bytes,
+                "max_route_row_groups_per_unit": max_route_row_groups,
             },
         )
     stats_route = run_partitioned_stage(
@@ -737,9 +931,9 @@ def run(
             winner_col,
             strat_cols,
             partitions,
-            batch_bytes,
+            source_batch_bytes,
             root_seed,
-            max(batch_bytes * 4, 64 * 1024 * 1024),
+            max(source_batch_bytes * 4, 64 * 1024 * 1024),
         ),
         resources=cfg.resources,
         requested_workers=cfg.analysis.n_jobs,
@@ -778,7 +972,10 @@ def run(
             partitions,
             len(strat_cols),
             normalized_lags,
-            max(128, batch_bytes // 512),
+            max(
+                128,
+                reduce_run_bytes // max(1, _observation_dtype(len(strat_cols)).itemsize),
+            ),
         ),
         resources=cfg.resources,
         requested_workers=cfg.analysis.n_jobs,
@@ -840,7 +1037,10 @@ def run(
                 "stats_route_source_row_groups_completed": row_groups,
                 "stats_route_units_reused": stats_route.reused_units,
                 "stats_route_units_completed": stats_route.completed_units,
-                "route_row_groups_per_unit": route_row_groups_per_unit,
+                "route_planner": planner["kind"],
+                "route_unit_target_bytes": route_target_bytes,
+                "route_unit_hard_bytes": route_hard_bytes,
+                "max_route_row_groups_per_unit": max_route_row_groups,
                 "partitions": partitions,
                 "lags": len(normalized_lags),
                 "candidate_groups": capacity.total_candidate_group_count,
@@ -910,6 +1110,48 @@ def _row_group_units(
         )
 
 
+def _byte_bounded_row_group_units(
+    sources: Sequence[tuple[int, str, int]],
+    expanded_bytes: Sequence[int],
+    *,
+    target_bytes: int,
+    hard_bytes: int,
+) -> Iterator[PartitionedUnit]:
+    """Plan deterministic contiguous units using projected expanded record bytes."""
+
+    if len(sources) != len(expanded_bytes):
+        raise ValueError("RNG route byte inventory must cover every source row group")
+    if target_bytes < 1 or hard_bytes < target_bytes:
+        raise ValueError("RNG route byte targets must satisfy 0 < target <= hard")
+    for expected, ((ordinal, _source, row_group), size) in enumerate(
+        zip(sources, expanded_bytes, strict=True)
+    ):
+        if ordinal != expected or row_group < 0:
+            raise ValueError("RNG route sources must have contiguous valid coordinates")
+        if size < 0 or size > hard_bytes:
+            raise ResourceSafetyError(
+                f"RNG source row group {ordinal} projects to {size} expanded bytes; "
+                f"hard limit is {hard_bytes}"
+            )
+    width = max(5, len(str(max(0, len(sources) - 1))))
+    start = 0
+    accumulated = 0
+    for index, size in enumerate(expanded_bytes):
+        if index > start and accumulated + size > target_bytes:
+            yield PartitionedUnit(
+                (start, index),
+                f"row-groups-{start:0{width}d}-{index - 1:0{width}d}.arrow",
+            )
+            start = index
+            accumulated = 0
+        accumulated += size
+    if start < len(sources):
+        yield PartitionedUnit(
+            (start, len(sources)),
+            f"row-groups-{start:0{width}d}-{len(sources) - 1:0{width}d}.arrow",
+        )
+
+
 def _sources_for_route_unit(
     unit: PartitionedUnit,
     sources: Sequence[tuple[int, str, int]],
@@ -928,13 +1170,15 @@ def _sources_for_route_unit(
 def _route_layout_sha256(
     sources: Sequence[tuple[int, str, int]],
     *,
-    row_groups_per_unit: int,
+    units: Sequence[PartitionedUnit],
+    expanded_bytes: Sequence[int],
+    planner: dict[str, int | str],
 ) -> str:
-    units = tuple(_row_group_units(sources, row_groups_per_unit=row_groups_per_unit))
     payload = {
         "route_layout_version": _ROUTE_LAYOUT_VERSION,
-        "row_groups_per_unit": row_groups_per_unit,
+        "planner": planner,
         "source_row_groups": len(sources),
+        "expanded_bytes": list(expanded_bytes),
         "units": [
             {"key": list(unit.key), "relative_output": unit.relative_output} for unit in units
         ],
@@ -1010,26 +1254,86 @@ def _iter_row_group_batches(
 ) -> Generator[pa.RecordBatch, None, None]:
     """Yield projected batches whose Arrow bytes are bounded before expansion."""
 
+    with pq.ParquetFile(path) as parquet:
+        yield from _iter_open_parquet_row_group_batches(
+            parquet,
+            row_group,
+            columns=columns,
+            batch_bytes=batch_bytes,
+            expansion=expansion,
+        )
+
+
+def _iter_open_parquet_row_group_batches(
+    parquet: pq.ParquetFile,
+    row_group: int,
+    *,
+    columns: Sequence[str],
+    batch_bytes: int,
+    expansion: int,
+) -> Generator[pa.RecordBatch, None, None]:
+    """Yield bounded batches while reusing an already-open Parquet reader."""
+
     if batch_bytes < 1:
         raise ValueError("RNG diagnostic batch budget must be positive")
     projected_width = 8 * 4 + 8 + 4 * max(1, len(columns) - 5)
     batch_rows = max(1, min(65_536, batch_bytes // max(1, projected_width * expansion)))
-    with pq.ParquetFile(path) as parquet:
-        for batch in parquet.iter_batches(
-            batch_size=batch_rows,
-            row_groups=[row_group],
-            columns=list(columns),
-            use_threads=False,
-        ):
-            if batch.nbytes <= batch_bytes:
-                yield batch
+    for batch in parquet.iter_batches(
+        batch_size=batch_rows,
+        row_groups=[row_group],
+        columns=list(columns),
+        use_threads=False,
+    ):
+        if batch.nbytes <= batch_bytes:
+            yield batch
+            continue
+        rows_per_slice = max(1, int(batch.num_rows * batch_bytes / batch.nbytes))
+        for offset in range(0, batch.num_rows, rows_per_slice):
+            piece = batch.slice(offset, rows_per_slice)
+            if piece.nbytes > batch_bytes and piece.num_rows > 1:
+                raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
+            yield piece
+
+
+def _iter_covered_batches(
+    covered: Sequence[tuple[int, str, int]],
+    *,
+    columns: Sequence[str],
+    batch_bytes: int,
+    expansion: int,
+) -> Iterator[tuple[pa.RecordBatch, bool]]:
+    """Scan a route unit with one Parquet open per consecutive source path."""
+
+    current_path: str | None = None
+    parquet: pq.ParquetFile | None = None
+    try:
+        for _ordinal, source, row_group in covered:
+            if source != current_path:
+                if parquet is not None:
+                    parquet.close()
+                parquet = pq.ParquetFile(source)
+                current_path = source
+            assert parquet is not None
+            batches = iter(
+                _iter_open_parquet_row_group_batches(
+                    parquet,
+                    row_group,
+                    columns=columns,
+                    batch_bytes=batch_bytes,
+                    expansion=expansion,
+                )
+            )
+            try:
+                previous = next(batches)
+            except StopIteration:
                 continue
-            rows_per_slice = max(1, int(batch.num_rows * batch_bytes / batch.nbytes))
-            for offset in range(0, batch.num_rows, rows_per_slice):
-                piece = batch.slice(offset, rows_per_slice)
-                if piece.nbytes > batch_bytes and piece.num_rows > 1:
-                    raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
-                yield piece
+            for batch in batches:
+                yield previous, False
+                previous = batch
+            yield previous, True
+    finally:
+        if parquet is not None:
+            parquet.close()
 
 
 def _route_arrow_schema(
@@ -1045,7 +1349,7 @@ def _route_arrow_schema(
             b"farkle_rng_route_layout_version": str(_ROUTE_LAYOUT_VERSION).encode("ascii"),
             b"farkle_rng_route_kind": route_kind.encode("ascii"),
             b"farkle_rng_route_partition_count": str(partition_count).encode("ascii"),
-            b"farkle_rng_route_batch_layout": b"source_batch_then_partition",
+            b"farkle_rng_route_batch_layout": b"partition_contiguous",
         }
     )
 
@@ -1058,7 +1362,7 @@ def _iter_route_partition_batches(
     route_kind: str,
     expected_schema: pa.Schema,
 ) -> Iterator[pa.RecordBatch]:
-    """Yield one partition from each repeated partition block in a route file."""
+    """Yield one partition-contiguous batch from a route file."""
 
     if partition < 0 or partition >= partition_count:
         raise ValueError("RNG route partition is outside the declared layout")
@@ -1073,15 +1377,9 @@ def _iter_route_partition_batches(
             raise ValueError("RNG route file schema does not match its reducer")
         if metadata != expected_metadata:
             raise ValueError("RNG route file layout metadata is missing or incompatible")
-        if reader.num_record_batches % partition_count:
-            raise ValueError("RNG route file has an incomplete partition batch block")
-        for batch_index in range(partition, reader.num_record_batches, partition_count):
-            yield reader.get_batch(batch_index)
-
-
-def _parquet_num_row_groups(path: Path) -> int:
-    with pq.ParquetFile(path) as parquet:
-        return parquet.num_row_groups
+        if reader.num_record_batches != partition_count:
+            raise ValueError("RNG route file must contain exactly one batch per partition")
+        yield reader.get_batch(partition)
 
 
 def _column_numpy(batch: pa.RecordBatch, name: str, dtype: np.dtype[Any]) -> np.ndarray:
@@ -1171,17 +1469,10 @@ def _winner_from_seat_strings(
 
 
 def _matchup_ids(k: np.ndarray, sorted_seats: np.ndarray) -> np.ndarray:
-    composite = np.column_stack((k.astype(np.int32), sorted_seats))
-    unique, inverse = np.unique(composite, axis=0, return_inverse=True)
-    ids = np.empty(unique.shape[0], dtype=np.uint64)
-    for index, row in enumerate(unique):
-        digest = hashlib.blake2b(
-            np.asarray(row, dtype="<i4").tobytes(),
-            digest_size=8,
-            person=b"farkle-m",
-        ).digest()
-        ids[index] = int.from_bytes(digest, "little", signed=False)
-    return ids[inverse]
+    composite = np.ascontiguousarray(
+        np.column_stack((k.astype(np.int32), sorted_seats)), dtype=np.int32
+    )
+    return _blake2b_matchup_ids(composite)
 
 
 def _count_dtype(max_players: int) -> np.dtype[Any]:
@@ -1308,10 +1599,6 @@ def _count_batch_to_records(batch: pa.RecordBatch, dtype: np.dtype[Any]) -> np.n
     return records
 
 
-def _record_key(record: np.void, fields: Sequence[str]) -> tuple[int, ...]:
-    return tuple(int(record[name]) for name in fields)
-
-
 def _memmap_records(path: Path, dtype: np.dtype[Any]) -> np.memmap:
     size = path.stat().st_size // dtype.itemsize
     return np.memmap(path, dtype=dtype, mode="r", shape=(size,))
@@ -1369,66 +1656,56 @@ def _write_observation_spill(
 
 
 def _merge_count_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:
-    fields = _count_key_fields(dtype)
     arrays: list[np.memmap] = []
     try:
         arrays = [_memmap_records(path, dtype) for path in inputs]
-        heap: list[tuple[tuple[int, ...], int, int]] = []
-        for source, array in enumerate(arrays):
-            if array.size:
-                heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
-        buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
-        used = 0
-        with output.open("wb") as handle:
-            current_key: tuple[int, ...] | None = None
-            current: np.void | None = None
-            current_count = 0
-            while heap:
-                key, source, index = heapq.heappop(heap)
-                record = arrays[source][index]
-                if current_key is not None and key != current_key:
-                    assert current is not None
-                    buffer[used] = current
-                    buffer["count"][used] = current_count
-                    used += 1
-                    if used == buffer.size:
-                        buffer.tofile(handle)
-                        used = 0
-                if key != current_key:
-                    current_key = key
-                    current = record.copy()
-                    current_count = 0
-                current_count += int(record["count"])
-                next_index = index + 1
-                if next_index < arrays[source].size:
-                    heapq.heappush(
-                        heap,
-                        (_record_key(arrays[source][next_index], fields), source, next_index),
-                    )
-            if current_key is not None:
-                assert current is not None
-                buffer[used] = current
-                buffer["count"][used] = current_count
-                used += 1
-            if used:
-                buffer[:used].tofile(handle)
+        populated = [np.asarray(array) for array in arrays if array.size]
+        combined = np.concatenate(populated) if populated else np.empty(0, dtype=dtype)
+        _reduce_count_array(combined).tofile(output)
     finally:
         for array in arrays:
             _close_memmap(array)
 
 
-def _collapse_count_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype[Any]) -> Path:
+def _bounded_merge_groups(paths: Sequence[Path], *, max_input_bytes: int) -> Iterator[list[Path]]:
+    """Group sorted runs by both fan-in and a deterministic byte ceiling."""
+
+    group: list[Path] = []
+    group_bytes = 0
+    for path in paths:
+        size = path.stat().st_size
+        if group and (
+            len(group) >= _RUN_MERGE_FAN_IN
+            or (len(group) >= 2 and group_bytes + size > max_input_bytes)
+        ):
+            yield group
+            group = []
+            group_bytes = 0
+        group.append(path)
+        group_bytes += size
+    if group:
+        yield group
+
+
+def _collapse_count_runs(
+    runs: Sequence[Path],
+    temp: Path,
+    dtype: np.dtype[Any],
+    *,
+    max_merge_input_bytes: int | None = None,
+) -> Path:
     if not runs:
         empty = temp / "empty.bin"
         empty.write_bytes(b"")
         return empty
     current = list(runs)
+    merge_bytes = max_merge_input_bytes or sys.maxsize
     generation = 0
     while len(current) > 1:
         next_generation: list[Path] = []
-        for start in range(0, len(current), _RUN_MERGE_FAN_IN):
+        for inputs in _bounded_merge_groups(current, max_input_bytes=merge_bytes):
             output = temp / f"merge-{generation:03d}-{len(next_generation):05d}.bin"
-            _merge_count_files(current[start : start + _RUN_MERGE_FAN_IN], output, dtype)
+            _merge_count_files(inputs, output, dtype)
             next_generation.append(output)
         report_worker_progress(
             "rng_count_merge_pass",
@@ -1969,51 +2246,43 @@ def _observation_sort_order(records: np.ndarray) -> np.ndarray:
 def _merge_observation_files(inputs: Sequence[Path], output: Path, dtype: np.dtype[Any]) -> None:
     fields = _observation_sort_fields(dtype)
     arrays: list[np.memmap] = []
+    output.touch()
     try:
         arrays = [_memmap_records(path, dtype) for path in inputs]
-        heap: list[tuple[tuple[int, ...], int, int]] = []
-        for source, array in enumerate(arrays):
-            if array.size:
-                heapq.heappush(heap, (_record_key(array[0], fields), source, 0))
-        buffer = np.empty(_RUN_WRITE_ROWS, dtype=dtype)
-        used = 0
-        previous: tuple[int, ...] | None = None
-        with output.open("wb") as handle:
-            while heap:
-                key, source, index = heapq.heappop(heap)
-                if key == previous:
-                    raise ValueError("duplicate RNG diagnostic semantic observation coordinate")
-                previous = key
-                buffer[used] = arrays[source][index]
-                used += 1
-                if used == buffer.size:
-                    buffer.tofile(handle)
-                    used = 0
-                next_index = index + 1
-                if next_index < arrays[source].size:
-                    heapq.heappush(
-                        heap,
-                        (_record_key(arrays[source][next_index], fields), source, next_index),
-                    )
-            if used:
-                buffer[:used].tofile(handle)
+        populated = [np.asarray(array) for array in arrays if array.size]
+        records = np.concatenate(populated) if populated else np.empty(0, dtype=dtype)
+        ordered = records[_observation_sort_order(records)]
+        if ordered.size > 1:
+            duplicate = np.ones(ordered.size - 1, dtype=bool)
+            for name in fields:
+                duplicate &= ordered[name][1:] == ordered[name][:-1]
+            if np.any(duplicate):
+                raise ValueError("duplicate RNG diagnostic semantic observation coordinate")
+        ordered.tofile(output)
     finally:
         for array in arrays:
             _close_memmap(array)
 
 
-def _collapse_observation_runs(runs: Sequence[Path], temp: Path, dtype: np.dtype[Any]) -> Path:
+def _collapse_observation_runs(
+    runs: Sequence[Path],
+    temp: Path,
+    dtype: np.dtype[Any],
+    *,
+    max_merge_input_bytes: int | None = None,
+) -> Path:
     if not runs:
         empty = temp / "empty.bin"
         empty.write_bytes(b"")
         return empty
     current = list(runs)
+    merge_bytes = max_merge_input_bytes or sys.maxsize
     generation = 0
     while len(current) > 1:
         next_generation: list[Path] = []
-        for start in range(0, len(current), _RUN_MERGE_FAN_IN):
+        for inputs in _bounded_merge_groups(current, max_input_bytes=merge_bytes):
             output = temp / f"merge-{generation:03d}-{len(next_generation):05d}.bin"
-            _merge_observation_files(current[start : start + _RUN_MERGE_FAN_IN], output, dtype)
+            _merge_observation_files(inputs, output, dtype)
             next_generation.append(output)
         report_worker_progress(
             "rng_stats_merge_pass",
@@ -2074,6 +2343,49 @@ class _OnlineMetric:
         if den_x <= 0.0 or den_y <= 0.0:
             return None, "zero_variance"
         return float(numerator / (den_x * den_y) ** 0.5), "estimated"
+
+
+@njit(cache=True, nogil=True)
+def _compiled_online_sums(
+    values: np.ndarray, lags: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Accumulate lag products in the same sequential order as ``_OnlineMetric``."""
+
+    pair_count = np.zeros(lags.size, dtype=np.int64)
+    sum_x = np.zeros(lags.size, dtype=np.float64)
+    sum_y = np.zeros(lags.size, dtype=np.float64)
+    sum_x2 = np.zeros(lags.size, dtype=np.float64)
+    sum_y2 = np.zeros(lags.size, dtype=np.float64)
+    sum_xy = np.zeros(lags.size, dtype=np.float64)
+    for observation in range(values.size):
+        current = float(values[observation])
+        for index in range(lags.size):
+            lag = int(lags[index])
+            if observation >= lag:
+                earlier = float(values[observation - lag])
+                pair_count[index] += 1
+                sum_x[index] += earlier
+                sum_y[index] += current
+                sum_x2[index] += earlier * earlier
+                sum_y2[index] += current * current
+                sum_xy[index] += earlier * current
+    return pair_count, sum_x, sum_y, sum_x2, sum_y2, sum_xy
+
+
+def _compiled_metric(values: np.ndarray, lags: tuple[int, ...]) -> _OnlineMetric:
+    lag_array = np.asarray(lags, dtype=np.int64)
+    pair_count, sum_x, sum_y, sum_x2, sum_y2, sum_xy = _compiled_online_sums(
+        np.asarray(values), lag_array
+    )
+    metric = _OnlineMetric(lags)
+    metric.n_obs = int(values.size)
+    metric.pair_count = pair_count
+    metric.sum_x = sum_x
+    metric.sum_y = sum_y
+    metric.sum_x2 = sum_x2
+    metric.sum_y2 = sum_y2
+    metric.sum_xy = sum_xy
+    return metric
 
 
 def _stats_schema() -> pa.Schema:
@@ -2171,35 +2483,30 @@ def _write_stats_partition(
     records = _memmap_records(merged, dtype) if merged.stat().st_size else np.empty(0, dtype=dtype)
     try:
         buffered: list[dict[str, Any]] = []
-        current_identity: tuple[int, ...] | None = None
-        rounds: _OnlineMetric | None = None
-        wins: _OnlineMetric | None = None
+        identity_fields = ("group_type", "k", "group_id", *_participant_fields(dtype))
+        starts = np.zeros(records.size, dtype=bool)
+        if records.size:
+            starts[0] = True
+            for name in identity_fields:
+                starts[1:] |= records[name][1:] != records[name][:-1]
+        boundaries = np.append(np.flatnonzero(starts), records.size)
         with pq.ParquetWriter(output, schema, compression="snappy", use_dictionary=True) as writer:
-            for record in records:
-                identity = _group_identity(record, dtype)
-                if identity != current_identity:
-                    if current_identity is not None:
-                        assert rounds is not None
-                        buffered.extend(
-                            _rows_for_online_group(
-                                current_identity, lags=lags, rounds=rounds, wins=wins
-                            )
-                        )
-                        if len(buffered) >= batch_rows:
-                            writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
-                            buffered.clear()
-                    current_identity = identity
-                    rounds = _OnlineMetric(lags)
-                    wins = _OnlineMetric(lags) if identity[0] == _GROUP_STRATEGY else None
-                assert rounds is not None
-                rounds.push(float(record["n_rounds"]))
-                if wins is not None:
-                    wins.push(float(record["win_indicator"]))
-            if current_identity is not None:
-                assert rounds is not None
-                buffered.extend(
-                    _rows_for_online_group(current_identity, lags=lags, rounds=rounds, wins=wins)
+            for boundary_index in range(max(0, boundaries.size - 1)):
+                start = int(boundaries[boundary_index])
+                stop = int(boundaries[boundary_index + 1])
+                identity = _group_identity(records[start], dtype)
+                rounds = _compiled_metric(records["n_rounds"][start:stop], lags)
+                wins = (
+                    _compiled_metric(records["win_indicator"][start:stop], lags)
+                    if identity[0] == _GROUP_STRATEGY
+                    else None
                 )
+                buffered.extend(
+                    _rows_for_online_group(identity, lags=lags, rounds=rounds, wins=wins)
+                )
+                if len(buffered) >= batch_rows:
+                    writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
+                    buffered.clear()
             if buffered:
                 writer.write_table(pa.Table.from_pylist(buffered, schema=schema))
     finally:

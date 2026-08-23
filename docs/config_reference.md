@@ -83,6 +83,15 @@ sets the stable external partition count used for counting, eligibility,
 ordering, and resumable lag reduction. All three fields participate in
 RNG-diagnostic freshness.
 
+RNG physical execution uses four execution-only `resources.stage_batch_bytes`
+entries: `rng_diagnostics_source` bounds projected source batches,
+`rng_diagnostics_route_unit` targets expanded route-unit bytes,
+`rng_diagnostics_route_unit_hard` rejects an indivisible oversized source row
+group, and `rng_diagnostics_reduce_run` bounds initial reducer runs. The exact
+route and reducer phase names may also appear in
+`resources.estimated_worker_memory_mb`; these values control admission only and
+do not change RNG statistical freshness.
+
 The workload planner chooses the smallest shuffle count meeting the Wilson
 target, then rounds upward to 100 equal contiguous batches. A cap that is too
 small produces `blocked_by_cap` before simulation work begins.
@@ -177,6 +186,9 @@ process pools collapse to one process, and `stage_batch_bytes` bounds projected
 Arrow batches. Resource controls and resolved policies are authenticated in
 run-context contract v2 but are excluded from statistical freshness; focused
 worker-count, ordering, and batch-boundary invariance tests protect that split.
+RNG route units are planned greedily in canonical source-row-group order using
+the expanded fixed-width observation size. The production defaults target 64
+MiB, permit one row group through 96 MiB, and use 256 MiB reducer runs.
 The `all_player_metrics` byte budget is applied to the k-dependent wide source
 projection; `performance` bounds mapped-matrix column work, and
 `performance_bootstrap` supplies the per-worker memory estimate for independent

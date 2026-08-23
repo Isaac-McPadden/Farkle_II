@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import shutil
 import statistics
@@ -36,9 +37,19 @@ from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.telemetry import sample_process_resource_state
 from farkle.utils.writer import atomic_path
 
-BENCHMARK_VERSION: Final = 1
+BENCHMARK_VERSION: Final = 2
 SAFE_PREFIX: Final = "farkle-task3b-"
 MARKER_NAME: Final = ".farkle-task3b-owned.json"
+PRODUCTION_GAMES_BY_K: Final = {
+    2: 11_094_000,
+    3: 7_396_000,
+    4: 5_547_000,
+    5: 4_437_600,
+    6: 3_698_000,
+    8: 2_773_500,
+    10: 2_218_800,
+    12: 1_849_000,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +60,9 @@ class Scenario:
     repetition: int
     order_position: int
     warmup: bool = False
+    rows_per_group: int = 1
+    diagnostic_partitions: int = 8
+    production_k_mix: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,25 +156,49 @@ def _run_tasks(tasks: list[_WriterTask], workers: int) -> tuple[list[dict[str, A
     return results, time.perf_counter() - started
 
 
-def _fixture_table(row_groups: int) -> pa.Table:
+def _fixture_table(
+    row_groups: int,
+    rows_per_group: int = 1,
+    *,
+    k: int = 2,
+    max_players: int = 2,
+) -> pa.Table:
     rows = []
-    matchups = ((1, 2), (1, 3), (2, 3), (4, 5))
     for shuffle_index in range(row_groups):
-        p1, p2 = matchups[shuffle_index % len(matchups)]
-        rows.append(
-            {
+        for game_index in range(rows_per_group):
+            coordinate = shuffle_index * rows_per_group + game_index
+            if k == 2 and max_players == 2 and rows_per_group == 1:
+                matchups = ((1, 2), (1, 3), (2, 3), (4, 5))
+                p1, p2 = matchups[shuffle_index % len(matchups)]
+                participants = [p1, p2]
+                winner = p2 if shuffle_index % 3 == 0 else p1
+                n_rounds = 2 + (shuffle_index * 7) % 13
+            else:
+                participants = [
+                    (coordinate * 104_729 + shuffle_index * 31 + seat * 997 + k) % 5_160
+                    for seat in range(k)
+                ]
+                winner = participants[coordinate % k]
+                n_rounds = 2 + (coordinate * 7 + k) % 13
+            row = {
                 "root_seed": 9,
-                "k": 2,
+                "k": k,
                 "shuffle_index": shuffle_index,
-                "game_index": 0,
+                "game_index": game_index,
                 "rng_scheme_version": RNG_SCHEME_VERSION,
                 "rng_purpose_namespace": int(RandomPurpose.TOURNAMENT_GAME),
-                "n_rounds": 2 + (shuffle_index * 7) % 13,
-                "winner_strategy": p2 if shuffle_index % 3 == 0 else p1,
-                "P1_strategy": p1,
-                "P2_strategy": p2,
+                "n_rounds": n_rounds,
+                "winner_strategy": winner,
             }
-        )
+            row.update(
+                {
+                    f"P{seat + 1}_strategy": (
+                        participants[seat] if seat < k else rng_diagnostics._MISSING_STRATEGY
+                    )
+                    for seat in range(max_players)
+                }
+            )
+            rows.append(row)
     schema = pa.schema(
         [
             pa.field("root_seed", pa.int64(), nullable=False),
@@ -171,28 +209,47 @@ def _fixture_table(row_groups: int) -> pa.Table:
             pa.field("rng_purpose_namespace", pa.int16(), nullable=False),
             pa.field("n_rounds", pa.int32(), nullable=False),
             pa.field("winner_strategy", pa.int32(), nullable=False),
-            pa.field("P1_strategy", pa.int32(), nullable=False),
-            pa.field("P2_strategy", pa.int32(), nullable=False),
+            *[
+                pa.field(f"P{seat + 1}_strategy", pa.int32(), nullable=False)
+                for seat in range(max_players)
+            ],
         ]
     )
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-def _write_source(path: Path, table: pa.Table) -> None:
+def _write_source(path: Path, table: pa.Table, rows_per_group: int = 1) -> None:
     with pq.ParquetWriter(path, table.schema, compression="zstd") as writer:
-        for index in range(table.num_rows):
-            writer.write_table(table.slice(index, 1))
+        for offset in range(0, table.num_rows, rows_per_group):
+            writer.write_table(table.slice(offset, rows_per_group))
 
 
-def _write_selection(path: Path, table: pa.Table, partition_count: int) -> None:
+def _production_row_group_counts(total: int) -> dict[int, int]:
+    """Allocate a bounded fixture across k using the production game proportions."""
+
+    if total < len(PRODUCTION_GAMES_BY_K):
+        raise ValueError("production-k-mix scenarios require at least one row group per k")
+    remaining = total - len(PRODUCTION_GAMES_BY_K)
+    weight_total = sum(PRODUCTION_GAMES_BY_K.values())
+    exact = {k: remaining * games / weight_total for k, games in PRODUCTION_GAMES_BY_K.items()}
+    counts = {k: 1 + math.floor(value) for k, value in exact.items()}
+    unassigned = total - sum(counts.values())
+    for k in sorted(exact, key=lambda value: (-(exact[value] % 1), value))[:unassigned]:
+        counts[k] += 1
+    return counts
+
+
+def _write_selection(
+    path: Path, table: pa.Table, partition_count: int, strat_cols: tuple[str, ...]
+) -> None:
     arrays = rng_diagnostics._extract_batch_arrays(
-        table.to_batches()[0],
+        table.combine_chunks().to_batches(max_chunksize=max(1, table.num_rows))[0],
         winner_col="winner_strategy",
-        strat_cols=("P1_strategy", "P2_strategy"),
+        strat_cols=strat_cols,
         expected_root_seed=9,
     )
     counts = rng_diagnostics._count_records(arrays)
-    dtype = rng_diagnostics._selection_key_dtype(2)
+    dtype = rng_diagnostics._selection_key_dtype(len(strat_cols))
     selected = np.empty(counts.size, dtype=dtype)
     for name in dtype.names or ():
         selected[name] = counts[name]
@@ -240,12 +297,47 @@ def _projected_source_bytes(path: Path, columns: tuple[str, ...]) -> int:
 
 def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
     root.mkdir(parents=True)
-    table = _fixture_table(scenario.source_row_groups)
-    source = root / "source.parquet"
+    row_groups_by_k = (
+        _production_row_group_counts(scenario.source_row_groups)
+        if scenario.production_k_mix
+        else {2: scenario.source_row_groups}
+    )
+    max_players = max(row_groups_by_k)
+    tables = {
+        k: _fixture_table(
+            row_groups,
+            scenario.rows_per_group,
+            k=k,
+            max_players=max_players,
+        )
+        for k, row_groups in row_groups_by_k.items()
+    }
+    table = pa.concat_tables(list(tables.values()))
+    source_paths: list[Path] = []
+    source_inventory: list[tuple[int, str, int]] = []
+    for k, source_table in tables.items():
+        source = root / f"source-{k}p.parquet"
+        _write_source(source, source_table, scenario.rows_per_group)
+        source_paths.append(source)
+        for row_group in range(row_groups_by_k[k]):
+            source_inventory.append((len(source_inventory), str(source), row_group))
     selection = root / "selection.parquet"
-    _write_source(source, table)
-    _write_selection(selection, table, 8)
-    sources = tuple((index, str(source), index) for index in range(scenario.source_row_groups))
+    partition_count = scenario.diagnostic_partitions
+    strat_cols = tuple(f"P{seat + 1}_strategy" for seat in range(max_players))
+    source_batch_bytes = 32 * 1024 * 1024 if scenario.production_k_mix else 4096
+    reduce_run_bytes = 256 * 1024 * 1024 if scenario.production_k_mix else 0
+    count_batch_rows = (
+        reduce_run_bytes // rng_diagnostics._count_dtype(max_players).itemsize
+        if scenario.production_k_mix
+        else 256
+    )
+    stats_batch_rows = (
+        reduce_run_bytes // rng_diagnostics._observation_dtype(max_players).itemsize
+        if scenario.production_k_mix
+        else 128
+    )
+    _write_selection(selection, table, partition_count, strat_cols)
+    sources = tuple(source_inventory)
     units = tuple(
         rng_diagnostics._row_group_units(sources, row_groups_per_unit=scenario.row_groups_per_unit)
     )
@@ -258,8 +350,7 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
         "rng_purpose_namespace",
         "n_rounds",
         "winner_strategy",
-        "P1_strategy",
-        "P2_strategy",
+        *strat_cols,
     )
     count_dir = root / "count_route"
     eligibility_dir = root / "eligibility"
@@ -274,7 +365,13 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
     started_cpu = time.process_time()
     with _Sampler() as sampler:
         count_writer = rng_diagnostics._CountRouteWriter(
-            sources, columns, "winner_strategy", ("P1_strategy", "P2_strategy"), 8, 4096, 9
+            sources,
+            columns,
+            "winner_strategy",
+            strat_cols,
+            partition_count,
+            source_batch_bytes,
+            9,
         )
         tasks = [
             _WriterTask(count_writer, unit, str(count_dir / unit.relative_output)) for unit in units
@@ -283,14 +380,16 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
         all_results.extend(results)
         count_paths = tuple(str(count_dir / unit.relative_output) for unit in units)
 
-        eligibility_writer = rng_diagnostics._EligibilityWriter(count_paths, 8, 2, 3, 9, 256)
+        eligibility_writer = rng_diagnostics._EligibilityWriter(
+            count_paths, partition_count, max_players, 3, 9, count_batch_rows
+        )
         tasks = [
             _WriterTask(
                 eligibility_writer,
                 rng_diagnostics.PartitionedUnit((partition,), f"part-{partition:03d}.parquet"),
                 str(eligibility_dir / f"part-{partition:03d}.parquet"),
             )
-            for partition in range(8)
+            for partition in range(partition_count)
         ]
         results, phase_wall["count_reduce"] = _run_tasks(tasks, scenario.workers)
         all_results.extend(results)
@@ -300,9 +399,9 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
             str(selection),
             columns,
             "winner_strategy",
-            ("P1_strategy", "P2_strategy"),
-            8,
-            4096,
+            strat_cols,
+            partition_count,
+            source_batch_bytes,
             9,
             64 * 1024 * 1024,
         )
@@ -314,14 +413,16 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
         all_results.extend(results)
         stats_paths = tuple(str(stats_route_dir / unit.relative_output) for unit in units)
 
-        stats_partition_writer = rng_diagnostics._StatsPartitionWriter(stats_paths, 8, 2, (1,), 128)
+        stats_partition_writer = rng_diagnostics._StatsPartitionWriter(
+            stats_paths, partition_count, max_players, (1,), stats_batch_rows
+        )
         tasks = [
             _WriterTask(
                 stats_partition_writer,
                 rng_diagnostics.PartitionedUnit((partition,), f"part-{partition:03d}.parquet"),
                 str(stats_dir / f"part-{partition:03d}.parquet"),
             )
-            for partition in range(8)
+            for partition in range(partition_count)
         ]
         results, phase_wall["stats_reduce"] = _run_tasks(tasks, scenario.workers)
         all_results.extend(results)
@@ -343,11 +444,15 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
         "route_layout_version": rng_diagnostics._ROUTE_LAYOUT_VERSION,
         "partition_schema_version": rng_diagnostics._PARTITION_SCHEMA_VERSION,
         "diagnostic_method_version": rng_diagnostics._DIAGNOSTIC_METHOD_VERSION,
-        "diagnostic_partitions": 8,
+        "diagnostic_partitions": partition_count,
+        "source_batch_bytes": source_batch_bytes,
+        "reduce_run_bytes": reduce_run_bytes,
+        "source_rows_by_k": {str(k): value.num_rows for k, value in tables.items()},
         "source_rows": table.num_rows,
         "source_row_groups": scenario.source_row_groups,
-        "source_file_bytes": source.stat().st_size,
-        "source_read_bytes": _projected_source_bytes(source, columns) * 2,
+        "source_file_bytes": sum(path.stat().st_size for path in source_paths),
+        "source_read_bytes": sum(_projected_source_bytes(path, columns) for path in source_paths)
+        * 2,
         "source_read_bytes_definition": (
             "selected-column compressed bytes across count and stats route scans; "
             "excludes repeated Parquet footer bytes"
@@ -356,7 +461,14 @@ def run_scenario(root: Path, scenario: Scenario) -> dict[str, Any]:
         "durable_route_files": len(route_files),
         "durable_route_unit_stamps": len(route_files),
         "route_bytes": route_bytes,
-        "reducer_route_unit_opens": len(units) * 8 * 2,
+        "source_arrow_batches": int(counters.get("source_arrow_batches", 0)),
+        "route_arrow_batches": int(counters.get("route_arrow_batches", 0)),
+        "raw_count_records": int(counters.get("raw_count_records", 0)),
+        "batch_reduced_count_records": int(counters.get("batch_reduced_count_records", 0)),
+        "routed_count_records": int(counters.get("routed_count_records", 0)),
+        "raw_stats_records": int(counters.get("raw_stats_records", 0)),
+        "routed_stats_records": int(counters.get("routed_stats_records", 0)),
+        "reducer_route_unit_opens": len(units) * partition_count * 2,
         "selection_membership_loads": len(units),
         "initial_spill_runs": int(counters.get("spill_runs_created", 0)),
         "initial_spill_bytes": int(counters.get("spill_bytes_written", 0)),
@@ -515,25 +627,50 @@ def run_benchmark(
     repetitions: int,
     include_two_workers: bool,
     resume: bool = False,
+    rows_per_group: int = 1,
+    diagnostic_partitions: int = 8,
+    production_k_mix: bool = False,
 ) -> dict[str, Any]:
     settings: dict[str, object] = {
         "scales": list(scales),
         "range_sizes": list(range_sizes),
         "repetitions": repetitions,
-        "diagnostic_partitions": 8,
+        "diagnostic_partitions": diagnostic_partitions,
         "alternating_order": True,
         "warmup": True,
         "include_two_workers": include_two_workers,
+        "rows_per_group": rows_per_group,
+        "production_k_mix": production_k_mix,
     }
     root = _prepare_root(root, settings, resume=resume)
     measurements: list[dict[str, Any]] = []
-    warmup = Scenario(min(scales), max(range_sizes), 1, 0, 0, True)
+    warmup = Scenario(
+        min(scales),
+        max(range_sizes),
+        1,
+        0,
+        0,
+        True,
+        rows_per_group,
+        diagnostic_partitions,
+        production_k_mix,
+    )
     measurements.append(_recorded_scenario(root, "warmup", warmup))
     for scale in scales:
         for repetition in range(1, repetitions + 1):
             order = range_sizes if repetition % 2 else tuple(reversed(range_sizes))
             for position, range_size in enumerate(order, start=1):
-                scenario = Scenario(scale, range_size, 1, repetition, position)
+                scenario = Scenario(
+                    scale,
+                    range_size,
+                    1,
+                    repetition,
+                    position,
+                    False,
+                    rows_per_group,
+                    diagnostic_partitions,
+                    production_k_mix,
+                )
                 measurements.append(
                     _recorded_scenario(
                         root,
@@ -542,7 +679,17 @@ def run_benchmark(
                     )
                 )
         if include_two_workers:
-            scenario = Scenario(scale, max(range_sizes), 2, 1, 1)
+            scenario = Scenario(
+                scale,
+                max(range_sizes),
+                2,
+                1,
+                1,
+                False,
+                rows_per_group,
+                diagnostic_partitions,
+                production_k_mix,
+            )
             measurements.append(
                 _recorded_scenario(root, f"rg{scale}-range{max(range_sizes)}-w2-r1", scenario)
             )
@@ -565,12 +712,24 @@ def main() -> int:
     parser.add_argument("--scales", type=int, nargs="+", default=(256, 1024))
     parser.add_argument("--range-sizes", type=int, nargs="+", default=(1, 16, 32))
     parser.add_argument("--repetitions", type=int, default=2)
+    parser.add_argument("--rows-per-group", type=int, default=1)
+    parser.add_argument("--diagnostic-partitions", type=int, default=8)
+    parser.add_argument("--production-k-mix", action="store_true")
     parser.add_argument("--skip-two-workers", action="store_true")
     parser.add_argument("--keep-work", action="store_true")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    if args.repetitions < 1 or any(value < 1 for value in (*args.scales, *args.range_sizes)):
-        parser.error("scales, range sizes, and repetitions must be positive")
+    if (
+        args.repetitions < 1
+        or args.rows_per_group < 1
+        or args.diagnostic_partitions < 1
+        or (args.production_k_mix and min(args.scales) < len(PRODUCTION_GAMES_BY_K))
+        or any(value < 1 for value in (*args.scales, *args.range_sizes))
+    ):
+        parser.error(
+            "scales, range sizes, rows per group, partitions, and repetitions must be positive; "
+            "production-k-mix scales must cover every configured k"
+        )
     owned_temporary = args.work_root is None
     root = (
         Path(tempfile.gettempdir()) / f"{SAFE_PREFIX}{time.time_ns()}"
@@ -584,6 +743,9 @@ def main() -> int:
         repetitions=args.repetitions,
         include_two_workers=not args.skip_two_workers,
         resume=args.resume,
+        rows_per_group=args.rows_per_group,
+        diagnostic_partitions=args.diagnostic_partitions,
+        production_k_mix=args.production_k_mix,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(args.output)) as staged:

@@ -65,13 +65,14 @@ Preserve these invariants:
   are never quarantined for a soft warning, and roots fail fast before pair work;
 - byte-bounded streaming, atomic durable units, and exact resume are permanent
   engineering invariants; a fixed 1 GiB process-tree ceiling is not;
-- RNG diagnostic checkpoint route-layout v2 groups the canonical source-row-group
-  sequence into deterministic contiguous ranges of at most 32 row groups. Route
-  units stream one source row group and projected Arrow batch at a time, declare
-  their repeated partition-batch layout in Arrow metadata, and reducers consume
-  the already authenticated manifest inventory. Partition checkpoint schema v2
-  prevents reuse of the former one-row-group route layout; RNG method v4,
-  cache-key v6, statistical identity, and canonical output schemas are unchanged;
+- RNG diagnostic checkpoint route-layout v3 greedily groups the canonical
+  source-row-group sequence by expanded fixed-width bytes (64 MiB target, 96 MiB
+  hard ceiling). Combine emits coalesced configured-size row groups; route workers
+  reuse readers, reduce counts across whole route units, and publish one batch per
+  partition. Reducers fill 256 MiB runs across route boundaries and use bounded
+  array merges; exact compiled BLAKE2b and lag kernels remove Python record loops.
+  Partition checkpoint schema v3 prevents v2 reuse; RNG method v4, cache-key v6,
+  statistical identity, and canonical output schemas are unchanged;
 - simulation v3 publication is producer-owned: staged data is hashed and
   sidecarred without a canonical data rewrite, coordinate-sorted native
   manifests reuse those identities, routine completion/resume is metadata-fast,
@@ -156,10 +157,10 @@ Preserve these invariants:
   publication. Compatible no-force replay preserves authenticated run-context
   bytes when only live host-memory telemetry changes; incompatible identity
   fails before publication.
-- Task 5A's bounded capacity gate derives the current production plan as 5,160
+- Task 5A's historical pre-optimization capacity gate derived the production plan as 5,160
   strategies, 39,013,900 games and 177,504,000 player exposures per root,
   34,400 source row groups, and 1,075 route units at the accepted width of 32.
-  Current fan-in-32 RNG reduction has three production merge generations per
+  The historical fan-in-32 RNG reduction had three projected merge generations per
   reducer route (the historical four-pass count predates route coarsening). The
   150-candidate envelope has 11,175 pairs, 44,700 blocks, and 97,937,700 planned
   completed H2H games. The machine/storage projection is 10.47 days central,
@@ -167,6 +168,15 @@ Preserve these invariants:
   is `not_capacity_ready`. This is capacity evidence only: it does not authorize
   Task 5B, a production run, optimization, local scratch, or statistical-scope
   changes.
+- The current RNG route-layout v3 production dimensions are 613 coalesced combine
+  row groups and 393 byte-planned route units per root. The largest projected
+  expanded unit is 78,208,000 bytes under the 96 MiB hard ceiling. Accepted
+  bounded benchmarks preserve the historical final digests and measure 5.06x to
+  9.06x speedups; the production-`k` mix benchmark covers all configured game
+  sizes with full 12-seat records. The conservative central two-root RNG update
+  is 33.1 hours. The refreshed full-pipeline model is 114.50 hours central with
+  a 9.03-day planning upper, so this is not a production-run authorization and
+  the pipeline remains `not_capacity_ready`.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and
