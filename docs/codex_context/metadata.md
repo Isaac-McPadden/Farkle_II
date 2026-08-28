@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-20`
+- Reconciled date: `2026-08-27`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -270,6 +270,20 @@ changing code or accepting a statistical conclusion.
   with a 9.03-day planning upper and a retained `not_capacity_ready` verdict.
   Reducer scratch already resolves to local OS temp, and Task 3A's 6.3% location
   effect remains below the 10% scratch gate.
+  Task 7A then reconciles the accepted post-Task-6 seeds-56/57 tree against the
+  historical seeds-54/55 tree. Task 6 corrected combine from 3,600 physical row
+  groups averaging 25.33 rows to six groups averaging 15,200 rows and reduced
+  compressed padded-player-column bytes from 18,420,000 to 34,900. Current H2H
+  finalized blocks remain metadata-heavy: 180 block files plus the aggregate use
+  4,000,949 footer bytes out of 4,818,436 Parquet bytes, while accepted telemetry
+  measures 100.765 seconds of checkpoint work inside the 171.688-second H2H
+  stage. A diagnostic fixture groups the exact accepted rows 16 at a time and
+  preserves the logical digest across three repetitions while reducing write and
+  scan medians by about 93%. Task 7A recommends one independently approved H2H
+  physical-layout Task 7B, not implementation or a broad authentication change.
+  The fresh Task 6 rerun coefficient makes the current pre-remediation projection
+  127.30 hours central, 90.77-200.36 hours plausible, and 240.44 hours planning
+  upper. Production readiness and Task 8 isolation remain blocked/untriggered.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

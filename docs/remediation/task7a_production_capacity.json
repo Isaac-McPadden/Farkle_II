@@ -1,0 +1,145 @@
+{
+  "assumptions": {
+    "candidate_count": 150,
+    "current_layout_only": true,
+    "h2h_completed_games": 97937700,
+    "player_exposures_per_root": 177504000,
+    "production_config": "configs/farkle_mega_config.yaml",
+    "rng_coefficient_basis": "fresh conservative Task 6 rerun speedup 3.650x",
+    "roots": 2,
+    "sequential_player_counts": true,
+    "sequential_roots": true,
+    "simulation_games_per_root": 39013900,
+    "strategy_count": 5160
+  },
+  "capacity": {
+    "durable_storage_bytes": {
+      "central": 252329328640,
+      "evidence": "projected",
+      "lower": 193273528320,
+      "upper": 375809638400
+    },
+    "final_file_count": {
+      "evidence": "projected",
+      "value": 231857
+    },
+    "interruption_recovery": {
+      "h2h": {
+        "evidence": "configured/derived",
+        "maximum_attempts_per_active_extension": 5000,
+        "normal_current_blocks_per_extension": 1
+      },
+      "rng": {
+        "evidence": "derived",
+        "hard_expanded_bytes_per_route_unit": 100663296,
+        "route_units_per_route_per_root": 393
+      },
+      "simulation": {
+        "evidence": "derived",
+        "row_shards_per_root": 34400,
+        "unit": "one shuffle coordinate per row shard"
+      }
+    },
+    "peak_native_threads": {
+      "central": 160,
+      "evidence": "projected from accepted peak 101 and prior production model",
+      "planning_upper": 190
+    },
+    "peak_process_count": {
+      "central": 16,
+      "evidence": "configured: parent plus 15 workers"
+    },
+    "peak_process_tree_rss_bytes": {
+      "central": 4831838208,
+      "configured_hard_limit": 12884901888,
+      "evidence": "projected from accepted 4261208064-byte integration peak",
+      "planning_upper": 8589934592
+    },
+    "peak_temporary_storage_bytes": {
+      "central": 25769803776,
+      "evidence": "projected",
+      "upper": 51539607552
+    }
+  },
+  "comparison_windows": {
+    "central_excess_hours": 19.29596134216122,
+    "central_fits": false,
+    "plausible_lower_fits": true,
+    "plausible_upper_fits": false,
+    "six_windows_hours": 108
+  },
+  "created_utc": "2026-08-27T23:12:00Z",
+  "current_state": "post_task6_pre_task7b",
+  "evidence": {
+    "accepted_integration_elapsed_seconds": 1349.1879999999655,
+    "accepted_integration_peak_process_tree_rss_bytes": 4261208064,
+    "task6_original_central_hours": 114.50204574398268,
+    "task6_rerun_central_hours": 127.29596134216122,
+    "task7a_changes_applied_to_projection": false
+  },
+  "projection": {
+    "central_days": 5.3039983892567175,
+    "central_hours": 127.29596134216122,
+    "conservative_planning_upper_days": 10.018188145744563,
+    "conservative_planning_upper_hours": 240.43651549870285,
+    "plausible_lower_days": 3.7819496164743374,
+    "plausible_lower_hours": 90.7667907953841,
+    "plausible_upper_days": 8.348490121453803,
+    "plausible_upper_hours": 200.36376291489128,
+    "stages": [
+      {
+        "central_hours": 63.79797070704287,
+        "evidence": "projected",
+        "lower_hours": 45.93453890907087,
+        "stage": "simulation",
+        "upper_hours": 98.88685459591646
+      },
+      {
+        "central_hours": 45.905439119176876,
+        "evidence": "projected from accepted Task 5A plus fresh Task 6 rerun coefficient",
+        "lower_hours": 33.05191616580735,
+        "stage": "rng_diagnostics",
+        "upper_hours": 71.15343063472415
+      },
+      {
+        "central_hours": 1.6529680406369212,
+        "evidence": "projected",
+        "lower_hours": 0.7438356182866145,
+        "stage": "other_root_analyses",
+        "upper_hours": 3.96712329752861
+      },
+      {
+        "central_hours": 13.93958347530455,
+        "evidence": "projected",
+        "lower_hours": 10.036500102219277,
+        "stage": "h2h_and_pair_analyses",
+        "upper_hours": 21.606354386722053
+      },
+      {
+        "central_hours": 1.5,
+        "evidence": "projected",
+        "lower_hours": 0.75,
+        "stage": "authentication_and_finalization",
+        "upper_hours": 3.75
+      },
+      {
+        "central_hours": 0.5,
+        "evidence": "projected",
+        "lower_hours": 0.25,
+        "stage": "fixed_orchestration",
+        "upper_hours": 1.0
+      }
+    ]
+  },
+  "production_ready": false,
+  "schema_version": 1,
+  "status": "complete",
+  "task": "7A",
+  "uncertainty": {
+    "artifact_density_coefficients": "bounded OneDrive measurements; provider cache and host load remain confounders",
+    "candidate_count_sensitivity": "H2H pair and block count is quadratic in realized candidates",
+    "rng_session_variation": "fresh Task 6 rerun was 1.28x to 1.39x slower than original Task 6 cases",
+    "statistical_scope_changed": false
+  },
+  "verdict": "not_capacity_ready"
+}

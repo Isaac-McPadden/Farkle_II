@@ -1,0 +1,426 @@
+{
+  "benchmark": {
+    "owned_root": "data/farkle-task7a-artifact-density-v1",
+    "plan": "docs/remediation/task7a_artifact_density_benchmark_plan.md",
+    "raw_evidence": "docs/remediation/task7a_artifact_density_raw.json",
+    "repetitions_per_case": 3,
+    "retained": true,
+    "warmup_per_family": 1
+  },
+  "candidate_ranking": [
+    {
+      "affected_producers_consumers": [
+        "farkle.analysis.h2h_schedule execution checkpoint publisher",
+        "H2H execution resume and finalization",
+        "H2H inference source resolution",
+        "stage completion and final release audit"
+      ],
+      "canonical_byte_difference_expected": true,
+      "central_opportunity_hours": 7.04,
+      "classification": "physical/checkpoint-layout change with artifact-layout identity advance",
+      "conservative_net_hours": 3.3,
+      "current_cost": {
+        "accepted_block_checkpoint_seconds_at_180_blocks": 100.76454270014074,
+        "production_scaled_block_checkpoint_hours": 6.950887436259709
+      },
+      "exact_logical_equivalence_oracle": "canonical block-coordinate rows, field types/nullability, terminal values, aggregate root-order counts, H2H inference, dominance, agreement, and reports are identical after deterministic coordinate-order scanning",
+      "file_count_opportunity": 83812,
+      "identity_consequence": "advance H2H physical checkpoint/publication layout identity; do not change H2H method v2, RNG scheme, outcome schema, power plan, or statistical config identity",
+      "implementation_risk": "medium",
+      "memory_effect": "buffer at most 16 one-row block records plus bounded writer state",
+      "name": "deterministic_h2h_block_range_bundles",
+      "rank": 1,
+      "recovery_quantum": "increases from one block to at most 16 contiguous canonical blocks; maximum planned replay support is 16 frozen block caps",
+      "recommendation": true,
+      "storage_opportunity_bytes": 1700000000,
+      "temporary_space_effect": "negligible bounded staging increase",
+      "uncertainty": "central opportunity combines directly scaled checkpoint time and approximately 0.6 h of file-count-proportional final authentication; conservative net halves the modeled benefit and charges grouping/validation overhead",
+      "windows_spawn_effect": "no new worker pool and no worker-count change"
+    },
+    {
+      "central_opportunity_hours": 3.5,
+      "classification": "physical/checkpoint-layout change",
+      "conservative_net_hours": 1.5,
+      "exact_logical_equivalence_oracle": "typed simulation rows and canonical shuffle coordinates are identical in coordinate order",
+      "implementation_risk": "medium-high",
+      "name": "simulation_row_shard_coalescing",
+      "rank": 2,
+      "recommendation": false,
+      "reason": "does not clear the 6 h and 5% precommitted gate under current bounded coefficients; it also enlarges producer recovery quanta"
+    },
+    {
+      "central_opportunity_hours": 2.0,
+      "classification": "authentication-policy/public artifact-contract migration",
+      "conservative_net_hours": 0.7,
+      "implementation_risk": "high",
+      "name": "sidecar_factoring",
+      "rank": 3,
+      "recommendation": false,
+      "reason": "requires a broad contract migration and does not independently clear the materiality gate"
+    },
+    {
+      "central_opportunity_hours": null,
+      "classification": "physical RNG architecture change",
+      "implementation_risk": "high",
+      "name": "further_rng_access_routing_reduction_publication_change",
+      "rank": 4,
+      "recommendation": false,
+      "reason": "RNG remains material, but Task 7A did not identify one bounded independent change with a measured conservative gain"
+    },
+    {
+      "central_opportunity_hours": 0.0,
+      "classification": "artifact-contract repair/migration",
+      "implementation_risk": "medium",
+      "name": "typed_empty_and_manifest_extension_repairs",
+      "rank": 5,
+      "recommendation": false,
+      "reason": "real representation/naming defects are negligible for capacity and span multiple producers/contracts"
+    },
+    {
+      "central_opportunity_hours": 0.0,
+      "classification": "no change",
+      "name": "no_additional_remediation",
+      "rank": 6,
+      "recommendation": false,
+      "reason": "superseded by the H2H candidate that clears the gate"
+    }
+  ],
+  "created_utc": "2026-08-27T23:12:00Z",
+  "integration_reconciliation": {
+    "authentication": {
+      "artifact_bytes_hashed": 6790257624,
+      "artifact_opens": 12234,
+      "completion_opens": 282,
+      "evidence": "measured",
+      "manifest_opens": 1949,
+      "metadata_validations": 37859,
+      "schema_validations": 13238,
+      "sha256_calls": 46042,
+      "sidecar_opens": 85477,
+      "total_bytes_hashed": 7407012560,
+      "total_opens": 100443
+    },
+    "evidence_root": "data/results_rng_opt_fast_seed_pair_56_57",
+    "final_byte_deep_release_audit_seconds": {
+      "evidence": "measured",
+      "value": 81.07800000009593
+    },
+    "h2h": {
+      "attempted_and_completed_games": 237060,
+      "block_checkpoint_seconds": 100.76454270014074,
+      "blocks": 180,
+      "evidence": "measured",
+      "execution_stage_seconds": 171.68799999996554,
+      "worker_simulation_critical_seconds": 37.71427470026538
+    },
+    "profile": "integration",
+    "release_audit_status": "passed",
+    "root_stage_seconds": {
+      "combine": 50.35900000005495,
+      "curate": 13.312000000034459,
+      "game_stats": 224.18700000003446,
+      "hgb": 21.843000000109896,
+      "ingest": 147.03200000000652,
+      "metrics_and_bootstrap": 80.17199999990407,
+      "rng_diagnostics": 36.53200000000652,
+      "root_lifecycle_finalization": 65.28099999995902,
+      "screening": 1.9689999999245629,
+      "simulation": 255.46900000004098,
+      "trueskill": 109.68799999996554
+    },
+    "run_elapsed_seconds": {
+      "evidence": "measured",
+      "value": 1349.1879999999655
+    },
+    "run_reconstruction": {
+      "modeled_seconds": 1328.4220000000205,
+      "orchestration_residual_seconds": 20.765999999945052,
+      "pair_stage_children_seconds": 223.03099999995902,
+      "pair_wrapper_seconds": 223.28099999995902
+    },
+    "status": "complete_success",
+    "tournament_games": {
+      "evidence": "configured/derived and reconciled to manifests",
+      "per_root": 91200,
+      "two_root_total": 182400
+    }
+  },
+  "materiality_gate": {
+    "central_hours": 6,
+    "central_total_fraction": 0.05,
+    "conservative_net_hours": 3
+  },
+  "physical_inventory": {
+    "historical_seed_54_55": {
+      "combine": {
+        "average_rows_per_row_group": 25.333333333333332,
+        "footer_bytes": 55746220,
+        "padded_player_column_bytes": 18420000,
+        "parquet_files": 6,
+        "row_groups": 3600,
+        "rows": 91200
+      },
+      "footer_metadata_bytes": 168215290,
+      "footer_share": 0.5167082594878081,
+      "parquet_bytes": 325551773,
+      "parquet_files": 3997,
+      "sidecar_bytes": 50743095,
+      "sidecars": 4004,
+      "total_bytes": 501201165,
+      "total_files": 8850
+    },
+    "post_task6_seed_56_57": {
+      "combine": {
+        "average_rows_per_row_group": 15200.0,
+        "footer_bytes": 219873,
+        "padded_player_column_bytes": 34900,
+        "parquet_files": 6,
+        "row_groups": 6,
+        "rows": 91200
+      },
+      "completion_bytes": 1349743,
+      "completions": 98,
+      "footer_metadata_bytes": 113518908,
+      "footer_share": 0.5035849542770451,
+      "h2h": {
+        "average_rows_per_file": 1.988950276243094,
+        "footer_bytes": 4000949,
+        "parquet_bytes": 4818436,
+        "parquet_files": 181
+      },
+      "invalid_jsonl_files": 6,
+      "manifest_bytes": 2093488,
+      "manifests": 54,
+      "padded_player_column_bytes": 34900,
+      "parquet_bytes": 225421564,
+      "parquet_files": 4033,
+      "partition_stamp_bytes": 126534,
+      "partition_stamps": 128,
+      "sidecar_bytes": 51270648,
+      "sidecars": 4040,
+      "total_bytes": 318804353,
+      "total_files": 8474,
+      "zero_row_parquets": 9
+    }
+  },
+  "repository": {
+    "branch": "main",
+    "head": "9f879de1cdb4e6b92808799899c1e6af06980ca1",
+    "tracked_changes_before_task": false,
+    "upstream": "origin/main",
+    "upstream_at_same_commit": true,
+    "user_untracked_evidence_preserved": [
+      "docs/remediation/task6_rerun_20260827_production_capacity.json",
+      "docs/remediation/task6_rerun_20260827_report.md",
+      "docs/remediation/task6_rerun_20260827_rng_dense.json",
+      "docs/remediation/task6_rerun_20260827_rng_partitions32.json",
+      "docs/remediation/task6_rerun_20260827_rng_partitions64.json",
+      "docs/remediation/task6_rerun_20260827_rng_production_mix.json",
+      "docs/remediation/task6_rerun_20260827_rng_sparse.json",
+      "docs/remediation/task6_rerun_20260827_summary.json"
+    ]
+  },
+  "rng_decomposition": {
+    "accepted_integration": {
+      "root_56_seconds": 23.43799999996554,
+      "root_57_seconds": 13.094000000040978,
+      "total_seconds": 36.53200000000652
+    },
+    "bounded_production_mix": {
+      "count_reduce_seconds": 1.5229377000359818,
+      "count_route_seconds": 1.0111075000022538,
+      "cpu_seconds": 18.015625,
+      "hash_bytes": 22706024,
+      "hash_calls": 4,
+      "hash_seconds": 0.02226250001695007,
+      "initial_spill_bytes": 22342434,
+      "initial_spill_runs": 64,
+      "merge_bytes": 0,
+      "merge_generations": 0,
+      "parent_cpu_seconds": 18.015625,
+      "peak_native_threads": 37,
+      "peak_process_tree_rss_bytes": 266356736,
+      "raw_count_records": 188928,
+      "records_after_route_local_count_reduction": 71689,
+      "reducer_route_opens": 128,
+      "route_batches": 128,
+      "route_bytes": 22706024,
+      "route_files": 4,
+      "route_units_per_phase": 2,
+      "selection_membership_loads": 2,
+      "source_compressed_bytes": 1013780,
+      "source_decoded_bytes": null,
+      "source_projected_read_bytes": 1755176,
+      "source_row_groups": 64,
+      "source_rows": 32768,
+      "stats_reduce_seconds": 10.868141999992076,
+      "stats_route_records": 188928,
+      "stats_route_seconds": 4.655970350082498,
+      "total_wall_seconds": 18.138798099942505,
+      "unattributed_residual_seconds": 0.08064054982969537,
+      "worker_cpu_seconds": 17.9375
+    },
+    "component_attribution": {
+      "cleanup": "measured zero failures; time embedded in enclosing phase/residual",
+      "count_extraction_key_hash_reduction_partition_statistics": "embedded in count_route_seconds; hash time separately measured",
+      "count_reducer_reads_spills_merges": "embedded in count_reduce_seconds; operational counts measured",
+      "durable_unit_scheduling_and_pool": "embedded in four phase timers; one effective worker in bounded case",
+      "eligibility_publication_and_selection": "embedded in count_reduce_seconds",
+      "final_canonical_publication": "embedded in stats_reduce_seconds and residual",
+      "hashing_and_authentication": "measured nested timer",
+      "lag_accumulation_and_final_statistics": "embedded in stats_reduce_seconds",
+      "manifests_stamps_sidecars_completion": "counts measured; time embedded in phase timers/residual",
+      "membership_reads": "loads measured; time embedded in stats_route_seconds",
+      "row_group_planning": "configured/derived before workers; not separately timed",
+      "source_discovery_inventory_resolution": "accepted integration authentication telemetry available; not separately timed within RNG",
+      "source_file_opens_reads_decode": "bytes and batches measured; time embedded in route phase timers",
+      "statistics_extraction_filter_partition_ipc": "embedded in stats_route_seconds",
+      "statistics_reducer_reads_spills_merges": "embedded in stats_reduce_seconds"
+    },
+    "production_projection_hours": {
+      "central": 45.905439119176876,
+      "lower": 33.05191616580735,
+      "upper": 71.15343063472415
+    },
+    "sparse_merge_fixture": {
+      "initial_spill_bytes": 166131,
+      "initial_spill_runs": 32,
+      "merge_bytes": 387072,
+      "merge_outputs": 22,
+      "merge_passes_across_reducers": 12,
+      "source_row_groups": 1024
+    }
+  },
+  "schema_version": 1,
+  "structural_findings": [
+    {
+      "disposition": "historical only",
+      "finding": "310.47 MiB across 3997 Parquets and 160.42 MiB/51.7% footer metadata",
+      "note": "exactly matches seeds 54/55; current Parquet is 215.0 MiB with 108.3 MiB/50.36% footer metadata"
+    },
+    {
+      "disposition": "present; physical inefficiency",
+      "finding": "approximately 49 MiB of repeated sidecars",
+      "note": "current tree has 4040 sidecars and 51,270,648 bytes; factoring requires a separate public contract migration"
+    },
+    {
+      "disposition": "corrected by Task 6",
+      "finding": "combine groups average about 25 rows",
+      "note": "historical seeds 54/55 only; current combine has six groups averaging 15,200 rows"
+    },
+    {
+      "disposition": "present but negligible at current/production scale",
+      "finding": "all-null padded player columns",
+      "note": "current measured compressed contribution is 34,900 bytes versus 18,420,000 historical bytes"
+    },
+    {
+      "disposition": "present; material physical inefficiency",
+      "finding": "metadata-heavy H2H finalized blocks",
+      "note": "current H2H execute Parquets use 4,000,949 footer bytes out of 4,818,436 total bytes"
+    },
+    {
+      "disposition": "present; physical inefficiency",
+      "finding": "repeated invariant JSON keys and values",
+      "note": "4044 repetitions each of code commit and release_clean and 3822 repetitions of PCG64DXSM were observed"
+    },
+    {
+      "disposition": "contract defect requiring separate migration; negligible capacity effect",
+      "finding": "null-typed zero-row fields",
+      "note": "nine empty Parquets; several pandas-created empty outputs have null fields while other typed empties are correct"
+    },
+    {
+      "disposition": "naming/format contract defect requiring separate migration; negligible capacity effect",
+      "finding": "six manifest.jsonl files contain one pretty JSON object",
+      "note": "all six are curate schema manifests intentionally written/read as JSON objects; renaming or format conversion changes authenticated paths/bytes"
+    }
+  ],
+  "task": "7A",
+  "task7b": {
+    "benchmark_acceptance": "at least 70% median reduction in block checkpoint publication wall time at 180 and production-shaped bounded block counts, with no logical or resume difference",
+    "candidate": "deterministic_h2h_block_range_bundles",
+    "corruption_inventory_tests": [
+      "corrupt bundle",
+      "missing bundle",
+      "duplicate bundle",
+      "overlapping coordinates",
+      "omitted coordinate",
+      "relocated bundle",
+      "stale layout identity",
+      "unexpected inventory member"
+    ],
+    "expected_files": [
+      "src/farkle/analysis/h2h_schedule.py",
+      "src/farkle/analysis/h2h_inference.py",
+      "src/farkle/config.py path/layout helpers if required",
+      "src/farkle/utils/stage_completion.py only if needed for bundled inventory",
+      "focused unit/integration tests and a Task 7B benchmark driver/report"
+    ],
+    "explicitly_excluded": [
+      "simulation publication",
+      "RNG diagnostics",
+      "H2H power/statistical method",
+      "candidate freeze",
+      "dominance/agreement/reporting semantics",
+      "global authentication policy",
+      "canonical logical schemas",
+      "Task 8 process isolation",
+      "local scratch architecture"
+    ],
+    "forbidden_differences": [
+      "block coordinate support/order",
+      "games attempted/completed/safety-limit counts",
+      "wins and completion status",
+      "power-plan or family membership",
+      "H2H inference values/decisions",
+      "dominance, agreement, or report values",
+      "RNG/statistical identity"
+    ],
+    "interruption_points": [
+      "before first bundle",
+      "after a partial in-memory range before publication",
+      "after staged data before atomic replacement",
+      "after bundle before sidecar/stamp",
+      "mid-run with complete and incomplete ranges",
+      "after all bundles before aggregate/final completion"
+    ],
+    "layout": "contiguous canonical groups of at most 16 block coordinates per atomic Parquet bundle, one authenticated sidecar per bundle, deterministic scanner exposing the original ordered block-row stream",
+    "permitted_differences": [
+      "physical Parquet bytes",
+      "paths and artifact inventory under the advanced layout identity",
+      "row-group/file grouping",
+      "sidecar and completion provenance that binds the new inventory",
+      "checkpoint timing telemetry"
+    ],
+    "required_equivalence": [
+      "baseline fixture and logical digest captured before implementation",
+      "one-worker and multi-worker",
+      "worker-count invariance",
+      "Windows spawn",
+      "interruption/resume at every named point",
+      "final fresh byte-deep audit",
+      "downstream H2H inference through reporting"
+    ],
+    "stop_for_approval_if": [
+      "implementation requires a global authentication-policy migration",
+      "bundle size must exceed 16",
+      "canonical logical schema or statistical method must change",
+      "old bytes would be promoted/re-sidecarred/migrated in place",
+      "70% benchmark threshold or exact logical equivalence fails",
+      "memory/resource policy or Windows spawn requires architectural change"
+    ],
+    "telemetry": [
+      "blocks buffered/published/reused/replayed",
+      "bundles planned/published/reused/rejected",
+      "data/sidecar/footer bytes",
+      "write, hash, validation, aggregation, cleanup wall and CPU",
+      "file opens/hash calls",
+      "workers and peak RSS/native threads"
+    ],
+    "version_decision": "advance only the H2H physical checkpoint/publication layout identity; new roots do not reuse old per-block checkpoints; preserve H2H method v2 and all scientific identities"
+  },
+  "task8": {
+    "triggered": false,
+    "evidence": "accepted peak RSS was bounded at 4,261,208,064 bytes with zero warning crossings/resource failures; no fresh-process A/B demonstrated material benefit"
+  },
+  "verdict": "bounded_remediation_recommended"
+}

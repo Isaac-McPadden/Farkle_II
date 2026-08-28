@@ -177,6 +177,19 @@ Preserve these invariants:
   is 33.1 hours. The refreshed full-pipeline model is 114.50 hours central with
   a 9.03-day planning upper, so this is not a production-run authorization and
   the pipeline remains `not_capacity_ready`.
+- Task 7A proved that the approximately 25-row combine groups and 18.42 MB of
+  padded-player-column bytes belong to the pre-Task-6 seeds-54/55 tree. The
+  accepted seeds-56/57 tree has six combine groups averaging 15,200 rows and only
+  34,900 compressed padded-column bytes. Its remaining material density issue is
+  H2H: 180 finalized block Parquets use 4.00 MB of 4.82 MB in footer metadata,
+  and accepted telemetry attributes 100.76 s of the 171.69 s H2H stage to block
+  checkpoints. A diagnostic-only 16-block bundle fixture preserved the exact
+  logical digest while reducing write/scan time by about 93%. Task 7A recommends
+  at most one separately approved Task 7B for deterministic H2H block-range
+  bundles with an H2H physical-layout identity advance; it does not authorize
+  implementation. Using the slower accepted Task 6 rerun, current pre-remediation
+  capacity is 127.30 hours central and 240.44 hours planning upper, still
+  `not_capacity_ready`. Task 8 remains untriggered.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

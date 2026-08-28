@@ -33,6 +33,11 @@ remain in both gates.
   `test_hgb_feat.py`.
 - Root/H2H/dominance: `test_root_stability.py`, `test_candidate_family.py`,
   `test_h2h_schedule.py`, `test_h2h_inference.py`, and `test_dominance.py`.
+- Task 7A artifact-density diagnostics:
+  `tests/unit/scripts/test_benchmark_task7a_artifact_density.py` and
+  `scripts/benchmark_task7a_artifact_density.py`. The retained owned root is
+  `data/farkle-task7a-artifact-density-v1`; the driver inventories accepted trees
+  read-only and requires exact logical equality for benchmark-only layouts.
 - Agreement/reporting: `test_structure_agreement.py` and
   `test_structure_reporting.py`.
 - Full workflow: `tests/integration/test_structure_toy_oracle.py` and
