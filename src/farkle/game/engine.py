@@ -75,7 +75,7 @@ class FarklePlayer:
 
         ``dataclasses`` with ``slots=True`` do not allow setting attributes
         that aren't defined ahead of time.  ``strategy_str`` is created in the
-        dataclass body but initialised here so ``FarklePlayer`` objects retain a
+        dataclass body but initialized here so ``FarklePlayer`` objects retain a
         stable textual representation even if the underlying strategy is
         mutated.
         """
@@ -326,7 +326,7 @@ class GameMetrics:
     players
         Mapping from player name to :class:`PlayerStats`.
     game
-        :class:`GameStats` summarising the overall session.
+        :class:`GameStats` summarizing the overall session.
     """
 
     players: Dict[str, PlayerStats]
@@ -444,7 +444,7 @@ class FarkleGame:
         Returns
         -------
         GameMetrics
-            Dataclass summarising the winner and per-player stats.
+            Dataclass summarizing the winner and per-player stats.
         """
         final_round = False
         self.max_rounds_hit = False

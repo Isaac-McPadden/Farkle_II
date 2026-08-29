@@ -196,6 +196,7 @@ def test_process_map_serial():
 def test_process_map_executor(monkeypatch: MonkeyPatch):
     submitted = []
     executor_kwargs = {}
+    progress: list[Mapping[str, object]] = []
 
     class DummyFuture:
         def __init__(self, value):
@@ -235,12 +236,30 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
             n_jobs=2,
             window=2,
             mp_context=mp_context,
+            progress_callback=progress.append,
         )
     )
 
     assert result == [2, 4, 6]
     assert submitted == [1, 2, 3]
     assert executor_kwargs.get("mp_context") is mp_context
+    events = [str(item["event"]) for item in progress]
+    for event in (
+        "executor_start",
+        "executor_constructed",
+        "executor_ready",
+        "executor_shutdown_start",
+        "executor_complete",
+    ):
+        assert event in events
+    constructed = next(item for item in progress if item["event"] == "executor_constructed")
+    complete = next(item for item in progress if item["event"] == "executor_complete")
+    construction_seconds = constructed["executor_construction_seconds"]
+    shutdown_seconds = complete["executor_shutdown_seconds"]
+    assert isinstance(construction_seconds, (int, float))
+    assert isinstance(shutdown_seconds, (int, float))
+    assert construction_seconds >= 0.0
+    assert shutdown_seconds >= 0.0
 
 
 def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPatch) -> None:

@@ -1410,7 +1410,7 @@ def run_trueskill(
 
 
 def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingStats]:
-    """Return ratings ordered by strategy for stable materialisation."""
+    """Return ratings ordered by strategy for stable materialization."""
 
     return dict(sorted(ratings.items(), key=lambda kv: kv[0]))
 

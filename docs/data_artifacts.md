@@ -166,7 +166,7 @@ Per-k performance uses `win_rate_per_attempt = wins / attempted exposures` as
 the primary rate. Its chance delta remains `win_rate_per_attempt - 1/k`, so a
 safety-limit attempt intentionally penalizes every participant. Wilson checks
 and batch MCSE use that same per-attempt denominator. The completed-only
-`win_rate_given_completion` is a labelled diagnostic and is accompanied by its
+`win_rate_given_completion` is a labeled diagnostic and is accompanied by its
 completed exposure count. Across-k canonical performance is the
 complete-support equal-k mean of the per-attempt chance delta; raw attempted,
 completed, safety-limit, win, and loss counts remain reconstructible. Joint
@@ -185,7 +185,7 @@ population effects use the per-attempt win indicator within k relative to
 `1/k`; a safety-limit attempt gives no seat a win. Cross-k standardization
 requires identical common support and declared weights. Exposure-weighted
 cross-k mixtures are separate diagnostics. Self-play reports a primary
-per-attempt P1 rate and a labelled completed-only diagnostic. Paired mirrored
+per-attempt P1 rate and a labeled completed-only diagnostic. Paired mirrored
 effects are winner-conditioned products and therefore exclude safety-limit
 attempts while reporting their excluded counts.
 
@@ -273,7 +273,7 @@ candidate freeze, H2H power, H2H execution, H2H inference, H2H digest,
 agreement, and reporting. Canonical scope directories remain beneath those
 stages.
 
-Inference reports root-combined and labelled root-specific `q_AB`, `q_BA`, and
+Inference reports root-combined and labeled root-specific `q_AB`, `q_BA`, and
 `d_AB = 0.5(q_AB - q_BA)`, score-inversion intervals, Holm decisions,
 Bonferroni simultaneous practical bounds, and root agreement diagnostics.
 Equivalence is unavailable unless a margin is explicitly configured.
@@ -289,7 +289,7 @@ practical dominance over every finalist.
 Canonical Markdown, JSON, and plot outputs require sidecar-validated inputs.
 Reports state roots, k support, weights, controls, conditioning, candidate
 provenance, intervals, unresolved evidence, cycles, and the decision rule for
-each meaning of “best.” Outside two-player analyses, H2H is labelled as an
+each meaning of “best.” Outside two-player analyses, H2H is labeled as an
 external finalist diagnostic. Report-contract-v4 also states the primary
 per-attempt tournament rate and publishes attempted/completed/safety-limit
 games by root and k plus strategy exposure counts and rates.

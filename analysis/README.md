@@ -1,14 +1,12 @@
 # Analysis Notes
 
 This directory contains analysis notes and supporting material. For normal
-project usage, prefer the installed `farkle` CLI:
+project usage, prefer the installed `farkle` CLI. The checked-in fast profile
+is a two-root integration workflow:
 
 ```bash
-farkle --config configs/fast_config.yaml analyze pipeline
+farkle --config configs/fast_config.yaml two-seed-pipeline
 ```
-
-The module entry point `python -m farkle.analysis.pipeline` still exists, but
-it is a legacy/module-facing interface rather than the packaged front door.
 
 ## Metric notes
 
@@ -19,17 +17,16 @@ it is a legacy/module-facing interface rather than the packaged front door.
 
 ## Recommended CLI flags
 
-Use these on the installed CLI:
+Use these on the installed CLI with a configuration that owns exactly one root:
 
-- `farkle analyze metrics --compute-game-stats`
+- `farkle --config <single-root-config.yaml> analyze metrics --compute-game-stats`
   Compute pooled metrics and then run `game_stats`.
-- `farkle analyze pipeline --rng-diagnostics --rng-lags 1 2 4`
-  Run the full pipeline and include interseed RNG diagnostics.
-- `farkle analyze pipeline --allow-missing-upstream`
-  Allow downstream analytics to skip missing mandatory inputs during manual
-  debugging.
-- `farkle analyze variance --force`
-  Recompute variance outputs even when the done-stamp looks fresh.
+- `farkle --config <single-root-config.yaml> analyze pipeline --rng-diagnostics --rng-lags 1 2 4`
+  Run preprocessing plus the canonical single-root analytics and H2H tail,
+  including RNG diagnostics.
+- `farkle --config <single-root-config.yaml> analyze analytics --rng-diagnostics`
+  Run the canonical analytics and H2H tail when preprocessing artifacts already
+  exist.
 
 Shared analysis overrides:
 
@@ -38,16 +35,16 @@ Shared analysis overrides:
 - `--rare-event-margin-quantile <float>`
 - `--rare-event-target-rate <float>`
 
-## Interseed notes
+## Root ownership
 
-Interseed outputs depend on having either:
+`run` and `analyze` require a configuration with exactly one root in
+`sim.seed_list`. Two-root work uses `two-seed-pipeline`, which creates two owned
+root contexts and one pair context. Root-local stages write beneath each root's
+analysis directory; root-stability and H2H pair stages write beneath
+`seed_pair_analysis`.
 
-- `sim.seed_list` with two seeds, or
-- `io.interseed_input_dir` pointing at an upstream analysis root.
-
-When RNG diagnostics are disabled, the interseed stage layout is renumbered.
-Do not assume that `00_rng` always exists. Resolve paths from `AppConfig` or
-inspect `analysis/config.resolved.yaml`.
+Stage layout is configuration-dependent. Resolve paths from `AppConfig` or the
+authenticated run context rather than assuming fixed folder numbers.
 
 ## Output behavior
 

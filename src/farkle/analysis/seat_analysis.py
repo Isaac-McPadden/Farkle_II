@@ -910,7 +910,7 @@ def _write_frame(
 
 
 def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> SeatAnalysisArtifacts:
-    """Build within-k seat effects and clearly labelled secondary diagnostics."""
+    """Build within-k seat effects and clearly labeled secondary diagnostics."""
 
     ks = sorted({int(k) for k in cfg.sim.n_players_list})
     sources = {k: cfg.combined_rows_by_k(k) for k in ks}

@@ -1,7 +1,7 @@
 """Bounded Task 4C protected-CLI simulation execution benchmark.
 
 The driver compares intentional serial execution with Windows-spawn process
-pools, records live topology and process-tree resources, and exercises a normal
+executors, records live topology and process-tree resources, and exercises a normal
 console interruption followed by exact resume.  Every output is confined to an
 explicit benchmark-owned root.
 """
@@ -49,7 +49,7 @@ class CaseResult:
     created_workers: int
     peak_live_workers: int
     cleanly_terminated_workers: int
-    full_pool_observed_seconds: float | None
+    full_process_pool_observed_seconds: float | None
     worker_drain_to_quiescence_seconds: float | None
     worker_pids: tuple[int, ...]
     peak_process_tree_rss_bytes: int
@@ -266,7 +266,7 @@ def _run_case(
     peak_rss = 0
     peak_threads = 0
     interruption_triggered_at: float | None = None
-    full_pool_observed_at: float | None = None
+    full_process_pool_observed_at: float | None = None
     worker_shutdown_started_at: float | None = None
     worker_quiesced_at: float | None = None
     rows_at_interrupt = 0
@@ -302,10 +302,10 @@ def _run_case(
                 except psutil.Error:
                     continue
             peak_live_workers = max(peak_live_workers, live_workers)
-            if live_workers >= int(cfg.sim.n_jobs or 1) and full_pool_observed_at is None:
-                full_pool_observed_at = time.monotonic()
+            if live_workers >= int(cfg.sim.n_jobs or 1) and full_process_pool_observed_at is None:
+                full_process_pool_observed_at = time.monotonic()
             if (
-                full_pool_observed_at is not None
+                full_process_pool_observed_at is not None
                 and live_workers < int(cfg.sim.n_jobs or 1)
                 and worker_shutdown_started_at is None
             ):
@@ -376,8 +376,10 @@ def _run_case(
         cleanly_terminated_workers=(
             len(worker_pids) if not any(psutil.pid_exists(pid) for pid in worker_pids) else 0
         ),
-        full_pool_observed_seconds=(
-            None if full_pool_observed_at is None else full_pool_observed_at - started
+        full_process_pool_observed_seconds=(
+            None
+            if full_process_pool_observed_at is None
+            else full_process_pool_observed_at - started
         ),
         worker_drain_to_quiescence_seconds=(
             None

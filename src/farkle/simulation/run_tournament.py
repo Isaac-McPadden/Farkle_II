@@ -268,7 +268,7 @@ def _init_worker(
     game_profile: GameProfile | None = None,
     progress_endpoint: WorkerProgressEndpoint | None = None,
 ) -> None:
-    """Initialise per-process state."""
+    """Initialize per-process state."""
 
     global _STATE
     if len(strategies) % config.n_players != 0:
@@ -1186,7 +1186,7 @@ def run_tournament(
 
     # Production v3 publication already owns a resolved workload plan before
     # entering this function.  The historical 2,000-game serial calibration was
-    # only an operational projection, but it delayed the first pool submission
+    # only an operational projection, but it delayed the first executor submission
     # by minutes on pathological sample matchups.  Retain it solely for the
     # legacy direct API that explicitly asks this function to publish a plan.
     games_per_sec: float | None = None
@@ -1535,7 +1535,7 @@ def run_tournament(
             ("peak_live_workers", "peak_live_workers"),
             ("cleanly_terminated_workers", "cleanly_terminated_workers"),
             ("executor_construction_seconds", "executor_construction_seconds"),
-            ("pool_shutdown_seconds", "pool_shutdown_seconds"),
+            ("executor_shutdown_seconds", "executor_shutdown_seconds"),
             ("pending", "pending_work_units"),
         ):
             if source in event:
@@ -1547,12 +1547,12 @@ def run_tournament(
         if "executor_mode" in event:
             scheduler_state["executor_mode"] = event["executor_mode"]
         phase = (
-            "simulation_pool_startup"
+            "simulation_executor_startup"
             if event_name
             in {
-                "pool_start",
-                "pool_constructed",
-                "pool_ready",
+                "executor_start",
+                "executor_constructed",
+                "executor_ready",
             }
             else "simulation"
         )
@@ -1561,7 +1561,7 @@ def run_tournament(
             "waiting_on_futures": "waiting_on_futures",
             "cancelling": "cancelling",
             "cancelled": "interrupted_cleanup",
-            "pool_creation_failed": "pool_creation_failure",
+            "executor_creation_failed": "executor_creation_failure",
         }.get(event_name, "working")
         update_scope(phase=phase, state=state)
 
@@ -1570,7 +1570,7 @@ def run_tournament(
         if recorder is not None and scope is not None and resolved_n_jobs > 1
         else None
     )
-    update_scope(phase="simulation_pool_startup")
+    update_scope(phase="simulation_executor_startup")
 
     try:
         for chunk_index, block_tasks, result in parallel.process_map(

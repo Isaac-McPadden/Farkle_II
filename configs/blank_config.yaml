@@ -79,7 +79,7 @@ head2head:
   min_candidate_completion_rate:  # float: minimum attempted-game completion rate
   max_attempt_multiplier:  # float: cap on attempts relative to completed target
   total_game_cap:  # int|None: operational H2H total-game authorization cap
-  allow_single_root:  # bool: permit labelled single-root H2H execution
+  allow_single_root:  # bool: permit labeled single-root H2H execution
 
 hgb:
   max_depth:  # int: maximum tree depth

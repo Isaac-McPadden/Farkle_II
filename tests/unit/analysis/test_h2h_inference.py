@@ -461,7 +461,7 @@ def test_common_first_seat_effect_does_not_create_strategy_effect(
     assert not root_diagnostics["holm_reject"].any()
 
 
-def test_single_root_diagnostics_are_explicitly_labelled(tmp_path: Path) -> None:
+def test_single_root_diagnostics_are_explicitly_labeled(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, roots=(11,))
     _publish_inputs(cfg, [("1", "2", 5_000, 2_700, 2_400)])
 

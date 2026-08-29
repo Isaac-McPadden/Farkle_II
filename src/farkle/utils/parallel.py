@@ -777,8 +777,8 @@ def is_process_pool_worker() -> bool:
     The environment marker alone is deliberately insufficient: shells and
     normally launched protected processes may inherit stale environment state.
     ``multiprocessing.parent_process`` is populated only for a real
-    multiprocessing child, so the conjunction prevents top-level pool collapse
-    without permitting recursive pools inside executor workers.
+    multiprocessing child, so the conjunction prevents top-level process-pool
+    collapse without permitting recursive process pools inside executor workers.
     """
 
     return bool(
@@ -872,13 +872,13 @@ def process_map(
     requested_jobs = n_jobs
     multiprocessing_parent = mp.parent_process()
     report(
-        "pool_start",
+        "executor_start",
         requested_workers=requested_jobs,
         resolved_workers=resolved_jobs,
         worker_count=resolved_jobs,
         window=max(1, int(window)),
         executor_mode="intentional_serial" if resolved_jobs == 1 else "process_pool",
-        nested_pool_suppressed=is_process_pool_worker() and resolved_jobs == 1,
+        nested_process_pool_suppressed=is_process_pool_worker() and resolved_jobs == 1,
         executor_parent_pid=os.getpid(),
         executor_thread_name=threading.current_thread().name,
         executor_thread_ident=threading.get_ident(),
@@ -916,7 +916,7 @@ def process_map(
                     raise ResourceFailureError(classification, str(exc)) from exc
                 raise
         report(
-            "pool_complete",
+            "executor_complete",
             submitted=submitted,
             completed=completed,
             pending=0,
@@ -942,7 +942,7 @@ def process_map(
         )
     except BaseException as exc:
         report(
-            "pool_creation_failed",
+            "executor_creation_failed",
             requested_workers=requested_jobs,
             resolved_workers=resolved_jobs,
             created_workers=0,
@@ -953,7 +953,7 @@ def process_map(
         )
         raise
     report(
-        "pool_constructed",
+        "executor_constructed",
         requested_workers=requested_jobs,
         resolved_workers=resolved_jobs,
         worker_count=resolved_jobs,
@@ -994,7 +994,7 @@ def process_map(
         peak_live_workers = max(peak_live_workers, len(live_pids))
         expected_workers = min(resolved_jobs, submitted)
         report(
-            "pool_ready" if expected_workers else "pool_no_work",
+            "executor_ready" if expected_workers else "executor_no_work",
             requested_workers=requested_jobs,
             resolved_workers=resolved_jobs,
             effective_workers=expected_workers,
@@ -1121,14 +1121,14 @@ def process_map(
         else:
             shutdown_started = time.perf_counter()
             report(
-                "pool_shutdown_start",
+                "executor_shutdown_start",
                 submitted=submitted,
                 completed=completed,
                 pending=0,
             )
             executor.shutdown(wait=True, cancel_futures=False)
             report(
-                "pool_complete",
+                "executor_complete",
                 submitted=submitted,
                 completed=completed,
                 pending=0,
@@ -1139,7 +1139,7 @@ def process_map(
                 peak_live_workers=peak_live_workers,
                 cleanly_terminated_workers=len(created_worker_pids),
                 executor_mode="process_pool",
-                pool_shutdown_seconds=time.perf_counter() - shutdown_started,
+                executor_shutdown_seconds=time.perf_counter() - shutdown_started,
             )
 
 

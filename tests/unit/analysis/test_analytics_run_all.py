@@ -41,7 +41,7 @@ def test_root_plan_stops_after_screening_and_diagnostics(tmp_path: Path) -> None
     assert not {"candidate_freeze", "h2h_power", "h2h_execute", "h2h_digest"}.intersection(names)
 
 
-def test_single_root_tail_is_explicitly_labelled(tmp_path: Path) -> None:
+def test_single_root_tail_is_explicitly_labeled(tmp_path: Path) -> None:
     cfg = _root_context(tmp_path, 11).config
 
     plan = analysis_mod.build_single_root_h2h_tail_plan(cfg)

@@ -22,7 +22,7 @@ def _parser() -> argparse.ArgumentParser:
         "--artifact-root",
         action="append",
         type=Path,
-        default=[],
+        required=True,
         help="Canonical analysis root to audit; may be repeated.",
     )
     return parser

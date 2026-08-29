@@ -298,7 +298,7 @@ def build_single_root_h2h_tail_plan(
     force: bool = False,
     oracle_game_profile: GameProfile | None = None,
 ) -> list[StagePlanItem]:
-    """Build an explicitly labelled H2H tail for a standalone root run."""
+    """Build an explicitly labeled H2H tail for a standalone root run."""
 
     roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
     if roots != (int(cfg.sim.seed),):
@@ -447,7 +447,7 @@ def run_single_root_analysis(
     run_rng_diagnostics: bool | None = None,
     oracle_game_profile: GameProfile | None = None,
 ) -> None:
-    """Run a standalone root and append its explicitly labelled H2H tail."""
+    """Run a standalone root and append its explicitly labeled H2H tail."""
 
     run_root_analysis(
         cfg,
@@ -500,7 +500,7 @@ def run_all(
     rng_lags: Sequence[int] | None = None,
     allow_missing_upstream: bool = False,
 ) -> None:
-    """Run the public single-root analytics workflow and labelled H2H tail."""
+    """Run the public single-root analytics workflow and labeled H2H tail."""
 
     if allow_missing_upstream:
         raise ValueError("canonical workflows do not permit missing upstream artifacts")

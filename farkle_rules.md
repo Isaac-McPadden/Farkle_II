@@ -2,7 +2,7 @@
 
 ---
 
-**Goal:** Be the player with the highest score over 10,000.
+**Goal:** Be the player with the highest final score after someone reaches 10,000.
 
 ---
 
@@ -59,7 +59,7 @@
 
 **Winning the Game:**
 
-- First player to exceed 10,000 triggers the **final round**.
+- First player to reach at least 10,000 triggers the **final round**.
 - Each remaining player gets one more turn to **beat** that total (no ties). That does mean some lucky players may get an extra turn compared to the others.
 - **Highest final score wins**.
 
@@ -84,4 +84,3 @@
 ---
 
 For full rules: [https://www.playmonster.com/wp-content/uploads/2018/06/Farkle-Rules.pdf](https://www.playmonster.com/wp-content/uploads/2018/06/Farkle-Rules.pdf)
-

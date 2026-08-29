@@ -132,17 +132,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also compute game-length statistics from curated rows",
     )
     metrics_parser.add_argument(
-        "--rng-diagnostics",
-        action="store_true",
-        help="Compute RNG autocorrelation diagnostics from curated rows",
-    )
-    metrics_parser.add_argument(
-        "--rng-lags",
-        type=int,
-        nargs="+",
-        help="Positive lags (default: 1) for RNG diagnostics",
-    )
-    metrics_parser.add_argument(
         "--margin-thresholds",
         type=int,
         nargs="+",
@@ -173,17 +162,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also compute game-length statistics from curated rows",
     )
     preprocess_parser.add_argument(
-        "--rng-diagnostics",
-        action="store_true",
-        help="Also compute RNG autocorrelation diagnostics",
-    )
-    preprocess_parser.add_argument(
-        "--rng-lags",
-        type=int,
-        nargs="+",
-        help="Positive lags (default: 1) for RNG diagnostics",
-    )
-    preprocess_parser.add_argument(
         "--margin-thresholds",
         type=int,
         nargs="+",
@@ -209,11 +187,6 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline"
     )
     pipeline_parser.add_argument(
-        "--compute-game-stats",
-        action="store_true",
-        help="Also compute game-length statistics from curated rows",
-    )
-    pipeline_parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
         help="Also compute RNG autocorrelation diagnostics",
@@ -245,9 +218,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Target rate for multi-target rare events (e.g., 1e-4)",
     )
-    analyze_sub.add_parser(
+    analytics_parser = analyze_sub.add_parser(
         "analytics",
-        help="Run the canonical root analytics workflow and labelled single-root H2H tail",
+        help="Run the canonical root analytics workflow and labeled single-root H2H tail",
+    )
+    analytics_parser.add_argument(
+        "--rng-diagnostics",
+        action="store_true",
+        help="Compute RNG autocorrelation diagnostics from curated rows",
+    )
+    analytics_parser.add_argument(
+        "--rng-lags",
+        type=int,
+        nargs="+",
+        help="Positive lags (default: 1) for RNG diagnostics",
     )
     # two-seed-pipeline (top-level)
     two_seed_top = sub.add_parser(

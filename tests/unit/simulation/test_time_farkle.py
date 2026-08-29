@@ -19,7 +19,13 @@ def fast_sim(monkeypatch):
     """
     dummy_game = SimpleNamespace(
         players={"P0": SimpleNamespace(score=10)},
-        game=SimpleNamespace(n_rounds=1),
+        game=SimpleNamespace(
+            n_rounds=1,
+            termination_status=SimpleNamespace(value="completed"),
+        ),
+        winner="P0",
+        winning_score=10,
+        n_rounds=1,
     )
 
     # simulate_one_game → lightweight object
@@ -34,7 +40,7 @@ def fast_sim(monkeypatch):
     monkeypatch.setattr(
         tf,
         "simulate_many_games",
-        lambda **_: pd.DataFrame({"winner": [0]}),
+        lambda **_: pd.DataFrame({"winner_seat": ["P0"], "termination_status": ["completed"]}),
         raising=False,
     )
 
@@ -55,7 +61,7 @@ def test_make_random_strategies_deterministic():
     assert len(s1) == 3
 
 
-def test_dataframe_winner_column(tmp_path, monkeypatch):  # noqa: ARG001
+def test_dataframe_uses_current_winner_columns(tmp_path, monkeypatch):  # noqa: ARG001
     """
     Trivial smoke test: monkey-patch simulate_many_games so we don't
     actually run heavy sims - return a synthetic DataFrame instead.
@@ -63,15 +69,25 @@ def test_dataframe_winner_column(tmp_path, monkeypatch):  # noqa: ARG001
     import farkle.simulation.time_farkle as tf
 
     def fake_many_games(*_, **__):
-        return pd.DataFrame({"winner": ["P1", "P2", "P1"]})
+        return pd.DataFrame(
+            {
+                "winner_seat": ["P1", "P2", "P1"],
+                "termination_status": ["completed"] * 3,
+            }
+        )
 
     monkeypatch.setattr(tf, "simulate_many_games", fake_many_games)
     df = tf.simulate_many_games(n_games=3, strategies=[], seed=0, n_jobs=1)
-    assert set(df["winner"]) == {"P1", "P2"}
+    assert set(df["winner_seat"]) == {"P1", "P2"}
 
 
 def test_winners_breakdown_multiple_winners(monkeypatch, capinfo):
-    df = pd.DataFrame({"winner": ["P1", "P2", "P1"]})
+    df = pd.DataFrame(
+        {
+            "winner_seat": ["P1", "P2", "P1"],
+            "termination_status": ["completed"] * 3,
+        }
+    )
     monkeypatch.setattr(tf, "simulate_many_games", lambda **_: df)
     tf.measure_sim_times()
 
@@ -79,3 +95,33 @@ def test_winners_breakdown_multiple_winners(monkeypatch, capinfo):
     assert batch_records, "Batch benchmark log missing"
     winners = getattr(batch_records[-1], "winners", {})
     assert winners == {"P1": 2, "P2": 1}
+
+
+def test_safety_limit_benchmark_does_not_claim_a_winner(monkeypatch, capinfo):
+    game = SimpleNamespace(
+        players={"P0": SimpleNamespace(score=10)},
+        game=SimpleNamespace(
+            n_rounds=200,
+            termination_status=SimpleNamespace(value="safety_limit"),
+        ),
+        winner=None,
+        winning_score=None,
+        n_rounds=200,
+    )
+    monkeypatch.setattr(tf, "simulate_one_game", lambda **_: game)
+    monkeypatch.setattr(
+        tf,
+        "simulate_many_games",
+        lambda **_: pd.DataFrame({"winner_seat": [None], "termination_status": ["safety_limit"]}),
+    )
+
+    tf.measure_sim_times(n_games=1, players=2, seed=21, jobs=1)
+
+    single = [rec for rec in capinfo.records if getattr(rec, "benchmark", None) == "single_game"][
+        -1
+    ]
+    batch = [rec for rec in capinfo.records if getattr(rec, "benchmark", None) == "batch"][-1]
+    assert single.winner is None
+    assert single.winning_score is None
+    assert batch.winners == {}
+    assert batch.termination_statuses == {"safety_limit": 1}

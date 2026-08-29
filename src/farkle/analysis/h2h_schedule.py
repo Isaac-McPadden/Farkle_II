@@ -1768,15 +1768,15 @@ def execute_h2h_schedule(
     checkpoint_writes = 0
     checkpoint_bytes = 0
     execution_state_writes = 0
-    pool_generation = 0
+    executor_generation = 0
     scheduled_chunks = 0
     maximum_scheduled_attempts_per_chunk = 0
     worker_initializer_loads = 0
     worker_initialization_seconds = 0.0
     simulation_worker_seconds = 0.0
-    pool_generation_wall_seconds = 0.0
-    pool_executor_construction_seconds = 0.0
-    pool_shutdown_seconds = 0.0
+    executor_generation_wall_seconds = 0.0
+    executor_construction_seconds = 0.0
+    executor_shutdown_seconds = 0.0
     block_checkpoint_seconds = 0.0
     execution_state_seconds = 0.0
     final_block_authentication_seconds = 0.0
@@ -1817,7 +1817,7 @@ def execute_h2h_schedule(
             "sidecar_publications": sidecar_publications,
             "sidecar_bytes": sidecar_bytes,
             "execution_state_writes": execution_state_writes,
-            "pool_generation": pool_generation,
+            "executor_generation": executor_generation,
             "worker_initializer_loads": worker_initializer_loads,
             "maximum_scheduled_attempts_per_chunk": maximum_scheduled_attempts_per_chunk,
             "games_per_second": rate,
@@ -1897,16 +1897,16 @@ def execute_h2h_schedule(
     scheduler_generation = 0
 
     def scheduler_progress(event: Mapping[str, object]) -> None:
-        nonlocal pool_executor_construction_seconds, pool_shutdown_seconds
+        nonlocal executor_construction_seconds, executor_shutdown_seconds
         event_name = str(event.get("event", "working"))
-        if event_name == "pool_created":
+        if event_name == "executor_constructed":
             construction = event.get("executor_construction_seconds", 0.0)
             if isinstance(construction, (int, float)):
-                pool_executor_construction_seconds += float(construction)
-        elif event_name == "pool_complete":
-            shutdown = event.get("pool_shutdown_seconds", 0.0)
+                executor_construction_seconds += float(construction)
+        elif event_name == "executor_complete":
+            shutdown = event.get("executor_shutdown_seconds", 0.0)
             if isinstance(shutdown, (int, float)):
-                pool_shutdown_seconds += float(shutdown)
+                executor_shutdown_seconds += float(shutdown)
         pending_value = event.get("pending", 0)
         pending_futures = pending_value if isinstance(pending_value, int) else 0
         state = {
@@ -1932,9 +1932,9 @@ def execute_h2h_schedule(
         # this initializer loads the manifest or allocates model state.
         active_chunks = pending
         while active_chunks:
-            pool_generation += 1
+            executor_generation += 1
             scheduler_active_count = len(active_chunks)
-            scheduler_generation = pool_generation
+            scheduler_generation = executor_generation
             next_chunks: list[dict[str, Any]] = []
             chunk_plans = [
                 plan_h2h_chunk(block, max_attempts_per_checkpoint=chunk_games)
@@ -1951,7 +1951,7 @@ def execute_h2h_schedule(
                 (block, plan.attempt_count)
                 for block, plan in zip(active_chunks, chunk_plans, strict=True)
             )
-            pool_started = time.perf_counter()
+            executor_started = time.perf_counter()
 
             try:
                 for previous, raw_result in process_map(
@@ -2021,10 +2021,10 @@ def execute_h2h_schedule(
                     update_progress(
                         active_blocks=len(active_chunks),
                         next_generation_blocks=len(next_chunks),
-                        long_tail=(len(active_chunks) <= worker_count or pool_generation > 1),
+                        long_tail=(len(active_chunks) <= worker_count or executor_generation > 1),
                     )
             finally:
-                pool_generation_wall_seconds += time.perf_counter() - pool_started
+                executor_generation_wall_seconds += time.perf_counter() - executor_started
             # Canonical submission order is independent of the order in which
             # worker futures completed.
             active_chunks = sorted(
@@ -2207,17 +2207,17 @@ def execute_h2h_schedule(
                 "sidecar_publications": sidecar_publications,
                 "sidecar_bytes": sidecar_bytes,
                 "execution_state_writes": execution_state_writes,
-                "pool_generations": pool_generation,
+                "executor_generations": executor_generation,
                 "worker_initializer_loads": worker_initializer_loads,
                 "worker_initialization_seconds": worker_initialization_seconds,
                 "simulation_worker_seconds": simulation_worker_seconds,
                 "critical_worker_simulation_seconds": critical_worker_simulation_seconds,
-                "pool_generation_wall_seconds": pool_generation_wall_seconds,
-                "pool_executor_construction_seconds": pool_executor_construction_seconds,
-                "pool_shutdown_seconds": pool_shutdown_seconds,
-                "pool_scheduling_transfer_and_parent_residual_seconds": max(
+                "executor_generation_wall_seconds": executor_generation_wall_seconds,
+                "executor_construction_seconds": executor_construction_seconds,
+                "executor_shutdown_seconds": executor_shutdown_seconds,
+                "executor_scheduling_transfer_and_parent_residual_seconds": max(
                     0.0,
-                    pool_generation_wall_seconds
+                    executor_generation_wall_seconds
                     - critical_worker_simulation_seconds
                     - block_checkpoint_seconds,
                 ),

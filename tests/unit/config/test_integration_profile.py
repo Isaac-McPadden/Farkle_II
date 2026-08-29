@@ -23,7 +23,7 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     assert metadata["production_eligible"] is False
     assert metadata["release_eligible"] is False
     assert metadata["strategy_count"] == 80
-    assert metadata["roots"] == [48, 49]
+    assert metadata["roots"] == [56, 57]
     assert metadata["player_counts"] == [2, 4, 5]
     assert metadata["configured_resolution"] == pytest.approx(0.08)
     assert metadata["bootstrap_replicates"] == 500
@@ -77,7 +77,7 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     assert cfg.batching.target_batches == 20
     assert cfg.batching.min_shuffles_per_batch == 30
     assert compute_config_sha(cfg) == (
-        "0e2b6bad2a5fa07dcefa39466e96e170b4127fccf0f493e232daed79b9839b2e"
+        "8e921f10d002a8b09e13736f16590cdd4b7a911a7ee54913c744d213c9033855"
     )
     with_old_host_reserve = replace(
         cfg,

@@ -35,6 +35,12 @@ accepting a statistical claim.
   `migration_audit.py`, `release_audit.py`.
 - Execution: `stage_registry.py`, `stage_runner.py`, package `__init__.py`.
 
+Task 7B's rejected width-16 H2H bundle implementation is not present in
+production source. Its reproducible driver and closed evidence are
+`scripts/benchmark_task7b_h2h_bundling.py` and
+`docs/remediation/task7b_h2h_bundling_report.md`; current `h2h_schedule.py`
+continues to own only the authenticated per-block layout.
+
 ## Contracts to locate first
 
 - Scopes/path APIs: `ArtifactScope` and `AppConfig` in `config.py`.

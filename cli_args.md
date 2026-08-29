@@ -3,9 +3,7 @@
 The installed console entry point is `farkle`. It is also available through
 module execution with `python -m farkle`.
 
-Normal users should prefer `farkle ...`. The legacy module entry point
-`python -m farkle.analysis.pipeline` still exists for direct module use and
-tests, but it is not the packaged front door.
+Normal users should prefer `farkle ...`.
 
 ```text
 farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
@@ -39,9 +37,9 @@ Options:
 Example:
 
 ```bash
-farkle --config configs/fast_config.yaml \
+farkle --config configs/default_config.yaml \
   --set sim.seed=123 \
-  --set sim.num_shuffles=200 \
+  --set sim.n_jobs=4 \
   run --metrics --row-dir data/results/fast_seed_123/rows
 ```
 
@@ -89,8 +87,6 @@ Subcommands:
   release compatibility Parquet inside the `concat_ks` scope.
 - `metrics`
   Compute pooled metrics and optional game-stat and RNG side outputs.
-- `variance`
-  Compute variance summaries across seeds.
 - `preprocess`
   Run `ingest`, `curate`, `combine`, and `metrics`.
 - `pipeline`
@@ -100,28 +96,26 @@ Subcommands:
 
 Shared option groups:
 
-- `metrics`, `preprocess`, `pipeline`
+- `metrics`, `preprocess`
   - `--compute-game-stats`
+- `pipeline`, `analytics`
   - `--rng-diagnostics`
   - `--rng-lags INT [INT ...]`
+- `metrics`, `preprocess`, `pipeline`
   - `--margin-thresholds INT [INT ...]`
   - `--rare-event-target INT`
   - `--rare-event-margin-quantile FLOAT`
   - `--rare-event-target-rate FLOAT`
-- `pipeline`, `analytics`
-  - `--allow-missing-upstream`
-- `variance`
-  - `--force`
 
 Examples:
 
 ```bash
-farkle --config configs/fast_config.yaml analyze metrics --compute-game-stats
+farkle --config configs/default_config.yaml --set sim.seed=123 \
+  analyze metrics --compute-game-stats
 ```
 
 ```bash
-farkle --config configs/fast_config.yaml analyze pipeline \
-  --compute-game-stats \
+farkle --config configs/default_config.yaml --set sim.seed=123 analyze pipeline \
   --rng-diagnostics \
   --rng-lags 1 2 4
 ```
@@ -153,5 +147,8 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
   assuming fixed folder numbers in downstream scripts.
 - `sim.seed_list` is the canonical seed source. `sim.seed` and `sim.seed_pair`
   remain compatibility aliases.
+- `run` and `analyze` require a one-root configuration. The checked-in
+  `fast_config.yaml` is a two-root integration profile and is intended for
+  `two-seed-pipeline`.
 - Run `farkle <command> --help` for the exact parser output for your installed
   version.

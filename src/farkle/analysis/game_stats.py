@@ -652,7 +652,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 for k in stale_ks
             )
             # ``process_map`` limits serialized/submitted work as well as live
-            # workers and marks children as nested-pool participants.
+            # workers and marks children as nested-process-pool participants.
             for _ in process_map(
                 _run_per_k_game_stats_task,
                 tasks,

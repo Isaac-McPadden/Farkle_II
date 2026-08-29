@@ -26,7 +26,7 @@ modules and use hand-checkable tests before accepting a claim.
   turn-weighted return; completed games still require positive denominators.
 - `analysis/performance.py`: compact memory-mapped root/k count matrices feed
   primary per-attempt win rates relative to `1/k`, a
-  labelled completed-only diagnostic, per-attempt Wilson checks and batch MCSE
+  labeled completed-only diagnostic, per-attempt Wilson checks and batch MCSE
   `s_batch/sqrt(B)`, complete-support equal-k performance, declared
   alternatives, controls, Pareto, maximin, and joint batch-vector resampling.
   Bootstrap RNG is owned by root/k/replicate coordinates; fixed replicate-ID
@@ -101,7 +101,7 @@ modules and use hand-checkable tests before accepting a claim.
   mutable state outside the byte-immutable plan and manifest.
 - `analysis/h2h_inference.py`: `d_AB = 0.5(q_AB-q_BA)`, constrained-null score
   test, score-inversion intervals, Holm decisions, simultaneous practical
-  bounds, optional equivalence, and labelled root diagnostics.
+  bounds, optional equivalence, and labeled root diagnostics.
 - `analysis/dominance.py`: separate practical/statistical graphs, SCC cycles,
   condensation fronts, noninferential within-front order, and direct practical
   dominance over all finalists for unique best.

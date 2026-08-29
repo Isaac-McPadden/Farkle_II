@@ -2,7 +2,7 @@
 ================================================
 End -to -end integration tests for the *parallel* Monte -Carlo tournament.
 
-The canonical configuration explores 8 160 strategies and simulates many
+The canonical configuration explores 5,160 strategies and simulates many
 millions of games  - far too expensive for unit -tests.  We therefore:
 
 1.  Monkey -patch farkle.simulation.generate_strategy_grid so it returns a

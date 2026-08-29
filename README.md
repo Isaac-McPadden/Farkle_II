@@ -71,7 +71,7 @@ Commands:
 - `watch`: replay one interactive deterministic game.
 - `analyze ingest|curate|combine|metrics|preprocess`: run a focused root stage.
 - `analyze pipeline`: run the complete standalone-root workflow, including its
-  explicitly labelled H2H tail.
+  explicitly labeled H2H tail.
 - `analyze analytics`: run the same canonical standalone-root analysis from
   existing inputs.
 - `two-seed-pipeline`: run both root workflows, then execute the root-pair tail
@@ -131,8 +131,11 @@ Use the repository virtual environment:
 .\.venv\Scripts\python -m mypy src
 .\.venv\Scripts\python -m pyright
 .\.venv\Scripts\python scripts/check_terminology.py
-.\.venv\Scripts\python scripts/check_structure_release.py
+.\.venv\Scripts\python scripts/check_structure_release.py --artifact-root data/results_seed_pair_A_B/results_seed_A/analysis
 ```
+
+The structural release check requires an explicit fresh artifact root. Repeat
+`--artifact-root` when auditing multiple independent roots.
 
 The interrupted/resumed two-root structural oracle is
 `tests/integration/test_structure_toy_oracle.py`.

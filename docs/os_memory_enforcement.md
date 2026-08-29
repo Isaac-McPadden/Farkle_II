@@ -120,7 +120,7 @@ On cgroup v2, `memory.max` remains the hard boundary while `memory.current`,
 `memory.peak`, and `memory.events` provide current/peak accounting and OOM
 classification. When no privileged boundary is available in explicitly
 permissive development mode, portable RSS and host-available sampling remain
-telemetry/backpressure only and provenance remains labelled `unenforced`.
+telemetry/backpressure only and provenance remains labeled `unenforced`.
 
 Sequential two-root execution is fail-fast for both resource and ordinary
 failures: the second root and pair workflow do not start. Parallel roots may

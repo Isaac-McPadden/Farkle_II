@@ -19,7 +19,7 @@ Preserve these invariants:
   winner or ranks, counts as a loss for every tournament participant, and is
   excluded from winner-conditioned products;
 - tournament primary rates and batch MCSE use all attempted player-game
-  exposures; completed-only rates are labelled diagnostics;
+  exposures; completed-only rates are labeled diagnostics;
 - separation of descriptive screening, inference, dominance, and display order;
 - RNG lag diagnostics use authenticated external partitions: strategy seat
   exposures follow the full RNG-v2 tournament-player coordinate, matchup games
@@ -57,7 +57,7 @@ Preserve these invariants:
   reserve, parent-process estimate, logical CPU budget, and per-stage worker
   estimates have separate meanings, and requested/resolved/effective execution
   policy is authenticated outside statistical freshness; setup fails closed in
-  strict mode, nested pools are suppressed, and partition manifests publish only
+  strict mode, nested process pools are suppressed, and partition manifests publish only
   after every unit validates; RSS high water provides nonsticky submission
   backpressure, Windows Job committed-memory peak and cgroup current/peak remain
   distinct telemetry, recognized resource failures cancel pending work and may
@@ -112,7 +112,7 @@ Preserve these invariants:
   completion threshold without shrinking the family;
 - H2H execution uses a deterministic execution-only cap of 5,000 attempted
   coordinates per durable block extension. Current 1,372-2,191 targets and
-  frozen 2.0x caps therefore finish in one pool generation; larger future
+  frozen 2.0x caps therefore finish in one executor generation; larger future
   blocks split into exact contiguous ranges. The cap is outside statistical
   identity, valid authenticated prefixes may resume under a changed cap, and
   terminal block column order is independent of checkpoint history;
@@ -138,7 +138,7 @@ Preserve these invariants:
   `orchestration.parallel_seeds: true` before run-start/health publication;
   player counts are also sequential, while the active tournament owns the full
   resolved simulation process budget;
-- a top-level simulation pool is suppressed only when both the process marker
+- a top-level simulation process pool is suppressed only when both the process marker
   and a genuine multiprocessing parent prove nested execution. Process-pool
   topology is observed (requested/resolved/created/live/peak), mismatches fail
   early, Windows cancellation owns a bounded terminate/join/kill sequence, and
@@ -190,6 +190,16 @@ Preserve these invariants:
   implementation. Using the slower accepted Task 6 rerun, current pre-remediation
   capacity is 127.30 hours central and 240.44 hours planning upper, still
   `not_capacity_ready`. Task 8 remains untriggered.
+- Task 7B evaluated deterministic width-16 H2H block-range bundles on the real
+  Windows-spawn path but closed `performance_gate_failed`. Exact schedule,
+  logical Arrow, schema, execution-state, and inference equivalence held.
+  Median publication improved 66.64% for the preregistered primary 180-block
+  case and 79.70% for 760 blocks; the primary result missed the non-waivable
+  70% gate, and critical-worker simulation medians also exceeded the 5%
+  regression threshold. The candidate implementation was rolled back. Current
+  H2H storage remains one authenticated Parquet plus sidecar per block, Task 7A
+  remains the operative capacity model, and no compatibility reader or
+  production authorization was added.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

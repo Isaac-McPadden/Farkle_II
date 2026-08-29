@@ -487,7 +487,7 @@ def test_identifier_renaming_does_not_change_graph_structure(tmp_path: Path) -> 
     }
 
 
-def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Path) -> None:
+def test_relabeled_permuted_inference_and_dominance_are_invariant(tmp_path: Path) -> None:
     first = (1, 2, 3, 4)
     renamed = (11, 12, 13, 14)
     mapping = dict(zip(first, renamed, strict=True))

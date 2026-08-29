@@ -1521,7 +1521,9 @@ def run_single_n(
         cpu_count=resource_policy.total_cores,
         default=1,
     )
-    nested_pool_suppressed = is_process_pool_worker() and resource_policy.process_workers == 1
+    nested_process_pool_suppressed = (
+        is_process_pool_worker() and resource_policy.process_workers == 1
+    )
     LOGGER.info(
         "Simulation worker handoff: seed=%s k=%s requested=%s resolved=%s effective=%s "
         "nested_suppressed=%s parent_pid=%s",
@@ -1530,7 +1532,7 @@ def run_single_n(
         requested_workers,
         resolved_workers,
         resource_policy.process_workers,
-        nested_pool_suppressed,
+        nested_process_pool_suppressed,
         os.getpid(),
         extra={
             "stage": "simulation",
@@ -1539,7 +1541,7 @@ def run_single_n(
             "requested_workers": requested_workers,
             "resolved_workers": resolved_workers,
             "effective_workers": resource_policy.process_workers,
-            "nested_pool_suppressed": nested_pool_suppressed,
+            "nested_process_pool_suppressed": nested_process_pool_suppressed,
             "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
             "parent_pid": os.getpid(),
         },
@@ -1589,7 +1591,7 @@ def run_single_n(
             "requested_workers": requested_workers,
             "resolved_workers": resolved_workers,
             "effective_workers": resource_policy.process_workers,
-            "nested_pool_suppressed": nested_pool_suppressed,
+            "nested_process_pool_suppressed": nested_process_pool_suppressed,
             "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
             "runner_parent_pid": os.getpid(),
         },

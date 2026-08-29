@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "task": "7B",
+  "created_utc": "2026-08-28T08:07:17Z",
+  "verdict": "performance_gate_failed",
+  "accepted_capacity_revision": false,
+  "production_ready": false,
+  "current_production_model": {
+    "source": "docs/remediation/task7a_production_capacity.json",
+    "layout": "one authenticated Parquet plus sidecar per H2H block",
+    "central_hours": 127.29596134216122,
+    "plausible_lower_hours": 90.7667907953841,
+    "plausible_upper_hours": 200.36376291489128,
+    "conservative_planning_upper_hours": 240.43651549870285,
+    "h2h_and_pair_analyses_central_hours": 13.93958347530455,
+    "durable_storage_central_bytes": 252329328640,
+    "final_file_count": 231857,
+    "peak_temporary_storage_central_bytes": 25769803776,
+    "peak_process_tree_rss_central_bytes": 4831838208,
+    "peak_process_count": 16,
+    "peak_native_threads_central": 160,
+    "peak_native_threads_planning_upper": 190
+  },
+  "counterfactual_rejected_layout": {
+    "bundle_width": 16,
+    "measured_primary_publication_reduction_fraction": 0.6663718564716001,
+    "measured_760_publication_reduction_fraction": 0.7969745488199631,
+    "projected_150_candidate_publication_saving_hours_from_180_coefficients": 3.7828177038485546,
+    "projected_150_candidate_publication_saving_hours_from_760_coefficients": 6.012334159074508,
+    "counterfactual_central_hours_range": [121.28362718308671, 123.51314363831267],
+    "task7a_six_hour_gate_passed_by_primary_coefficient": false,
+    "task7a_five_percent_central_gate_passed": false,
+    "task7a_three_hour_conservative_gate_passed_by_publication_only": true,
+    "may_be_used_as_production_projection": false
+  },
+  "candidate_count_sensitivity": [
+    {"candidate_count": 75, "pairs": 2775, "blocks": 11100, "bundles_at_16": 694, "current_checkpoint_files": 22200, "counterfactual_checkpoint_files": 2084},
+    {"candidate_count": 77, "pairs": 2926, "blocks": 11704, "bundles_at_16": 732, "current_checkpoint_files": 23408, "counterfactual_checkpoint_files": 2198},
+    {"candidate_count": 100, "pairs": 4950, "blocks": 19800, "bundles_at_16": 1238, "current_checkpoint_files": 39600, "counterfactual_checkpoint_files": 3716},
+    {"candidate_count": 125, "pairs": 7750, "blocks": 31000, "bundles_at_16": 1938, "current_checkpoint_files": 62000, "counterfactual_checkpoint_files": 5816},
+    {"candidate_count": 143, "pairs": 10153, "blocks": 40612, "bundles_at_16": 2539, "current_checkpoint_files": 81224, "counterfactual_checkpoint_files": 7619},
+    {"candidate_count": 150, "pairs": 11175, "blocks": 44700, "bundles_at_16": 2794, "current_checkpoint_files": 89400, "counterfactual_checkpoint_files": 8384}
+  ],
+  "recovery_exposure": {
+    "accepted_current_layout_blocks_per_checkpoint": 1,
+    "accepted_current_maximum_attempts_per_active_extension": 5000,
+    "counterfactual_rejected_maximum_blocks_per_bundle": 16,
+    "counterfactual_rejected_maximum_attempt_coordinates": 80000
+  },
+  "six_18_hour_windows": {
+    "hours": 108,
+    "accepted_current_central_fits": false,
+    "accepted_current_plausible_lower_fits": true,
+    "counterfactual_not_accepted": true
+  },
+  "reason_not_revised": "Task 7B did not pass its primary performance and worker-simulation gates, so Task 7A remains the operative capacity model."
+}

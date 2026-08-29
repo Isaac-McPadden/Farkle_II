@@ -329,7 +329,7 @@ def test_take_turn_roll_limit(monkeypatch):
 
 
 def test_game_stops_at_default_max_rounds(monkeypatch):
-    """Ensure the game loop honours the default 200-round cap."""
+    """Ensure the game loop honors the default 200-round cap."""
 
     def bust_roll(self, n):
         self.n_rolls += 1

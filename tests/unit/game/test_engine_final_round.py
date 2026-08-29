@@ -63,14 +63,14 @@ class _QuietStrategy(ThresholdStrategy):
 
 
 @pytest.mark.unit
-def test_final_round_respects_score_to_beat_and_reruns():
-    """Ensure the final round replays until the leading score is surpassed.
+def test_reaching_target_exactly_triggers_final_round_and_respects_score_to_beat():
+    """Ensure reaching the target starts the final round and requires a higher score.
 
     Returns:
         None
     """
 
-    # Player 1 triggers the final round by crossing the target on the opening turn.
+    # Player 1 triggers the final round by reaching the target exactly.
     p1 = FarklePlayer(
         name="opener",
         strategy=_QuietStrategy(),

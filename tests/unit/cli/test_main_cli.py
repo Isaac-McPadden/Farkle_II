@@ -156,19 +156,19 @@ def test_main_run_configures_file_logging(monkeypatch, tmp_path: Path, preserve_
     assert captured["log_file"] == tmp_path / "out_seed_7" / "log.txt"
 
 
-def test_analyze_metrics_ignores_rng_flags(monkeypatch, preserve_root_logger):
-    calls: list[str] = []
+@pytest.mark.parametrize("command", ["metrics", "preprocess"])
+def test_focused_preprocessing_commands_reject_rng_flags(command, preserve_root_logger):
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(["analyze", command, "--rng-diagnostics"])
 
-    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append("metrics"))
-    monkeypatch.setattr(
-        cli_main.analysis_pkg,
-        "run_all",
-        lambda cfg, **kwargs: calls.append("run_all"),
-    )
+    assert excinfo.value.code == 2
 
-    cli_main.main(["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "1", "2"])
 
-    assert calls == ["metrics"]
+def test_pipeline_rejects_redundant_compute_game_stats_flag(preserve_root_logger):
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(["analyze", "pipeline", "--compute-game-stats"])
+
+    assert excinfo.value.code == 2
 
 
 def test_stringify_paths_handles_nested_structures():
@@ -336,6 +336,31 @@ def test_analyze_pipeline_sorts_and_deduplicates_rng_lags(
     )
 
     assert captured["rng_lags"] == (1, 2, 4)
+
+
+def test_analyze_analytics_accepts_rng_controls(monkeypatch, tmp_path: Path, preserve_root_logger):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: captured.update(kwargs),
+    )
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(
+        [
+            "--config",
+            str(cfg_path),
+            "analyze",
+            "analytics",
+            "--rng-diagnostics",
+            "--rng-lags",
+            "4",
+            "1",
+        ]
+    )
+
+    assert captured == {"run_rng_diagnostics": True, "rng_lags": (1, 4)}
 
 
 @pytest.mark.parametrize(

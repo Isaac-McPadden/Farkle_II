@@ -107,7 +107,7 @@ compute identity; the numerical workload settings independently change that
 identity.
 
 `fast_config.yaml` is the existing machine-targeted integration family. It
-preserves 80 strategies, roots 48/49, and k=2/4/5, with a 0.08 configured
+preserves 80 strategies, roots 56/57, and k=2/4/5, with a 0.08 configured
 resolution, 500 bootstrap replicates, eight RNG partitions, top-eight
 contributions per ranking method, and a balanced-tail frozen-candidate cap of
 12. The integration-only 20-batch granularity and locked 30-shuffle floor
@@ -125,7 +125,7 @@ achieve a maximum Wilson width of about 0.0797603. Production profiles retain
 - `delta_equivalence = null` disables equivalence
 - `candidate_cap_policy = balanced-tail`
 - `total_game_cap` is operational and does not alter the schedule hash
-- `allow_single_root` controls explicitly labelled single-root execution
+- `allow_single_root` controls explicitly labeled single-root execution
 
 The planner exhaustively finds the first admissible completed-game block size
 whose exact implemented two-proportion score-test power reaches the Bonferroni

@@ -38,6 +38,13 @@ remain in both gates.
   `scripts/benchmark_task7a_artifact_density.py`. The retained owned root is
   `data/farkle-task7a-artifact-density-v1`; the driver inventories accepted trees
   read-only and requires exact logical equality for benchmark-only layouts.
+- Task 7B closed bundle gate:
+  `tests/unit/scripts/test_benchmark_task7b_h2h_bundling.py`,
+  `scripts/benchmark_task7b_h2h_bundling.py`, and
+  `docs/remediation/task7b_h2h_bundling_report.md`. Retained evidence covers
+  three baseline and candidate repetitions for 180 and 760 logical blocks at
+  12-worker Windows spawn. The verdict is `performance_gate_failed`; production
+  tests and source remain on the per-block layout.
 - Agreement/reporting: `test_structure_agreement.py` and
   `test_structure_reporting.py`.
 - Full workflow: `tests/integration/test_structure_toy_oracle.py` and
@@ -65,7 +72,7 @@ the format is deterministic; otherwise compare canonical logical content.
 
 ```powershell
 .\.venv\Scripts\python scripts/check_terminology.py
-.\.venv\Scripts\python scripts/check_structure_release.py
+.\.venv\Scripts\python scripts/check_structure_release.py --artifact-root data/results_seed_pair_A_B/results_seed_A/analysis
 .\.venv\Scripts\python -m pytest tests/integration/test_structure_toy_oracle.py
 .\.venv\Scripts\python -m pytest
 .\.venv\Scripts\python -m ruff check .
@@ -76,6 +83,8 @@ the format is deterministic; otherwise compare canonical logical content.
 
 The release audit validates checked-in runnable configs, confirms retired
 source entry points are absent, and checks canonical artifact/sidecar pairing.
+At least one explicit fresh `--artifact-root` is required; repeat the option to
+audit multiple independent roots.
 The toy oracle covers two roots, multiple k values, immutable H2H blocks,
 interruption, resume with a different worker count, hashes, decisions, fronts,
 cycles, report claims, and sidecar completeness.

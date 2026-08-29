@@ -163,3 +163,12 @@ def test_installed_entrypoint_help_places_seed_options_on_command(tmp_path: Path
     assert "--seed-a SEED_A" in command_help.stdout
     assert global_help.returncode == 0
     assert "--seed-pair" not in global_help.stdout
+
+
+def test_installed_time_command_accepts_current_outcome_schema(tmp_path: Path) -> None:
+    completed, _ = _run_installed_cli(
+        tmp_path,
+        ["time", "--players", "2", "--n-games", "1", "--jobs", "1", "--seed", "42"],
+    )
+
+    assert completed.returncode == 0, completed.stderr

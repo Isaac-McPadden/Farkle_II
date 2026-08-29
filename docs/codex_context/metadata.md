@@ -15,7 +15,7 @@ changing code or accepting a statistical conclusion.
   recognizes the two canonical descriptive-screening files at their stage root.
   Outcome-schema-v2 and tournament-method-v2 add explicit safety-limit rows,
   all-attempt tournament denominators, completed-only winner products, and
-  observational-unit-labelled game statistics and reports. RNG-scheme-v2
+  observational-unit-labeled game statistics and reports. RNG-scheme-v2
   derives tournament and H2H seat streams directly from complete semantic
   coordinates and makes shuffle indices, rather than scalar fingerprints, the
   recovery identity. Task 5 adds an opt-in version-3 authenticated-contract
@@ -119,13 +119,13 @@ changing code or accepting a statistical conclusion.
   subsequent resource-contract recovery passes the explicit aggregate hard
   limit directly, independently of scheduler admission and warning thresholds.
   Strict official execution fails before analysis when setup is unavailable; an
-  explicit development fallback is labelled unenforced. Backend/effective-limit
+  explicit development fallback is labeled unenforced. Backend/effective-limit
   provenance lives in run contexts and manifests, not statistical freshness.
   The two-root health marker becomes `running` before work. Resource recovery
   separates reversible RSS high-water backpressure, recoverable classified
   resource failure, and OS hard termination. Windows telemetry queries Job
   committed-memory peak/limit rather than treating RSS as commit; cgroup-v2
-  reads current/peak/events. Shared pools cancel queued work on failure, and
+  reads current/peak/events. Shared process executors cancel queued work on failure, and
   partitioned stages retry only pending authenticated coordinates at most once
   with a halved worker count. Soft warnings do not invalidate valid manifests,
   and sequential roots fail fast before the second root or pair workflow.
@@ -201,13 +201,13 @@ changing code or accepting a statistical conclusion.
   current `games_attempted` to the lesser of the frozen cap or that bound.
   Current integration, production-like, and maximum-planning 2.0x caps are at
   most 4,382, so viable, replacement, and nonviable branches normally use one
-  worker task, one block publication, and one process-pool generation. Larger
+  worker task, one block publication, and one executor generation. Larger
   future blocks retain fixed 5,000-attempt recovery units. The control remains
   outside statistical identity and valid prefixes may resume if it changes.
   H2H method v2, RNG/outcome identity, plan and block schemas, canonical paths,
   coordinate semantics, and final values are unchanged; block normalization
   now makes the established terminal column order independent of intermediate
-  checkpoint history. Pool/initializer, simulation, checkpoint, sidecar,
+  checkpoint history. Executor/initializer, simulation, checkpoint, sidecar,
   execution-state, authentication, aggregation, and shutdown telemetry is
   reported without entering canonical rows.
   Task 4B captures one frozen, explicitly generation-owned authenticated graph
@@ -284,6 +284,14 @@ changing code or accepting a statistical conclusion.
   The fresh Task 6 rerun coefficient makes the current pre-remediation projection
   127.30 hours central, 90.77-200.36 hours plausible, and 240.44 hours planning
   upper. Production readiness and Task 8 isolation remain blocked/untriggered.
+  Task 7B subsequently benchmarked an authenticated deterministic width-16 H2H
+  bundle layout. Logical and downstream digests were exact, and the 760-block
+  publication median improved 79.70%, but the preregistered 180-block primary
+  median improved only 66.64% against a required 70%. Median critical-worker
+  simulation time also exceeded the closed 5% regression gate. The verdict is
+  `performance_gate_failed`; all production and production-test changes were
+  restored to the starting HEAD. The current artifact contract, H2H layout,
+  stage identity, capacity projection, and release behavior are unchanged.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

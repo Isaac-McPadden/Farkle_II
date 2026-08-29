@@ -78,7 +78,7 @@ def measure_sim_times(
     t0 = time.perf_counter()
     gm = simulate_one_game(strategies=strategies, seed=seed)
     t1 = time.perf_counter()
-    winner = max(gm.players.items(), key=lambda p: p[1].score)[0]
+    winner = gm.winner
     LOGGER.info(
         "Single game benchmark",
         extra={
@@ -88,8 +88,9 @@ def measure_sim_times(
             "seed": seed,
             "elapsed_s": t1 - t0,
             "winner": winner,
-            "winning_score": gm.players[winner].score,
-            "rounds": gm.game.n_rounds,
+            "winning_score": gm.winning_score,
+            "termination_status": gm.game.termination_status.value,
+            "rounds": gm.n_rounds,
         },
     )
 
@@ -100,7 +101,8 @@ def measure_sim_times(
     t1 = time.perf_counter()
     elapsed = t1 - t0
     gps = (n_games / elapsed) if elapsed > 0 else 0.0
-    winners = df["winner"].value_counts().to_dict()
+    winners = df["winner_seat"].dropna().value_counts().to_dict()
+    termination_statuses = df["termination_status"].value_counts().to_dict()
     LOGGER.info(
         "Batch benchmark",
         extra={
@@ -113,6 +115,7 @@ def measure_sim_times(
             "elapsed_s": elapsed,
             "games_per_sec": gps,
             "winners": winners,
+            "termination_statuses": termination_statuses,
         },
     )
     LOGGER.info(

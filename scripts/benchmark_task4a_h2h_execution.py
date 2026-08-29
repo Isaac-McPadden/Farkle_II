@@ -359,7 +359,9 @@ def summarize(measurements: Sequence[dict[str, object]]) -> dict[str, object]:
             "median_wall_seconds": statistics.median(walls),
             "scheduled_chunks": sum(cast(int, row["scheduled_chunks"]) for row in telemetry_rows),
             "checkpoint_writes": sum(cast(int, row["checkpoint_writes"]) for row in telemetry_rows),
-            "pool_generations": sum(cast(int, row["pool_generations"]) for row in telemetry_rows),
+            "executor_generations": sum(
+                cast(int, row["executor_generations"]) for row in telemetry_rows
+            ),
             "worker_initializer_loads": sum(
                 cast(int, row["worker_initializer_loads"]) for row in telemetry_rows
             ),

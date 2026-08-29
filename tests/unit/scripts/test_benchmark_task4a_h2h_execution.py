@@ -46,7 +46,7 @@ def test_quick_benchmark_uses_real_execute_path_and_resumes(tmp_path: Path) -> N
         assert counts["attempted"] == 12
         assert telemetry["scheduled_chunks"] == telemetry["completed_chunks"] == 4
         assert telemetry["checkpoint_writes"] == 4
-        assert telemetry["pool_generations"] == 1
+        assert telemetry["executor_generations"] == 1
         assert telemetry["worker_initializer_loads"] == 1
         assert telemetry["sidecar_publications"] == (
             cast(int, telemetry["checkpoint_writes"])
@@ -76,7 +76,7 @@ def test_summary_rejects_policy_output_difference() -> None:
         "telemetry": {
             "scheduled_chunks": 4,
             "checkpoint_writes": 4,
-            "pool_generations": 1,
+            "executor_generations": 1,
             "worker_initializer_loads": 1,
         },
     }
@@ -126,6 +126,6 @@ def test_real_h2h_path_is_identical_across_worker_counts(tmp_path: Path) -> None
 
     assert one["counts"] == two["counts"]
     assert one["digests"] == two["digests"]
-    assert cast(dict[str, object], one["telemetry"])["pool_generations"] == 1
-    assert cast(dict[str, object], two["telemetry"])["pool_generations"] == 1
+    assert cast(dict[str, object], one["telemetry"])["executor_generations"] == 1
+    assert cast(dict[str, object], two["telemetry"])["executor_generations"] == 1
     assert cast(dict[str, object], two["telemetry"])["worker_initializer_loads"] == 2

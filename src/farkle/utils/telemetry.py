@@ -316,7 +316,7 @@ class _WorkerProgressChannel:
 
 
 def install_worker_progress_endpoint(endpoint: WorkerProgressEndpoint | None) -> None:
-    """Install a process-local nonlogging endpoint from a pool initializer."""
+    """Install a process-local nonlogging endpoint from a process-pool initializer."""
 
     global _WORKER_PROGRESS_ENDPOINT, _WORKER_PROGRESS_SEQUENCE
     _WORKER_PROGRESS_ENDPOINT = endpoint

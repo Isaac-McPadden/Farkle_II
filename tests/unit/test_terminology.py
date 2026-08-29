@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.check_terminology import find_violations
 
 AMBIGUOUS = "\x70\x6f\x6f\x6c"
+BRITISH_LABEL = "\x6c\x61\x62\x65\x6c\x6c\x65\x64"
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -48,6 +49,34 @@ def test_legitimate_external_api_symbols_do_not_exempt_other_text(tmp_path: Path
 
     assert len(violations) == 1
     assert "description" in violations[0]
+
+
+def test_qualified_process_concurrency_terms_are_allowed(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "src/farkle/workers.py",
+        "executor_mode = 'process_pool'\n"
+        "description = 'process pool workers'\n"
+        "marker = 'FARKLE_PROCESS_POOL_ACTIVE'\n",
+    )
+
+    assert find_violations(tmp_path) == []
+
+
+def test_maintained_british_spelling_fails_with_replacement(tmp_path: Path) -> None:
+    _write(tmp_path, "src/farkle/report.py", f'description = "clearly {BRITISH_LABEL}"\n')
+
+    violations = find_violations(tmp_path)
+
+    assert len(violations) == 1
+    assert "use 'labeled'" in violations[0]
+
+
+def test_historical_british_spelling_is_outside_enforcement_scope(tmp_path: Path) -> None:
+    _write(tmp_path, "docs/reviews/prior.md", f"historically {BRITISH_LABEL}\n")
+    _write(tmp_path, "docs/remediation/evidence.md", f"previously {BRITISH_LABEL}\n")
+
+    assert find_violations(tmp_path) == []
 
 
 def test_case_token_boundary_and_path_rules_are_deterministic(tmp_path: Path) -> None:

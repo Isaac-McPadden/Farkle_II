@@ -26,7 +26,8 @@ def test_default_grid_size():
 
 
 def test_default_size():
-    assert experiment_size() == len(generate_strategy_grid()[0])
+    assert experiment_size() == 5_160
+    assert len(generate_strategy_grid()[0]) == 5_160
 
 
 def test_size_and_grid_match():

@@ -3,7 +3,7 @@
 
 Key entry points include:
 
-* ``generate_strategy_grid`` for building the canonical 800-strategy (or custom) grid
+* ``generate_strategy_grid`` for building the canonical 5,160-strategy (or custom) grid
   and returning both strategies and a DataFrame view.
 * ``simulate_many_games`` for executing batches of games, with optional parallelism.
 * ``aggregate_metrics`` for summarizing simulation results into lightweight metrics.
@@ -82,7 +82,7 @@ def generate_strategy_grid(
     Tuple[List[ThresholdStrategy], pandas.DataFrame]
         The first element contains fully constructed strategies in the
         same order as the metadata ``DataFrame`` returned as the second
-        element.  The default grid consists of 3,676 strategies.
+        element.  The default grid consists of 5,160 strategies.
         When a threshold flag is disabled the corresponding threshold column
         uses a sentinel value (one less than the minimum configured threshold)
         to indicate that it is inactive.

@@ -806,6 +806,9 @@ def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -
     summary = completed["h2h_scope:h2h_execute"]
     assert summary["nonviable_blocks"] == 4
     assert summary["completed_blocks"] == 4
+    assert summary["executor_generations"] == 0
+    assert summary["executor_construction_seconds"] == 0.0
+    assert summary["executor_shutdown_seconds"] == 0.0
     assert summary["reconciled_from"] == "authenticated_h2h_block_checkpoints"
     scope.finish(status="success")
     recorder.close()

@@ -2,7 +2,7 @@
 """Utility subpackage for Farkle.
 
 This package collects small helpers that are shared by the
-simulation and analysis pipelines.  Functions are organised into
+simulation and analysis pipelines.  Functions are organized into
 focused modules such as :mod:`files`, :mod:`parallel` and
 :mod:`logging` so that the core game logic remains free of side
 effects like file I/O or multiprocessing.
