@@ -148,7 +148,7 @@ def _write_manifest(
         )
         write_json_artifact_atomic(payload, manifest_path, sidecar=sidecar)
         return
-    with atomic_path(str(manifest_path)) as staged:
+    with atomic_path(str(manifest_path), temp_dir=cfg.io.temp_dir) as staged:
         Path(staged).write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

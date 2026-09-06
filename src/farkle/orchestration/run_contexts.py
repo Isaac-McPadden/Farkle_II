@@ -98,6 +98,7 @@ class RunContextConfig(AppConfig):
         run_cfg._code_identity = base._code_identity
         run_cfg._run_lineage_sha256 = base._run_lineage_sha256
         run_cfg._game_profile_sha256 = base._game_profile_sha256
+        run_cfg.set_resource_limiter_mode(base.resource_limiter_mode)
         run_cfg._analysis_root_override = analysis_root
         run_cfg._root_input_layout_override = root_input_layout
         if stage_layout is not None:
@@ -253,7 +254,7 @@ def write_run_context_atomic(
     code_identity: CodeIdentity,
     parent_lifecycle_roots: tuple[str, ...] = (),
     cli_overrides: tuple[str, ...] = (),
-    worker_counts: Mapping[str, Mapping[str, int | None]] | None = None,
+    worker_counts: Mapping[str, Mapping[str, object]] | None = None,
     game_profile_sha256: str | None = None,
 ) -> str:
     """Publish the authenticated runtime/layout artifact separately from YAML."""
@@ -271,6 +272,7 @@ def write_run_context_atomic(
         ),
         "analysis_root": str(context.analysis_root),
         "active_config": str(context.active_config_path),
+        "temp_dir": str(cfg.io.temp_dir.resolve()) if cfg.io.temp_dir is not None else None,
     }
     worker_counts_payload = (
         {
@@ -304,6 +306,7 @@ def write_run_context_atomic(
             "head2head_n_jobs": cfg.head2head.n_jobs,
             "parallel_seeds": cfg.orchestration.parallel_seeds,
             "resources": asdict(cfg.resources),
+            "resource_limiter_mode": cfg.resource_limiter_mode.value,
             "worker_counts": worker_counts_payload,
         }
         existing_stable_execution = (
@@ -331,7 +334,7 @@ def write_run_context_atomic(
         ):
             return lineage_sha
 
-    def default_worker_metadata(stage: str, section: Any) -> dict[str, int | None]:
+    def default_worker_metadata(stage: str, section: Any) -> dict[str, object]:
         requested = getattr(section, "n_jobs", None)
         resolved = normalize_n_jobs(requested, default=1)
         policy = resolve_stage_parallel_policy(
@@ -349,6 +352,9 @@ def write_run_context_atomic(
             "estimated_worker_memory_mb": policy.estimated_worker_memory_mb,
             "scheduler_memory_budget_mb": policy.scheduler_memory_budget_mb,
             "parent_process_memory_mb": policy.parent_process_memory_mb,
+            "resource_limiter_mode": policy.limiter_mode.value,
+            "native_thread_limit_enabled": policy.limit_native_threads,
+            "memory_limiters_enabled": policy.memory_limiters_enabled,
         }
 
     boundary = memory_boundary_provenance(cfg.resources)
@@ -364,6 +370,7 @@ def write_run_context_atomic(
         "head2head_n_jobs": cfg.head2head.n_jobs,
         "parallel_seeds": cfg.orchestration.parallel_seeds,
         "resources": asdict(cfg.resources),
+        "resource_limiter_mode": cfg.resource_limiter_mode.value,
         "resource_policy": resolved_resources.as_metadata(
             effective_hard_limit_mb=cast(int | None, boundary.get("effective_hard_limit_mb"))
         ),
@@ -380,7 +387,7 @@ def write_run_context_atomic(
         ),
     }
     payload = {
-        "run_context_contract_version": 2,
+        "run_context_contract_version": 3,
         "run_lineage_sha256": lineage_sha,
         "public_config_sha256": cfg.config_sha,
         "resource_config_sha256": identity_sha256(asdict(cfg.resources)),
@@ -400,7 +407,7 @@ def write_run_context_atomic(
     payload["run_context_sha256"] = identity_sha256(payload)
     path = context.run_context_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as temporary:
+    with atomic_path(str(path), temp_dir=cfg.io.temp_dir) as temporary:
         Path(temporary).write_bytes(canonical_json_bytes(payload) + b"\n")
     return lineage_sha
 
@@ -427,6 +434,14 @@ def load_run_context(path: Path, *, active_config_path: Path | None = None) -> d
             raise ValueError("run context does not bind adjacent execution resource controls")
         if identity_sha256(asdict(config.profile)) != payload.get("profile_config_sha256"):
             raise ValueError("run context does not bind the adjacent run profile")
+        resolved_paths = payload.get("resolved_paths")
+        expected_temp_dir = (
+            str(config.io.temp_dir.resolve()) if config.io.temp_dir is not None else None
+        )
+        if not isinstance(resolved_paths, Mapping) or resolved_paths.get(
+            "temp_dir"
+        ) != expected_temp_dir:
+            raise ValueError("run context does not bind the adjacent scratch path")
     return payload
 
 

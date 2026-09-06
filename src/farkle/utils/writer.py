@@ -7,7 +7,6 @@ row tracking.
 from __future__ import annotations
 
 import os
-import tempfile
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
@@ -17,24 +16,29 @@ import pyarrow.parquet as pq
 
 from .artifact_contract import (
     ArtifactSidecar,
+    make_staged_path,
     publish_staged_artifact_with_sidecar,
-    replace_file_atomic,
+    publish_staged_file_atomic,
 )
 from .types import Compression, normalize_compression
 
 
 @contextmanager
-def atomic_path(final_path: str) -> Iterator[str]:
-    """Write to a temp file in the same directory, then atomic replace."""
-    dir_ = os.path.dirname(os.path.abspath(final_path)) or "."
-    fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
+def atomic_path(
+    final_path: str,
+    *,
+    temp_dir: str | os.PathLike[str] | None = None,
+) -> Iterator[str]:
+    """Write in configured scratch (or beside the target), then publish atomically."""
+
+    fd, staged = make_staged_path(final_path, prefix="._tmp_", temp_dir=temp_dir)
     os.close(fd)
     try:
-        yield tmp
-        replace_file_atomic(tmp, final_path)
+        yield str(staged)
+        publish_staged_file_atomic(staged, final_path)
     finally:
         with suppress(FileNotFoundError):
-            os.remove(tmp)
+            os.remove(staged)
 
 
 @dataclass
@@ -46,6 +50,7 @@ class ParquetShardWriter:
     compression: Compression = "snappy"
     row_group_size: int = 200_000
     sidecar: ArtifactSidecar | None = None
+    temp_dir: str | os.PathLike[str] | None = None
 
     _writer: Optional[pq.ParquetWriter] = None
     _tmp_path: str = ""
@@ -53,10 +58,9 @@ class ParquetShardWriter:
 
     def __post_init__(self) -> None:
         self.compression = normalize_compression(self.compression)
-        dir_ = os.path.dirname(os.path.abspath(self.out_path)) or "."
-        fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
+        fd, tmp = make_staged_path(self.out_path, prefix="._tmp_", temp_dir=self.temp_dir)
         os.close(fd)
-        self._tmp_path = tmp
+        self._tmp_path = str(tmp)
 
     def __enter__(self) -> "ParquetShardWriter":
         return self
@@ -106,7 +110,7 @@ class ParquetShardWriter:
                 raise
         if success:
             if self.sidecar is None:
-                replace_file_atomic(self._tmp_path, self.out_path)
+                publish_staged_file_atomic(self._tmp_path, self.out_path)
             else:
                 publish_staged_artifact_with_sidecar(
                     self._tmp_path,

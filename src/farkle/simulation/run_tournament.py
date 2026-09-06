@@ -627,6 +627,7 @@ def _save_checkpoint(
     *,
     meta: Mapping[str, Any] | None = None,
     sidecar: ArtifactSidecar | None = None,
+    temp_dir: Path | None = None,
 ) -> None:
     """Pickle the current aggregates to path."""
 
@@ -641,7 +642,7 @@ def _save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     content = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
     if sidecar is None:
-        with atomic_path(str(path)) as tmp_path:
+        with atomic_path(str(path), temp_dir=temp_dir) as tmp_path:
             Path(tmp_path).write_bytes(content)
         return
 
@@ -1070,6 +1071,7 @@ def run_tournament(
     write_final_metrics_artifact: bool = True,
     write_workload_plan_artifact: bool = True,
     execution_policy: Mapping[str, object] | None = None,
+    temp_dir: Path | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -1211,7 +1213,7 @@ def run_tournament(
         if games_per_sec is not None:
             workload_plan = workload_plan.with_games_per_second(games_per_sec)
         if workload_plan_path is not None and write_workload_plan_artifact:
-            write_workload_plan(workload_plan_path, workload_plan)
+            write_workload_plan(workload_plan_path, workload_plan, temp_dir=temp_dir)
         LOGGER.info(
             "Tournament workload projection complete",
             extra={"stage": "simulation", **workload_plan.to_dict()},
@@ -1732,6 +1734,7 @@ def run_tournament(
                     (metric_sq_sums if (collect_metrics or collect_rows) else None),
                     meta=checkpoint_meta,
                     sidecar=checkpoint_sidecar,
+                    temp_dir=temp_dir,
                 )
                 checkpoint_progress.maybe_log(
                     win_totals.games_attempted,
@@ -1791,6 +1794,7 @@ def run_tournament(
         metric_sq_sums if (collect_metrics or collect_rows) else None,
         meta=checkpoint_meta,
         sidecar=checkpoint_sidecar,
+        temp_dir=temp_dir,
     )
     latest_checkpoint_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     latest_checkpoint_games = win_totals.games_attempted
@@ -1827,7 +1831,7 @@ def run_tournament(
             schema=pa.schema(fields),
         )
         metrics_path = ckpt_path.with_name(f"{cfg.n_players}p_metrics.parquet")
-        write_parquet_atomic(metrics_table, metrics_path)
+        write_parquet_atomic(metrics_table, metrics_path, temp_dir=temp_dir)
         LOGGER.info(
             "Per-table metrics written",
             extra={

@@ -68,12 +68,12 @@ from farkle.utils.artifact_contract import (
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
     ResourceFailureError,
     StageParallelPolicy,
     apply_native_thread_limits,
     cancel_pending_process_work,
     classify_resource_exception,
+    make_process_tree_memory_guard,
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
@@ -304,9 +304,11 @@ def _ratings_to_table(
 def _save_ratings_parquet(
     path: Path,
     ratings: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float]]],
+    *,
+    temp_dir: Path | None = None,
 ) -> None:
     """Write ratings to parquet in a consistent schema."""
-    write_parquet_atomic(_ratings_to_table(ratings), path)
+    write_parquet_atomic(_ratings_to_table(ratings), path, temp_dir=temp_dir)
 
 
 def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
@@ -518,11 +520,16 @@ class _ShardDoneStamp:
     version: int = 4
 
 
-def _save_done_stamp(path: Path, stamp: _ShardDoneStamp) -> None:
+def _save_done_stamp(
+    path: Path,
+    stamp: _ShardDoneStamp,
+    *,
+    temp_dir: Path | None = None,
+) -> None:
     """Write a shard completion stamp atomically."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
+    with atomic_path(str(path), temp_dir=temp_dir) as tmp_path:
         Path(tmp_path).write_text(json.dumps(asdict(stamp), indent=2, sort_keys=True))
 
 
@@ -622,10 +629,15 @@ def _block_shard_paths(root: Path, player_count: str, suffix: str) -> tuple[Path
     return shard.with_suffix(".parquet"), shard.with_suffix(".done.json")
 
 
-def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
+def _save_block_ckpt(
+    path: Path,
+    ck: _BlockCkpt,
+    *,
+    temp_dir: Path | None = None,
+) -> None:
     """Persist a per-block checkpoint atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
+    with atomic_path(str(path), temp_dir=temp_dir) as tmp_path:
         Path(tmp_path).write_text(json.dumps(asdict(ck)))
 
 
@@ -815,6 +827,7 @@ def _rate_block_worker(
     cell_freshness_sha256: str | None = None,
     root_seed: int = 0,
     max_batch_bytes: int | None = None,
+    temp_dir: str | None = None,
 ) -> tuple[str, int]:
     """
     Process one <N>_players block with optional checkpointing.
@@ -822,6 +835,7 @@ def _rate_block_worker(
     """
     block = Path(block_dir)
     root = Path(root_dir)
+    scratch_dir = Path(temp_dir) if temp_dir is not None else None
     row_data_path = Path(row_data_dir) if row_data_dir else None
     if (
         cell_freshness_sha256 is None
@@ -1003,31 +1017,35 @@ def _rate_block_worker(
 
             batches_since_ck += 1
             if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
-                _save_ratings_parquet(rk_path, ratings)
+                if scratch_dir is None:
+                    _save_ratings_parquet(rk_path, ratings)
+                else:
+                    _save_ratings_parquet(rk_path, ratings, temp_dir=scratch_dir)
                 ratings_sha256 = sha256_file(rk_path)
-                _save_block_ckpt(
-                    ck_path,
-                    _BlockCkpt(
-                        row_file=str(row_file),
-                        row_group=rg,
-                        batch_index=bi + 1,
-                        games_done=performed_update_games,
-                        ratings_path=str(rk_path),
-                        freshness_sha256=cell_freshness_sha256,
-                        attempted_games=attempted_games,
-                        completed_games=completed_games,
-                        excluded_safety_limit_games=excluded_safety_limit_games,
-                        strategy_attempted_exposures=strategy_attempted,
-                        strategy_completed_exposures=strategy_completed,
-                        strategy_excluded_safety_limit_exposures=strategy_excluded,
-                        strategy_performed_updates=strategy_updates,
-                        batch_bytes=effective_batch_bytes,
-                        batch_rows=int(batch_rows),
-                        source_sha256=source_sha256,
-                        source_sidecar_sha256=source_sidecar_sha256,
-                        ratings_sha256=ratings_sha256,
-                    ),
+                checkpoint = _BlockCkpt(
+                    row_file=str(row_file),
+                    row_group=rg,
+                    batch_index=bi + 1,
+                    games_done=performed_update_games,
+                    ratings_path=str(rk_path),
+                    freshness_sha256=cell_freshness_sha256,
+                    attempted_games=attempted_games,
+                    completed_games=completed_games,
+                    excluded_safety_limit_games=excluded_safety_limit_games,
+                    strategy_attempted_exposures=strategy_attempted,
+                    strategy_completed_exposures=strategy_completed,
+                    strategy_excluded_safety_limit_exposures=strategy_excluded,
+                    strategy_performed_updates=strategy_updates,
+                    batch_bytes=effective_batch_bytes,
+                    batch_rows=int(batch_rows),
+                    source_sha256=source_sha256,
+                    source_sidecar_sha256=source_sidecar_sha256,
+                    ratings_sha256=ratings_sha256,
                 )
+                if scratch_dir is None:
+                    _save_block_ckpt(ck_path, checkpoint)
+                else:
+                    _save_block_ckpt(ck_path, checkpoint, temp_dir=scratch_dir)
                 if progress_logger is not None:
                     progress_logger.maybe_log(
                         attempted_games,
@@ -1079,69 +1097,73 @@ def _rate_block_worker(
         # Atomic writes for per-N outputs
         # Write per-N ratings as Parquet (strategy, mu, sigma)
         sidecar_path(parquet_path).unlink(missing_ok=True)
-        _save_ratings_parquet(parquet_path, ratings_stats)
+        if scratch_dir is None:
+            _save_ratings_parquet(parquet_path, ratings_stats)
+        else:
+            _save_ratings_parquet(parquet_path, ratings_stats, temp_dir=scratch_dir)
 
         json_path = paths["json"]
         sidecar_path(json_path).unlink(missing_ok=True)
-        with atomic_path(str(json_path)) as tmp_path:
+        with atomic_path(str(json_path), temp_dir=scratch_dir) as tmp_path:
             Path(tmp_path).write_text(
                 json.dumps(
                     {strategy: asdict(stats) for strategy, stats in ratings_stats.items()},
                     sort_keys=True,
                 )
             )
-        _save_done_stamp(
-            done_path,
-            _ShardDoneStamp(
-                shard_key=f"k={player_count}",
-                parquet_path=str(parquet_path),
-                rows=int(performed_update_games),
-                created_at=time.time(),
-                root_seed=root_seed,
-                player_count=n,
-                method_version=TRUESKILL_CELL_METHOD_VERSION,
-                source_sha256=sha256_file(row_file),
-                source_sidecar_sha256=(
-                    sha256_file(sidecar_path(row_file))
-                    if sidecar_path(row_file).is_file()
-                    else None
-                ),
-                parquet_sha256=sha256_file(parquet_path),
-                freshness_sha256=cell_freshness_sha256,
-                sidecar_sha256=None,
-                attempted_games=attempted_games,
-                completed_games=completed_games,
-                excluded_safety_limit_games=excluded_safety_limit_games,
-                performed_update_games=performed_update_games,
+        done_stamp = _ShardDoneStamp(
+            shard_key=f"k={player_count}",
+            parquet_path=str(parquet_path),
+            rows=int(performed_update_games),
+            created_at=time.time(),
+            root_seed=root_seed,
+            player_count=n,
+            method_version=TRUESKILL_CELL_METHOD_VERSION,
+            source_sha256=sha256_file(row_file),
+            source_sidecar_sha256=(
+                sha256_file(sidecar_path(row_file)) if sidecar_path(row_file).is_file() else None
             ),
+            parquet_sha256=sha256_file(parquet_path),
+            freshness_sha256=cell_freshness_sha256,
+            sidecar_sha256=None,
+            attempted_games=attempted_games,
+            completed_games=completed_games,
+            excluded_safety_limit_games=excluded_safety_limit_games,
+            performed_update_games=performed_update_games,
         )
+        if scratch_dir is None:
+            _save_done_stamp(done_path, done_stamp)
+        else:
+            _save_done_stamp(done_path, done_stamp, temp_dir=scratch_dir)
         sidecar_path(shard_parquet).unlink(missing_ok=True)
-        _save_ratings_parquet(shard_parquet, ratings_stats)
-        _save_done_stamp(
-            shard_done_path,
-            _ShardDoneStamp(
-                shard_key=f"k={player_count}",
-                parquet_path=str(shard_parquet),
-                rows=int(performed_update_games),
-                created_at=time.time(),
-                root_seed=root_seed,
-                player_count=n,
-                method_version=TRUESKILL_CELL_METHOD_VERSION,
-                source_sha256=sha256_file(row_file),
-                source_sidecar_sha256=(
-                    sha256_file(sidecar_path(row_file))
-                    if sidecar_path(row_file).is_file()
-                    else None
-                ),
-                parquet_sha256=sha256_file(shard_parquet),
-                freshness_sha256=cell_freshness_sha256,
-                sidecar_sha256=None,
-                attempted_games=attempted_games,
-                completed_games=completed_games,
-                excluded_safety_limit_games=excluded_safety_limit_games,
-                performed_update_games=performed_update_games,
+        if scratch_dir is None:
+            _save_ratings_parquet(shard_parquet, ratings_stats)
+        else:
+            _save_ratings_parquet(shard_parquet, ratings_stats, temp_dir=scratch_dir)
+        shard_done_stamp = _ShardDoneStamp(
+            shard_key=f"k={player_count}",
+            parquet_path=str(shard_parquet),
+            rows=int(performed_update_games),
+            created_at=time.time(),
+            root_seed=root_seed,
+            player_count=n,
+            method_version=TRUESKILL_CELL_METHOD_VERSION,
+            source_sha256=sha256_file(row_file),
+            source_sidecar_sha256=(
+                sha256_file(sidecar_path(row_file)) if sidecar_path(row_file).is_file() else None
             ),
+            parquet_sha256=sha256_file(shard_parquet),
+            freshness_sha256=cell_freshness_sha256,
+            sidecar_sha256=None,
+            attempted_games=attempted_games,
+            completed_games=completed_games,
+            excluded_safety_limit_games=excluded_safety_limit_games,
+            performed_update_games=performed_update_games,
         )
+        if scratch_dir is None:
+            _save_done_stamp(shard_done_path, shard_done_stamp)
+        else:
+            _save_done_stamp(shard_done_path, shard_done_stamp, temp_dir=scratch_dir)
 
         run_completed = True
         return player_count, performed_update_games
@@ -1180,6 +1202,7 @@ def run_trueskill(
     cell_freshness_sha256: str | None = None,
     resources: ResourcesConfig | None = None,
     max_batch_bytes: int | None = None,
+    temp_dir: Path | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1258,12 +1281,7 @@ def run_trueskill(
     )
     apply_native_thread_limits(policy)
     actual_workers = max(1, min(policy.process_workers, len(blocks)))
-    memory_guard = ProcessTreeMemoryGuard(
-        effective_resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=effective_resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=(effective_resources.minimum_system_available_memory_mb),
-        sample_interval_seconds=effective_resources.rss_sample_interval_seconds,
-    )
+    memory_guard = make_process_tree_memory_guard(effective_resources)
     memory_guard.check_before_schedule(force=True)
     if actual_workers != requested:
         LOGGER.info(
@@ -1295,21 +1313,26 @@ def run_trueskill(
                     block = next(block_iterator)
                 except StopIteration:
                     return False
+                worker_kwargs: dict[str, Any] = {
+                    "resume": resume_per_n,
+                    "checkpoint_every_batches": checkpoint_every_batches,
+                    "progress_logging": progress_logging,
+                    "env_kwargs": env_kwargs_float,
+                    "row_data_dir": str(row_data_path) if row_data_path else None,
+                    "curated_rows_name": curated_rows_name,
+                    "cell_freshness_sha256": cell_freshness_sha256,
+                    "root_seed": output_seed,
+                    "max_batch_bytes": max_batch_bytes,
+                }
+                if temp_dir is not None:
+                    worker_kwargs["temp_dir"] = str(temp_dir)
                 future = ex.submit(
                     _rate_block_worker,
                     str(block),
                     str(root),
                     suffix,
                     batch_rows,
-                    resume=resume_per_n,
-                    checkpoint_every_batches=checkpoint_every_batches,
-                    progress_logging=progress_logging,
-                    env_kwargs=env_kwargs_float,
-                    row_data_dir=str(row_data_path) if row_data_path else None,
-                    curated_rows_name=curated_rows_name,
-                    cell_freshness_sha256=cell_freshness_sha256,
-                    root_seed=output_seed,
-                    max_batch_bytes=max_batch_bytes,
+                    **worker_kwargs,
                 )
                 futures[future] = block
                 return True
@@ -1349,21 +1372,39 @@ def run_trueskill(
                 ex.shutdown(wait=True, cancel_futures=False)
     else:
         for block in blocks:
-            player_count, block_games = _rate_block_worker(
-                str(block),
-                str(root),
-                suffix,
-                batch_rows,
-                resume=resume_per_n,
-                checkpoint_every_batches=checkpoint_every_batches,
-                progress_logging=progress_logging,
-                env_kwargs=env_kwargs_float,
-                row_data_dir=str(row_data_path) if row_data_path else None,
-                curated_rows_name=curated_rows_name,
-                cell_freshness_sha256=cell_freshness_sha256,
-                root_seed=output_seed,
-                max_batch_bytes=max_batch_bytes,
-            )
+            if temp_dir is None:
+                player_count, block_games = _rate_block_worker(
+                    str(block),
+                    str(root),
+                    suffix,
+                    batch_rows,
+                    resume=resume_per_n,
+                    checkpoint_every_batches=checkpoint_every_batches,
+                    progress_logging=progress_logging,
+                    env_kwargs=env_kwargs_float,
+                    row_data_dir=str(row_data_path) if row_data_path else None,
+                    curated_rows_name=curated_rows_name,
+                    cell_freshness_sha256=cell_freshness_sha256,
+                    root_seed=output_seed,
+                    max_batch_bytes=max_batch_bytes,
+                )
+            else:
+                player_count, block_games = _rate_block_worker(
+                    str(block),
+                    str(root),
+                    suffix,
+                    batch_rows,
+                    resume=resume_per_n,
+                    checkpoint_every_batches=checkpoint_every_batches,
+                    progress_logging=progress_logging,
+                    env_kwargs=env_kwargs_float,
+                    row_data_dir=str(row_data_path) if row_data_path else None,
+                    curated_rows_name=curated_rows_name,
+                    cell_freshness_sha256=cell_freshness_sha256,
+                    root_seed=output_seed,
+                    max_batch_bytes=max_batch_bytes,
+                    temp_dir=str(temp_dir),
+                )
             del player_count, block_games
 
     memory_guard.check_before_schedule(force=True)
@@ -1495,7 +1536,10 @@ def _seal_rating_cell_completion(
         stamp,
         sidecar_sha256=sha256_file(sidecar_path(cell.ratings_path)),
     )
-    _save_done_stamp(done_path, sealed)
+    if cfg.io.temp_dir is None:
+        _save_done_stamp(done_path, sealed)
+    else:
+        _save_done_stamp(done_path, sealed, temp_dir=cfg.io.temp_dir)
     return sealed
 
 
@@ -1577,20 +1621,25 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
                 "row_data_dir": str(seed_row_data_dir) if seed_row_data_dir else None,
             },
         )
+        run_kwargs: dict[str, Any] = {
+            "output_seed": seed,
+            "root": analysis_dir,
+            "dataroot": seed_results_root,
+            "row_data_dir": seed_row_data_dir,
+            "curated_rows_name": cfg.curated_rows_name,
+            "workers": analysis_cfg.n_jobs or None,
+            "resume_per_n": not force,
+            "env_kwargs": env_kwargs,
+            "mp_start_method": analysis_cfg.mp_start_method,
+            "progress_logging": analysis_cfg.progress_logging,
+            "cell_freshness_sha256": cell_freshness,
+            "resources": cfg.resources,
+            "max_batch_bytes": cfg.resources.stage_batch_bytes["trueskill"],
+        }
+        if cfg.io.temp_dir is not None:
+            run_kwargs["temp_dir"] = cfg.io.temp_dir
         run_trueskill(
-            output_seed=seed,
-            root=analysis_dir,
-            dataroot=seed_results_root,
-            row_data_dir=seed_row_data_dir,
-            curated_rows_name=cfg.curated_rows_name,
-            workers=analysis_cfg.n_jobs or None,
-            resume_per_n=not force,
-            env_kwargs=env_kwargs,
-            mp_start_method=analysis_cfg.mp_start_method,
-            progress_logging=analysis_cfg.progress_logging,
-            cell_freshness_sha256=cell_freshness,
-            resources=cfg.resources,
-            max_batch_bytes=cfg.resources.stage_batch_bytes["trueskill"],
+            **run_kwargs,
         )
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}

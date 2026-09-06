@@ -42,6 +42,33 @@ def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
     assert captured == {"seed": 123}
 
 
+@pytest.mark.parametrize("mode", ["enabled", "memory-only", "disabled"])
+def test_resource_limiter_global_option_accepts_all_modes(mode: str) -> None:
+    args = cli_main.build_parser().parse_args(["--resource-limiters", mode, "run"])
+    assert args.resource_limiters == mode
+
+
+def test_resource_limiter_default_is_enabled() -> None:
+    args = cli_main.build_parser().parse_args(["run"])
+    assert args.resource_limiters == "enabled"
+
+
+def test_resource_limiter_rejects_invalid_mode() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.build_parser().parse_args(["--resource-limiters", "anything", "run"])
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["time", "watch"])
+def test_nondefault_resource_limiters_rejected_for_unprotected_commands(
+    command: str,
+    preserve_root_logger,
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(["--resource-limiters", "disabled", command])
+    assert excinfo.value.code == 2
+
+
 def test_parse_level_accepts_string(preserve_root_logger):
     root = logging.getLogger()
     root.setLevel(logging.WARNING)
@@ -188,6 +215,7 @@ def test_stringify_paths_handles_nested_structures():
 def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
     cfg = cli_main.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.io.temp_dir = (tmp_path / "scratch").resolve()
     cfg.analysis.outputs = {}
     cfg.sim.row_dir = tmp_path / "rows"
 
@@ -197,6 +225,7 @@ def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
     assert written.exists()
     data = yaml.safe_load(written.read_text())
     assert data["io"]["results_dir_prefix"].endswith("results")
+    assert Path(data["io"]["temp_dir"]) == cfg.io.temp_dir
     assert data["sim"]["row_dir"].endswith("rows")
 
 

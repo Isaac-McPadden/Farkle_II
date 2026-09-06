@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-27`
+- Reconciled date: `2026-09-03`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -55,7 +55,7 @@ changing code or accepting a statistical conclusion.
   Its freshness identity included the typed public lag set and matchup-group
   cap, while artifact method metadata records the effective cap, normalized
   lags, and tracked/skipped group counts.
-  Run-context contract v2 additionally authenticates execution-only resource
+  Run-context contract v3 additionally authenticates execution-only resource
   controls. The recovered resource contract separates scheduler admission
   memory, process-tree RSS warning high water, explicit aggregate OS hard limit,
   minimum host-available reserve, parent-process estimate, logical CPU budget,
@@ -64,6 +64,12 @@ changing code or accepting a statistical conclusion.
   `n_jobs` fields and all resource controls are excluded from statistical/global
   config identity while remaining authenticated execution provenance. Shared
   parallel policy samples process-tree RSS and suppresses nested process pools.
+  The runtime-only limiter mode selects full controls, memory-only controls, or
+  OS-managed allocation without changing statistical identity. Optional
+  absolute `io.temp_dir` is public path provenance and stages growing files and
+  temporary analysis workspaces outside synchronized results trees; per-file
+  data/sidecar/completion ordering, bounded cross-filesystem publication,
+  canonical checkpoints, and exact resume are preserved.
   The partitioned-stage primitive publishes
   exact-byte unit stamps and a final ordered manifest only after all units
   validate. TrueSkill projected reads use byte-bounded Arrow batches instead of

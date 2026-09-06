@@ -41,8 +41,8 @@ from farkle.utils.authenticated_contract import (
 )
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.partitioned_stage import (
@@ -825,8 +825,9 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
         )
     stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest, resources=cfg.resources)
     apply_native_thread_limits(stage_policy)
-    pa.set_cpu_count(stage_policy.arrow_threads)
-    pa.set_io_thread_count(stage_policy.arrow_threads)
+    if stage_policy.limit_native_threads:
+        pa.set_cpu_count(stage_policy.arrow_threads)
+        pa.set_io_thread_count(stage_policy.arrow_threads)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     outputs = [cfg.ingested_rows_raw(k) for k in player_counts]
     manifests = [cfg.ingest_manifest(k) for k in player_counts]
@@ -838,12 +839,7 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
         path for source in sources for path in (source.manifest_path, source.completion_path)
     ]
     identity = _ingest_partition_identity(cfg, sources)
-    guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    guard = make_process_tree_memory_guard(cfg.resources)
     captured_sidecars: list[tuple[int, ArtifactSidecar]] = []
     for source in sources:
         template = _ingested_rows_sidecar(
@@ -869,6 +865,7 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
         unit_source=lambda: iter(units),
         writer=_IngestUnitWriter(cfg, sources),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.ingest.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         memory_guard=guard,

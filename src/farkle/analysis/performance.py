@@ -35,6 +35,7 @@ from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.partitioned_stage import (
@@ -1000,6 +1001,7 @@ def _reduce_bootstrap_ranges(
         unit_source=unit_source,
         writer=writer,
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
@@ -1377,12 +1379,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
     cfg.validate_resource_contract()
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
-    guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    guard = make_process_tree_memory_guard(cfg.resources, guard_type=ProcessTreeMemoryGuard)
     guard.check_before_schedule(force=True)
     for k, source, matrix_path in zip(required_k, sources, matrix_paths, strict=True):
         materialized = _materialize_batch_matrix(

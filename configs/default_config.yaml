@@ -2,6 +2,7 @@
 # This fully materialized reference matches AppConfig's library defaults.
 
 io:
+  temp_dir: null
   results_dir_prefix: "results"
   analysis_subdir: "analysis"
 

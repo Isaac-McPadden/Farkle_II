@@ -86,7 +86,7 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
 
 def test_resolved_app_config_crosses_spawn_process_boundary(tmp_path: Path) -> None:
     cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
-    expected_keys = cfg.stage_layout.keys()
+    expected_keys = tuple(cfg.stage_layout.keys())
 
     with ProcessPoolExecutor(
         max_workers=1,
@@ -95,7 +95,7 @@ def test_resolved_app_config_crosses_spawn_process_boundary(tmp_path: Path) -> N
         future = executor.submit(_resolved_layout_keys, cfg)
         assert future.result(timeout=30) == expected_keys
 
-    assert cfg.stage_layout.keys() == expected_keys
+    assert tuple(cfg.stage_layout.keys()) == expected_keys
 
 
 def test_resolve_stage_layout_excludes_disabled_stages_before_numbering(tmp_path: Path) -> None:

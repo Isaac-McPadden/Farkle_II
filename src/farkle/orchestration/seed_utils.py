@@ -90,7 +90,7 @@ def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
     resolved_dict = effective_config_dict(cfg)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     target = target_dir / "active_config.yaml"
-    with atomic_path(str(target)) as tmp_path:
+    with atomic_path(str(target), temp_dir=cfg.io.temp_dir) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
 
     expected_hash = compute_config_sha(cfg)
@@ -112,7 +112,7 @@ def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
         "round_trip_config_sha": reloaded_hash,
     }
     done_path = target.with_suffix(".done.json")
-    with atomic_path(str(done_path)) as tmp_path:
+    with atomic_path(str(done_path), temp_dir=cfg.io.temp_dir) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps(done_payload, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -131,6 +131,7 @@ def prepare_seed_config(
     io_cfg = dataclasses.replace(base_cfg.io, results_dir_prefix=base_dir)
     sim_cfg = dataclasses.replace(base_cfg.sim, seed=seed, seed_list=[seed])
     prepared = dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
+    prepared.set_resource_limiter_mode(base_cfg.resource_limiter_mode)
     assign_config_sha(prepared)
     return prepared
 

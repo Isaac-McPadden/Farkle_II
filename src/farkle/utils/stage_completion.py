@@ -407,6 +407,7 @@ def write_stage_done(
     code_identity: Any | None = None,
     run_lineage_sha256: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    temp_dir: Path | None = None,
 ) -> None:
     """Persist lifecycle state after declared artifact sidecars validate."""
 
@@ -510,7 +511,8 @@ def write_stage_done(
             )
         payload.update(dict(metadata))
     done_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(done_path)) as temporary_path:
+    resolved_temp_dir = temp_dir if temp_dir is not None else (cfg.io.temp_dir if cfg else None)
+    with atomic_path(str(done_path), temp_dir=resolved_temp_dir) as temporary_path:
         Path(temporary_path).write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

@@ -42,8 +42,8 @@ from farkle.utils.artifacts import (
 )
 from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -1884,12 +1884,7 @@ def execute_h2h_schedule(
         requested_workers=configured_jobs,
         effective_workers=worker_count,
     )
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:
         raise ValueError("custom H2H block runners require n_jobs=1")

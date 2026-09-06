@@ -51,8 +51,8 @@ Preserve these invariants:
   statistical compute identity but are authenticated in run contexts and
   label-publishing stages, and a non-release profile cannot pass the release
   eligibility gate;
-- public process-tree execution is launched inside one aggregate Windows Job
-  Object or delegated cgroup-v2 `memory.max` boundary using an explicit aggregate
+- public process-tree execution defaults to one aggregate Windows Job Object or
+  delegated cgroup-v2 `memory.max` boundary using an explicit aggregate
   hard limit; scheduler admission memory, RSS high-water warning, host-available
   reserve, parent-process estimate, logical CPU budget, and per-stage worker
   estimates have separate meanings, and requested/resolved/effective execution
@@ -63,6 +63,15 @@ Preserve these invariants:
   distinct telemetry, recognized resource failures cancel pending work and may
   retry pending partition coordinates once at half workers, valid publications
   are never quarantined for a soft warning, and roots fail fast before pair work;
+- the CLI runtime-only resource mode is `enabled`, `memory-only`, or `disabled`;
+  memory-only retains all memory controls while leaving CPU/native threads to
+  the OS, disabled bypasses host ceilings, and both modes retain explicit
+  `n_jobs`, nesting suppression, bounded queues, and byte-bounded streaming;
+- optional absolute `io.temp_dir` moves growing per-file data, metadata, and
+  analysis workspaces out of synchronized results trees; publication is data,
+  then sidecar, then completion, with atomic same-filesystem rename or a bounded
+  destination-local cross-filesystem bridge, while canonical checkpoint cadence
+  and exact resume remain unchanged;
 - byte-bounded streaming, atomic durable units, and exact resume are permanent
   engineering invariants; a fixed 1 GiB process-tree ceiling is not;
 - RNG diagnostic checkpoint route-layout v3 greedily groups the canonical

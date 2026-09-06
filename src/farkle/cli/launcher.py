@@ -7,7 +7,12 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.config import (
+    AppConfig,
+    ResourceLimiterMode,
+    apply_dot_overrides,
+    load_app_config,
+)
 from farkle.utils.os_memory import (
     SETUP_FAILURE_EXIT_CODE,
     MemoryBoundaryError,
@@ -54,8 +59,21 @@ def _resource_config(argv: Sequence[str]) -> AppConfig:
         index += 1
     cfg = load_app_config(config_path) if config_path is not None else AppConfig()
     apply_dot_overrides(cfg, overrides)
+    cfg.set_resource_limiter_mode(_resource_limiter_mode(argv))
     cfg.validate_resource_contract()
     return cfg
+
+
+def _resource_limiter_mode(argv: Sequence[str]) -> ResourceLimiterMode:
+    """Extract the global resource-limiter mode without importing the real CLI."""
+
+    value = ResourceLimiterMode.ENABLED.value
+    for index, token in enumerate(argv):
+        if token == "--resource-limiters" and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif token.startswith("--resource-limiters="):
+            value = token.split("=", 1)[1]
+    return ResourceLimiterMode(value)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -71,15 +89,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             cli_main(arguments)
         return 0
 
+    try:
+        _resource_limiter_mode(arguments)
+    except ValueError:
+        from farkle.cli.main import main as cli_main
+
+        cli_main(arguments)
+        return 0
     cfg = _resource_config(arguments)
+    mode = cfg.resource_limiter_mode
+    if mode is ResourceLimiterMode.DISABLED:
+        from farkle.cli.main import main as cli_main
+
+        cli_main(arguments)
+        return 0
+
     child = [sys.executable, "-m", "farkle.cli.protected", *arguments]
     child_env = os.environ.copy()
-    native_threads = str(max(1, int(cfg.resources.native_threads_per_worker)))
-    for variable in _NATIVE_THREAD_ENV_VARS:
-        child_env[variable] = native_threads
-    child_env["PYARROW_NUM_THREADS"] = native_threads
+    if mode is ResourceLimiterMode.ENABLED:
+        native_threads = str(max(1, int(cfg.resources.native_threads_per_worker)))
+        for variable in _NATIVE_THREAD_ENV_VARS:
+            child_env[variable] = native_threads
+        child_env["PYARROW_NUM_THREADS"] = native_threads
     try:
-        return supervise_process(child, cfg.resources, env=child_env)
+        if mode is ResourceLimiterMode.ENABLED:
+            return supervise_process(child, cfg.resources, env=child_env)
+        return supervise_process(
+            child,
+            cfg.resources,
+            env=child_env,
+            limit_native_threads=False,
+        )
     except MemoryBoundaryError as exc:
         print(f"Farkle OS memory boundary setup failed closed: {exc}", file=sys.stderr)
         return SETUP_FAILURE_EXIT_CODE

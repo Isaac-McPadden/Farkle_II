@@ -40,6 +40,17 @@ based on portable exception and error semantics rather than operating-system or
 sync-provider names, so local disks, network filesystems, and synchronized
 storage follow the same contract. Persistent errors still fail closed.
 
+When `io.temp_dir` is configured, growing files and temporary analysis
+workspaces live under that absolute scratch directory instead of the results
+tree. Publication remains per file: data is closed and published first, its
+sidecar second, and completion state last. A same-filesystem publication uses
+an atomic rename. A cross-filesystem publication streams through a bounded
+destination-local staging file and atomically replaces the canonical path only
+after the copy closes successfully. Existing destinations survive writer
+failures, owned scratch files are cleaned on ordinary success/failure, and
+crash-orphaned scratch files are ignored rather than broadly deleting a shared
+scratch directory. Durable checkpoints keep their canonical names and cadence.
+
 Streamed ingest rows, row-preserving curated files, rare-event shards and
 counter checkpoints, and auxiliary per-k TrueSkill exports receive the same
 adjacent hash-bound sidecars as final summaries. A no-force resume may publish
@@ -86,8 +97,8 @@ this contract.
 
 Artifact-contract-v3 simulation publication is producer-owned. Each row shard,
 metric chunk, checkpoint, summary, strategy manifest, and workload plan is
-written to a same-directory temporary path and authenticated there before its
-single canonical rename. The adjacent sidecar is then published; a crash may
+written to its configured staging location and authenticated there before
+canonical publication. The adjacent sidecar is then published; a crash may
 leave data without a sidecar, but such bytes are pending work and can never be
 consumed, completed, or sidecarred in place. Resume recomputes that coordinate.
 

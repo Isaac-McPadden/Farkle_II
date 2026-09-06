@@ -14,7 +14,6 @@ import math
 import os
 import re
 import subprocess
-import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
@@ -27,11 +26,15 @@ import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope, effective_config_dict
 from farkle.utils.artifact_contract import (
+    make_staged_path,
     read_json_file_with_retry,
     replace_file_atomic,
     retry_transient_io,
     sha256_file,
     sidecar_path,
+)
+from farkle.utils.artifact_contract import (
+    publish_staged_file_atomic as _publish_staged_file_atomic,
 )
 from farkle.utils.stage_completion import CompletionState
 from farkle.utils.writer import atomic_path
@@ -45,6 +48,12 @@ _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _BY_K_RE: Final = re.compile(r"^([1-9][0-9]*)p$")
 _SIMULATION_SCOPE: Final = ArtifactScope.DIAGNOSTICS.value
 _T = TypeVar("_T")
+
+
+def publish_staged_file_atomic(staged_path: Path | str, final_path: Path | str) -> None:
+    """Use the central publisher while retaining the local replacement test seam."""
+
+    _publish_staged_file_atomic(staged_path, final_path, replace=replace_file_atomic)
 
 
 class AuthenticatedContractError(RuntimeError):
@@ -1624,14 +1633,16 @@ def publish_immutable_manifest_atomic(
 
     final_path = location.require_path(cfg, path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    data_fd, data_name = tempfile.mkstemp(prefix="._manifest_v3_", dir=final_path.parent)
+    data_fd, staged_data = make_staged_path(
+        final_path, prefix="._manifest_v3_", temp_dir=cfg.io.temp_dir
+    )
     os.close(data_fd)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(
-        prefix="._manifest_sidecar_v3_", dir=final_path.parent
+    sidecar_fd, staged_sidecar = make_staged_path(
+        final_path,
+        prefix="._manifest_sidecar_v3_",
+        temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
-    staged_data = Path(data_name)
-    staged_sidecar = Path(sidecar_name)
     final_sidecar = sidecar_path(final_path)
     try:
         root = hashlib.sha256()
@@ -1678,8 +1689,8 @@ def publish_immutable_manifest_atomic(
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
         final_sidecar.unlink(missing_ok=True)
-        replace_file_atomic(staged_data, final_path)
-        replace_file_atomic(staged_sidecar, final_sidecar)
+        publish_staged_file_atomic(staged_data, final_path)
+        publish_staged_file_atomic(staged_sidecar, final_sidecar)
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -1704,15 +1715,16 @@ def publish_immutable_manifest_bytes_atomic(
 
     final_path = location.require_path(cfg, path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    data_fd, data_name = tempfile.mkstemp(prefix="._manifest_v3_", dir=final_path.parent)
+    data_fd, staged_data = make_staged_path(
+        final_path, prefix="._manifest_v3_", temp_dir=cfg.io.temp_dir
+    )
     os.close(data_fd)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(
+    sidecar_fd, staged_sidecar = make_staged_path(
+        final_path,
         prefix="._manifest_sidecar_v3_",
-        dir=final_path.parent,
+        temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
-    staged_data = Path(data_name)
-    staged_sidecar = Path(sidecar_name)
     final_sidecar = sidecar_path(final_path)
     try:
         write_data(staged_data)
@@ -1740,8 +1752,8 @@ def publish_immutable_manifest_bytes_atomic(
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
         final_sidecar.unlink(missing_ok=True)
-        replace_file_atomic(staged_data, final_path)
-        replace_file_atomic(staged_sidecar, final_sidecar)
+        publish_staged_file_atomic(staged_data, final_path)
+        publish_staged_file_atomic(staged_sidecar, final_sidecar)
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -1767,9 +1779,10 @@ def publish_authenticated_parquet_atomic(
 
     final_path = location.require_path(cfg, path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    data_fd, data_name = tempfile.mkstemp(prefix="._artifact_v3_", dir=final_path.parent)
+    data_fd, staged_data = make_staged_path(
+        final_path, prefix="._artifact_v3_", temp_dir=cfg.io.temp_dir
+    )
     os.close(data_fd)
-    staged_data = Path(data_name)
     try:
         write_data(staged_data)
         return publish_staged_authenticated_artifact_atomic(
@@ -1810,9 +1823,10 @@ def publish_authenticated_file_atomic(
 
     final_path = location.require_path(cfg, path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    data_fd, data_name = tempfile.mkstemp(prefix="._artifact_v3_", dir=final_path.parent)
+    data_fd, staged_data = make_staged_path(
+        final_path, prefix="._artifact_v3_", temp_dir=cfg.io.temp_dir
+    )
     os.close(data_fd)
-    staged_data = Path(data_name)
     try:
         write_data(staged_data)
         return publish_staged_authenticated_artifact_atomic(
@@ -1858,15 +1872,13 @@ def publish_staged_authenticated_artifact_atomic(
     final_path = location.require_path(cfg, path)
     if not staged_path.is_file() or staged_path.stat().st_size <= 0:
         raise ArtifactMismatchError(f"artifact writer did not create {staged_path}")
-    if staged_path.parent.resolve() != final_path.parent.resolve():
-        raise ArtifactMismatchError("staged artifact must be on the destination filesystem")
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(
+    sidecar_fd, staged_sidecar = make_staged_path(
+        final_path,
         prefix="._sidecar_v3_",
-        dir=final_path.parent,
+        temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
-    staged_sidecar = Path(sidecar_name)
     final_sidecar = sidecar_path(final_path)
     try:
         artifact = _current_artifact_identity(
@@ -1885,8 +1897,8 @@ def publish_staged_authenticated_artifact_atomic(
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
         final_sidecar.unlink(missing_ok=True)
-        replace_file_atomic(staged_path, final_path)
-        replace_file_atomic(staged_sidecar, final_sidecar)
+        publish_staged_file_atomic(staged_path, final_path)
+        publish_staged_file_atomic(staged_sidecar, final_sidecar)
         if sources:
             resolved_source_paths = source_paths or {}
             if set(resolved_source_paths) != {source.logical_role for source in sources}:
@@ -1986,11 +1998,13 @@ class AuthenticatedCompletion:
 def write_authenticated_completion_atomic(
     path: Path,
     completion: AuthenticatedCompletion,
+    *,
+    temp_dir: Path | None = None,
 ) -> None:
     """Atomically publish an authenticated completion identity."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as temporary_path:
+    with atomic_path(str(path), temp_dir=temp_dir) as temporary_path:
         Path(temporary_path).write_bytes(canonical_json_bytes(completion) + b"\n")
 
 
@@ -2173,12 +2187,15 @@ def finalize_missing_sidecar_atomic(
     if hashlib.sha256(sidecar_bytes).hexdigest() != completion_output.sidecar_sha256:
         raise ArtifactMismatchError("completion identity does not bind expected sidecar bytes")
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(prefix="._sidecar_v3_", dir=metadata_path.parent)
+    sidecar_fd, staged = make_staged_path(
+        metadata_path,
+        prefix="._sidecar_v3_",
+        temp_dir=cfg.io.temp_dir,
+    )
     os.close(sidecar_fd)
-    staged = Path(sidecar_name)
     try:
         staged.write_bytes(sidecar_bytes)
-        replace_file_atomic(staged, metadata_path)
+        publish_staged_file_atomic(staged, metadata_path)
     finally:
         staged.unlink(missing_ok=True)
     return validate_authenticated_artifact(

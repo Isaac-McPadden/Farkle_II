@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resolve_stage_layout
-from farkle.config import AppConfig, ResourcesConfig, compute_config_sha, load_app_config
+from farkle.config import (
+    AppConfig,
+    ResourcesConfig,
+    apply_dot_overrides,
+    compute_config_sha,
+    load_app_config,
+)
 
 
 def test_resource_defaults_use_distinct_explicit_memory_controls() -> None:
@@ -65,6 +71,51 @@ def test_legacy_worker_counts_are_execution_only_for_all_hashes() -> None:
     assert all(
         baseline.stage_config_sha(stage) == changed.stage_config_sha(stage) for stage in stage_keys
     )
+
+
+def test_scratch_path_and_limiter_mode_are_execution_only(tmp_path: Path) -> None:
+    baseline = AppConfig()
+    changed = AppConfig()
+    changed.io.temp_dir = tmp_path.resolve()
+    changed.set_resource_limiter_mode("disabled")
+
+    stage_keys = {
+        "simulation",
+        *resolve_stage_layout(baseline).keys(),
+        *resolve_root_pair_stage_layout(baseline).keys(),
+    }
+    assert compute_config_sha(baseline) == compute_config_sha(changed)
+    assert all(
+        baseline.stage_config_sha(stage) == changed.stage_config_sha(stage) for stage in stage_keys
+    )
+
+
+def test_temp_dir_yaml_and_dotted_override_validation(tmp_path: Path) -> None:
+    scratch = (tmp_path / "scratch").resolve()
+    path = tmp_path / "scratch.yaml"
+    path.write_text(f"io:\n  temp_dir: {scratch.as_posix()}\n", encoding="utf-8")
+
+    cfg = load_app_config(path)
+    assert cfg.io.temp_dir == scratch
+    apply_dot_overrides(cfg, ["io.temp_dir=null"])
+    assert cfg.io.temp_dir is None
+    apply_dot_overrides(cfg, [f"io.temp_dir={scratch}"])
+    cfg.validate_io_contract()
+    assert cfg.io.temp_dir == scratch
+
+
+def test_temp_dir_must_be_absolute_and_resolve_to_directory(tmp_path: Path) -> None:
+    relative = tmp_path / "relative.yaml"
+    relative.write_text("io:\n  temp_dir: relative/scratch\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="absolute"):
+        load_app_config(relative)
+
+    file_path = (tmp_path / "not-a-directory").resolve()
+    file_path.write_text("x", encoding="utf-8")
+    invalid = tmp_path / "file.yaml"
+    invalid.write_text(f"io:\n  temp_dir: {file_path.as_posix()}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="directory"):
+        load_app_config(invalid)
 
 
 @pytest.mark.parametrize(

@@ -29,9 +29,9 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
     StageParallelPolicy,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -624,6 +624,7 @@ def diagnose_rating_cell(
     draw_probability: float,
     max_batch_bytes: int = _DEFAULT_DIAGNOSTIC_BATCH_BYTES,
     batch_rows: int = _DEFAULT_DIAGNOSTIC_BATCH_ROWS,
+    temp_dir: Path | None = None,
 ) -> dict[str, object]:
     """Replay one root/k stream with one forward and one bounded reverse pass.
 
@@ -665,9 +666,9 @@ def diagnose_rating_cell(
     log_loss_sum = brier_sum = confidence_sum = correct_sum = 0.0
     holdout_games = 0
     attempted = completed = excluded = tau_games = 0
-    with tempfile.TemporaryDirectory(
-        prefix=".trueskill_diag_", dir=cell.game_rows_path.parent
-    ) as tmp:
+    if temp_dir is not None:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".trueskill_diag_", dir=temp_dir) as tmp:
         spool_dir = Path(tmp)
         spool_batch_count = 0
         for batch_index, (_rg, _bi, batch) in enumerate(
@@ -845,6 +846,7 @@ def _build_diagnostic_cell(
         draw_probability=cfg.trueskill.draw_probability,
         max_batch_bytes=max_batch_bytes,
         batch_rows=_DEFAULT_DIAGNOSTIC_BATCH_ROWS,
+        temp_dir=cfg.io.temp_dir,
     )
     table = pa.Table.from_pylist([row])
     sidecar = make_artifact_sidecar(
@@ -955,12 +957,7 @@ def build_screening_diagnostics(
         resources=cfg.resources,
     )
     apply_native_thread_limits(policy)
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
     max_batch_bytes = cfg.resources.stage_batch_bytes["trueskill"]
     tasks = [(cfg, cell, force, max_batch_bytes) for cell in eligible]

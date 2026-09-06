@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -17,7 +16,9 @@ from typing import Any, TypeAlias
 from farkle.config import ResourcesConfig
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
+    make_staged_path,
     publish_staged_artifact_with_sidecar,
+    publish_staged_file_atomic,
     sidecar_path,
     validate_artifact_sidecar,
 )
@@ -33,6 +34,7 @@ from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
     classify_resource_exception,
+    make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -104,16 +106,21 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_bytes_atomic(path: Path, content: bytes, *, prefix: str) -> None:
+def _write_bytes_atomic(
+    path: Path,
+    content: bytes,
+    *,
+    prefix: str,
+    temp_dir: Path | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=prefix, dir=path.parent)
-    temporary = Path(temporary_name)
+    descriptor, temporary = make_staged_path(path, prefix=prefix, temp_dir=temp_dir)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        publish_staged_file_atomic(temporary, path)
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
@@ -220,6 +227,7 @@ class _UnitTask:
     sidecar_factory: UnitSidecarFactory | None
     post_publisher: UnitPostPublisher | None
     validator: UnitValidator | None
+    temp_dir: Path | None
 
 
 def _output_path(root: Path, unit: PartitionedUnit, *, output_prefix: str = "units") -> Path:
@@ -368,9 +376,12 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
     apply_native_thread_limits(task.policy)
     output = _output_path(task.root, task.unit, output_prefix=task.output_prefix)
     output.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix="._partition_output_", dir=output.parent)
+    descriptor, temporary = make_staged_path(
+        output,
+        prefix="._partition_output_",
+        temp_dir=task.temp_dir,
+    )
     os.close(descriptor)
-    temporary = Path(temporary_name)
     try:
         task.writer(task.unit, temporary)
         if not temporary.is_file():
@@ -382,7 +393,7 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
             task.sidecar_factory(task.unit, output) if task.sidecar_factory is not None else None
         )
         if metadata is None:
-            os.replace(temporary, output)
+            publish_staged_file_atomic(temporary, output)
         else:
             publish_staged_artifact_with_sidecar(temporary, output, metadata)
         _fsync_directory(output.parent)
@@ -403,6 +414,7 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
             _stamp_path(output),
             _canonical_bytes(stamp) + b"\n",
             prefix="._partition_stamp_",
+            temp_dir=task.temp_dir,
         )
         if (
             _validate_unit(
@@ -454,10 +466,14 @@ def _publish_final_manifest(
     output_prefix: str = "units",
     validator: UnitValidator | None = None,
     sidecar: ArtifactSidecar | None = None,
+    temp_dir: Path | None = None,
 ) -> tuple[str, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix="._partition_manifest_", dir=path.parent)
-    temporary = Path(temporary_name)
+    descriptor, temporary = make_staged_path(
+        path,
+        prefix="._partition_manifest_",
+        temp_dir=temp_dir,
+    )
     digest = hashlib.sha256()
     count = 0
     try:
@@ -502,7 +518,7 @@ def _publish_final_manifest(
             handle.flush()
             os.fsync(handle.fileno())
         if sidecar is None:
-            os.replace(temporary, path)
+            publish_staged_file_atomic(temporary, path)
         else:
             publish_staged_artifact_with_sidecar(temporary, path, sidecar)
         _fsync_directory(path.parent)
@@ -586,6 +602,7 @@ def run_partitioned_stage(
     progress_total_units: int | None = None,
     progress_phase: str | None = None,
     enable_worker_progress: bool = False,
+    temp_dir: Path | None = None,
 ) -> PartitionedStageResult:
     """Run/reuse units and publish a final manifest only after complete validation."""
 
@@ -611,12 +628,7 @@ def run_partitioned_stage(
         resources=resources,
     )
     apply_native_thread_limits(policy)
-    guard = memory_guard or ProcessTreeMemoryGuard(
-        resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=resources.rss_sample_interval_seconds,
-    )
+    guard = memory_guard or make_process_tree_memory_guard(resources)
     guard.check_before_schedule(force=True)
     recorder = current_supervisor_recorder()
     scope = current_supervisor_scope()
@@ -728,6 +740,7 @@ def run_partitioned_stage(
                 sidecar_factory,
                 post_publisher,
                 validator,
+                temp_dir,
             )
 
     def write_execution_telemetry(final_outcome: str) -> None:
@@ -748,6 +761,7 @@ def run_partitioned_stage(
             telemetry_path,
             _canonical_bytes(payload) + b"\n",
             prefix="._partition_execution_telemetry_",
+            temp_dir=temp_dir,
         )
 
     attempt_policy = policy
@@ -936,6 +950,7 @@ def run_partitioned_stage(
         output_prefix=output_prefix,
         validator=validator,
         sidecar=manifest_sidecar,
+        temp_dir=temp_dir,
     )
     validated = validate_final_manifest(
         manifest_path,

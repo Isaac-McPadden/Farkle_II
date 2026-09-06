@@ -23,10 +23,18 @@ class CsvSink:
     Creates parent dirs. Use as a context manager or call open()/write_row[s]()/close().
     """
 
-    def __init__(self, path: str | Path, header: Sequence[str], mode: str = "w"):
+    def __init__(
+        self,
+        path: str | Path,
+        header: Sequence[str],
+        mode: str = "w",
+        *,
+        temp_dir: str | Path | None = None,
+    ):
         self.path = Path(path)
         self.header = list(header)
         self.mode = mode
+        self.temp_dir = temp_dir
         self._writer: csv.DictWriter | None = None
         self._file = None  # type: ignore[assignment]
         self._atomic_cm = None
@@ -46,7 +54,7 @@ class CsvSink:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         ctx = nullcontext(str(self.path))
         if "w" in self.mode and "a" not in self.mode:
-            ctx = atomic_path(str(self.path))
+            ctx = atomic_path(str(self.path), temp_dir=self.temp_dir)
         tmp_path = ctx.__enter__()
         try:
             self._file = open(tmp_path, self.mode, newline="", encoding="utf-8")  # noqa:SIM115
@@ -87,11 +95,13 @@ class CsvSink:
 # ------------------------
 
 
-def write_counter_csv(counter: Counter[str], path: Path) -> None:
+def write_counter_csv(
+    counter: Counter[str], path: Path, *, temp_dir: str | Path | None = None
+) -> None:
     """Write a Counter[str] to CSV as columns ``strategy,wins``."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with (
-        atomic_path(str(path)) as tmp_path,
+        atomic_path(str(path), temp_dir=temp_dir) as tmp_path,
         Path(tmp_path).open("w", newline="", encoding="utf-8") as fh,
     ):
         w = csv.writer(fh)

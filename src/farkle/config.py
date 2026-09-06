@@ -59,6 +59,17 @@ class ArtifactScope(str, Enum):
         return self is ArtifactScope.BY_K
 
 
+class ResourceLimiterMode(str, Enum):
+    """Execution-only resource limiter selection from the public CLI."""
+
+    ENABLED = "enabled"
+    MEMORY_ONLY = "memory-only"
+    DISABLED = "disabled"
+
+
+RESOURCE_LIMITER_MODES: tuple[str, ...] = tuple(mode.value for mode in ResourceLimiterMode)
+
+
 RETIRED_CONFIG_KEYS: dict[str, str] = {
     "resources.target_memory_mb": (
         "resources.scheduler_memory_budget_mb and resources.process_tree_warning_threshold_mb"
@@ -148,6 +159,7 @@ class IOConfig:
 
     results_dir_prefix: Path = Path("results")
     analysis_subdir: str = "analysis"
+    temp_dir: Path | None = None
 
 
 @dataclass
@@ -486,6 +498,12 @@ class AppConfig:
     _code_identity: Any | None = field(default=None, init=False, repr=False, compare=False)
     _run_lineage_sha256: str | None = field(default=None, init=False, repr=False, compare=False)
     _game_profile_sha256: str | None = field(default=None, init=False, repr=False, compare=False)
+    _resource_limiter_mode: ResourceLimiterMode = field(
+        default=ResourceLimiterMode.ENABLED,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     # —— Paths ——
     @property
@@ -594,6 +612,27 @@ class AppConfig:
         """Validate execution budgets independently of statistical settings."""
 
         _validate_resource_contract(self.resources)
+
+    def validate_io_contract(self) -> None:
+        """Validate execution-only temporary publication configuration."""
+
+        _validate_io_contract(self.io)
+
+    @property
+    def resource_limiter_mode(self) -> ResourceLimiterMode:
+        """Return the runtime-only resource limiter selection."""
+
+        return self._resource_limiter_mode
+
+    def set_resource_limiter_mode(self, mode: ResourceLimiterMode | str) -> None:
+        """Set the runtime-only resource limiter selection."""
+
+        try:
+            self._resource_limiter_mode = ResourceLimiterMode(mode)
+            cast(Any, self.resources)._limiter_mode = self._resource_limiter_mode
+        except ValueError as exc:
+            expected = ", ".join(RESOURCE_LIMITER_MODES)
+            raise ValueError(f"resource limiter mode must be one of: {expected}") from exc
 
     def stage_dir(
         self,
@@ -1665,12 +1704,19 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 expected_seed_len=None,
                 context=f"load_app_config(sim.per_n[{key_int}])",
             )
+    _validate_io_contract(cfg.io)
     _validate_resource_contract(cfg.resources)
     return cfg
 
 
 def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:
     """Coerce ``value`` to the type of ``current``."""
+    if (
+        annotation is not None
+        and _annotation_contains(annotation, type(None))
+        and value.strip().lower() in {"null", "none", "~"}
+    ):
+        return None
     if isinstance(current, bool) or _annotation_contains(annotation, bool):
         val_lower = value.lower()
         if val_lower in {"1", "true", "yes", "on"}:
@@ -1780,6 +1826,7 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
 
     resolved = effective_config_dict(cfg)
     for path in (
+        "io.temp_dir",
         "sim.progress_logging",
         "analysis.progress_logging",
         "sim.n_jobs",
@@ -1829,6 +1876,18 @@ def _project_effective_config(
         if present:
             _assign_nested_path(projected, path, value)
     return projected
+
+
+def _validate_io_contract(io: IOConfig) -> None:
+    """Validate the optional provider-neutral temporary directory."""
+
+    if io.temp_dir is None:
+        return
+    temp_dir = Path(io.temp_dir)
+    if not temp_dir.is_absolute():
+        raise ValueError("io.temp_dir must be an absolute path when configured")
+    if temp_dir.exists() and not temp_dir.is_dir():
+        raise ValueError("io.temp_dir must resolve to a directory")
 
 
 def _validate_resource_contract(resources: ResourcesConfig) -> None:
@@ -1905,6 +1964,7 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
 def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -> None:
     """Validate the locked statistical configuration contract."""
 
+    _validate_io_contract(cfg.io)
     player_counts = [int(k) for k in cfg.sim.n_players_list]
     if not player_counts or any(k < 2 for k in player_counts):
         raise ValueError("sim.n_players_list must contain player counts >= 2")
@@ -2146,6 +2206,8 @@ def assign_config_sha(cfg: AppConfig) -> str:
 
 __all__ = [
     "ArtifactScope",
+    "ResourceLimiterMode",
+    "RESOURCE_LIMITER_MODES",
     "IOConfig",
     "ProgressLogConfig",
     "SimConfig",

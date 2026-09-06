@@ -230,6 +230,7 @@ def supervise_process(
     resources: Any,
     *,
     env: Mapping[str, str] | None = None,
+    limit_native_threads: bool = True,
 ) -> int:
     """Run ``command`` under the configured aggregate process-tree limit."""
 
@@ -239,7 +240,10 @@ def supervise_process(
         resolve_resource_policy(resources, require_available_reserve=True)
     except ResourceSafetyError as exc:
         raise MemoryBoundaryError(f"resource preflight failed: {exc}") from exc
-    env = _preimport_environment(env, resources)
+    if limit_native_threads:
+        env = _preimport_environment(env, resources)
+    else:
+        env = dict(os.environ if env is None else env)
     enabled = bool(resources.os_memory_limit_enabled)
     required = bool(resources.os_memory_limit_required)
     fallback = bool(resources.allow_unenforced_memory_fallback)
@@ -278,10 +282,17 @@ def supervise_module_if_needed(
 
     if current_memory_boundary() is not None:
         return None
+    from farkle.config import ResourceLimiterMode
+
+    mode = getattr(resources, "_limiter_mode", ResourceLimiterMode.ENABLED)
+    mode = mode if isinstance(mode, ResourceLimiterMode) else ResourceLimiterMode(str(mode))
+    if mode is ResourceLimiterMode.DISABLED:
+        return None
     return supervise_process(
         [sys.executable, "-m", module, *argv],
         resources,
         env=os.environ,
+        limit_native_threads=mode is ResourceLimiterMode.ENABLED,
     )
 
 

@@ -2,6 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
+  temp_dir: null                # optional absolute scratch directory for per-file staging
   results_dir_prefix: "results_rng_opt_fast"
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 

@@ -555,6 +555,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             cfg.parquet_codec,
         ),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,

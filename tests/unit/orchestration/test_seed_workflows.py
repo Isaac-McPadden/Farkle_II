@@ -274,7 +274,8 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     assert health["status"] == "complete_success"
     assert health["pair_workflow"]["analysis_root"] == str(context.analysis_root)
     policy = health["resource_telemetry"]["resource_policy"]
-    assert set(policy) == {"requested", "resolved", "effective"}
+    assert set(policy) == {"limiter_mode", "requested", "resolved", "effective"}
+    assert policy["limiter_mode"] == "enabled"
     assert policy["requested"]["aggregate_memory_hard_limit_mb"] == 2304
     assert policy["resolved"]["logical_cpu_budget"] >= 1
     assert (

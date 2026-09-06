@@ -128,6 +128,8 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
 
     payload = load_run_context(context.run_context_path)
 
+    assert payload["run_context_contract_version"] == 3
+    assert payload["execution_controls"]["resource_limiter_mode"] == "enabled"
     assert payload["execution_controls"]["worker_counts"] == worker_counts
     assert payload["execution_controls"]["resources"]["scheduler_memory_budget_mb"] == 768
     assert payload["execution_controls"]["resources"]["aggregate_memory_hard_limit_mb"] == 2304
@@ -153,6 +155,68 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     assert payload["profile"]["production_eligible"] is True
     assert payload["profile"]["release_eligible"] is True
     assert payload["profile"]["workload_by_k"]["2"]["achieved_resolution"] <= 0.03
+
+
+def test_limiter_mode_and_scratch_republish_runtime_provenance_without_hash_change(
+    tmp_path: Path,
+) -> None:
+    context = _root_context(tmp_path, 11)
+    code_identity = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+    statistical_hash = compute_config_sha(context.config)
+    write_run_context_atomic(context, code_identity=code_identity)
+    original = load_run_context(context.run_context_path)
+
+    scratch = (tmp_path / "scratch").resolve()
+    context.config.io.temp_dir = scratch
+    context.config.set_resource_limiter_mode("disabled")
+    write_run_context_atomic(context, code_identity=code_identity)
+    changed = load_run_context(context.run_context_path)
+
+    assert compute_config_sha(context.config) == statistical_hash
+    assert changed["run_lineage_sha256"] == original["run_lineage_sha256"]
+    assert changed["run_context_sha256"] != original["run_context_sha256"]
+    assert changed["resolved_paths"]["temp_dir"] == str(scratch)
+    assert changed["execution_controls"]["resource_limiter_mode"] == "disabled"
+    assert changed["execution_controls"]["resource_policy"]["effective"] == {
+        "aggregate_memory_hard_limit_mb": None,
+        "logical_cpu_budget": None,
+        "minimum_system_available_memory_mb": None,
+        "native_threads_per_worker": None,
+        "parent_process_memory_mb": None,
+        "process_tree_warning_threshold_mb": None,
+        "scheduler_memory_budget_mb": None,
+    }
+    assert list(scratch.iterdir()) == []
+
+
+def test_run_context_binds_public_scratch_path(tmp_path: Path) -> None:
+    from farkle.orchestration.seed_utils import write_active_config
+
+    context = _root_context(tmp_path, 11)
+    context.config.io.temp_dir = (tmp_path / "scratch-a").resolve()
+    write_active_config(context.config)
+    write_run_context_atomic(
+        context,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+    )
+    context.config.io.temp_dir = (tmp_path / "scratch-b").resolve()
+    write_active_config(context.config)
+
+    with pytest.raises(ValueError, match="scratch path"):
+        load_run_context(
+            context.run_context_path,
+            active_config_path=context.active_config_path,
+        )
 
 
 def test_exact_resume_preserves_run_context_across_host_memory_samples(

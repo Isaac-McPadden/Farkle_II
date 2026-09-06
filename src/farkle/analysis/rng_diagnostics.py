@@ -51,6 +51,7 @@ from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     ResourceSafetyError,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.partitioned_stage import (
@@ -282,10 +283,12 @@ class _BatchArrays:
 
 
 @contextmanager
-def _temporary_workspace(*, prefix: str) -> Iterator[Path]:
+def _temporary_workspace(*, prefix: str, temp_dir: Path | None = None) -> Iterator[Path]:
     """Clean a worker workspace without masking an active processing error."""
 
-    directory = TemporaryDirectory(prefix=prefix)
+    if temp_dir is not None:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+    directory = TemporaryDirectory(prefix=prefix, dir=temp_dir)
     try:
         yield Path(directory.name)
     except BaseException:
@@ -384,11 +387,15 @@ class _EligibilityWriter:
     minimum_observations: int
     root_seed: int
     batch_rows: int
+    temp_dir: Path | None = None
 
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
         partition = int(unit.key[0])
         dtype = _count_dtype(self.max_players)
-        with _temporary_workspace(prefix=f"farkle_rng_count_p{partition:03d}_") as temp:
+        with _temporary_workspace(
+            prefix=f"farkle_rng_count_p{partition:03d}_",
+            temp_dir=self.temp_dir,
+        ) as temp:
             runs: list[Path] = []
             spill_bytes = 0
             max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
@@ -528,11 +535,15 @@ class _StatsPartitionWriter:
     max_players: int
     lags: tuple[int, ...]
     batch_rows: int
+    temp_dir: Path | None = None
 
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
         partition = int(unit.key[0])
         dtype = _observation_dtype(self.max_players)
-        with _temporary_workspace(prefix=f"farkle_rng_stats_p{partition:03d}_") as temp:
+        with _temporary_workspace(
+            prefix=f"farkle_rng_stats_p{partition:03d}_",
+            temp_dir=self.temp_dir,
+        ) as temp:
             runs: list[Path] = []
             spill_bytes = 0
             max_spill_bytes = max(dtype.itemsize, self.batch_rows * dtype.itemsize)
@@ -599,14 +610,10 @@ def run(
         scope.update(phase="rng_source_preparation", state="authenticating")
     policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
-    pa.set_cpu_count(policy.arrow_threads)
-    pa.set_io_thread_count(policy.arrow_threads)
-    guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    if policy.limit_native_threads:
+        pa.set_cpu_count(policy.arrow_threads)
+        pa.set_io_thread_count(policy.arrow_threads)
+    guard = make_process_tree_memory_guard(cfg.resources)
     guard.check_before_schedule(force=True)
 
     try:
@@ -813,6 +820,7 @@ def run(
             root_seed,
         ),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
@@ -845,8 +853,10 @@ def run(
             minimum_observations,
             root_seed,
             max(256, reduce_run_bytes // max(1, _count_dtype(len(strat_cols)).itemsize)),
+            cfg.io.temp_dir,
         ),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
@@ -936,6 +946,7 @@ def run(
             max(source_batch_bytes * 4, 64 * 1024 * 1024),
         ),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
@@ -976,8 +987,10 @@ def run(
                 128,
                 reduce_run_bytes // max(1, _observation_dtype(len(strat_cols)).itemsize),
             ),
+            cfg.io.temp_dir,
         ),
         resources=cfg.resources,
+        temp_dir=cfg.io.temp_dir,
         requested_workers=cfg.analysis.n_jobs,
         mp_start_method=cfg.analysis.mp_start_method,
         force=force,
@@ -2020,6 +2033,7 @@ def _write_or_reuse_selection(
         compression=cfg.parquet_codec,
         row_group_size=32_768,
         sidecar=sidecar,
+        temp_dir=cfg.io.temp_dir,
     ) as writer:
         for partition in range(partition_count):
             path = eligibility_root / "units" / f"part-{partition:03d}.parquet"
@@ -2073,6 +2087,7 @@ def _write_or_reuse_selection(
         stage_config_sha=selection_sha,
         cache_key_version=1,
         sidecar_artifacts=[selection_file, report_file],
+        temp_dir=cfg.io.temp_dir,
     )
     return report
 
@@ -2651,6 +2666,7 @@ def _finalize_outputs(
         compression=cfg.parquet_codec,
         row_group_size=32_768,
         sidecar=sidecar,
+        temp_dir=cfg.io.temp_dir,
     ) as writer:
         for partition in range(partition_count):
             path = stats_root / "units" / f"part-{partition:03d}.parquet"

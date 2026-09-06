@@ -74,6 +74,7 @@ from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    make_process_tree_memory_guard,
     normalize_n_jobs,
     process_map,
     resolve_mp_context,
@@ -314,6 +315,7 @@ class _RareEventShardTask:
     progress_logging: ProgressLogConfig | None
     publish_completion: bool
     max_batch_bytes: int
+    temp_dir: Path | None
 
 
 def _run_rare_event_shard_task(task: _RareEventShardTask) -> None:
@@ -335,6 +337,7 @@ def _run_rare_event_shard_task(task: _RareEventShardTask) -> None:
         progress_logging=task.progress_logging,
         publish_completion=task.publish_completion,
         max_batch_bytes=task.max_batch_bytes,
+        temp_dir=task.temp_dir,
     )
 
 
@@ -548,12 +551,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         resources=cfg.resources,
     )
     apply_native_thread_limits(policy)
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
     roll_artifacts = build_exact_roll_enumeration(cfg, force=force)
 
@@ -775,6 +773,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 output_path=rare_events_details_output,
                 codec=cfg.parquet_codec,
                 progress_logging=cfg.analysis.progress_logging,
+                temp_dir=cfg.io.temp_dir,
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to detail")
@@ -1051,7 +1050,7 @@ def _compute_k_game_stats(
             "global_completed": global_completed,
             "global_safety_limit": global_safety_limit,
         }
-        with atomic_path(str(temp_state_path)) as tmp_path:
+        with atomic_path(str(temp_state_path), temp_dir=cfg.io.temp_dir) as tmp_path:
             Path(tmp_path).write_text(
                 json.dumps(checkpoint, sort_keys=True, separators=(",", ":")), encoding="utf-8"
             )
@@ -1213,7 +1212,7 @@ def _compute_k_game_stats(
         cache_key_version=cache_key_version,
     )
     checkpoint["complete"] = True
-    with atomic_path(str(temp_state_path)) as tmp_path:
+    with atomic_path(str(temp_state_path), temp_dir=cfg.io.temp_dir) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps(checkpoint, sort_keys=True, separators=(",", ":")), encoding="utf-8"
         )
@@ -2029,6 +2028,7 @@ def _rare_event_summary(
     target_score: int,
     output_path: Path,
     codec: Compression,
+    temp_dir: Path | None = None,
 ) -> int:
     """Compute aggregated rare-event counts."""
 
@@ -2124,7 +2124,12 @@ def _rare_event_summary(
         ),
     )
     summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
-    write_parquet_atomic(summary_table, output_path, codec=codec)
+    write_parquet_atomic(
+        summary_table,
+        output_path,
+        codec=codec,
+        temp_dir=temp_dir,
+    )
     return summary_table.num_rows
 
 
@@ -2211,6 +2216,7 @@ def _rare_event_flags(
                 cache_key_version=cache_key_version,
                 progress_logging=progress_logging,
                 publish_completion=not is_v3_config(cfg),
+                temp_dir=cfg.io.temp_dir if cfg is not None else None,
                 max_batch_bytes=(
                     max(
                         1,
@@ -2244,6 +2250,7 @@ def _rare_event_flags(
                     cache_key_version=cache_key_version,
                     progress_logging=progress_logging,
                     publish_completion=not is_v3_config(cfg),
+                    temp_dir=cfg.io.temp_dir if cfg is not None else None,
                     max_batch_bytes=(
                         max(
                             1,
@@ -2305,7 +2312,12 @@ def _rare_event_flags(
     )
 
     rows_written = 0
-    writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
+    writer = ParquetShardWriter(
+        str(output_path),
+        schema=schema,
+        compression=codec,
+        temp_dir=cfg.io.temp_dir if cfg is not None else None,
+    )
     try:
         for n_players, _path in per_n_inputs:
             shard_path, _stats_path, _done_path = _rare_event_shard_paths(output_path, n_players)
@@ -2729,6 +2741,7 @@ def _build_rare_event_summary_shard(
     progress_logging: ProgressLogConfig | None = None,
     publish_completion: bool = True,
     max_batch_bytes: int = 16 * 1024 * 1024,
+    temp_dir: Path | None = None,
 ) -> None:
     """Build one player-count rare-event shard and its summary counters.
 
@@ -2769,7 +2782,9 @@ def _build_rare_event_summary_shard(
     }
     rows_written = 0
 
-    writer = ParquetShardWriter(str(shard_path), schema=schema, compression=codec)
+    writer = ParquetShardWriter(
+        str(shard_path), schema=schema, compression=codec, temp_dir=temp_dir
+    )
     try:
         ds_in = ds.dataset(input_path)
         strategy_cols = _seat_strategy_columns(ds_in.schema.names)
@@ -2961,7 +2976,12 @@ def _build_rare_event_summary_shard(
         writer.close(success=rows_written > 0)
 
     if rows_written == 0:
-        write_parquet_atomic(_empty_table(schema), shard_path, codec=codec)
+        write_parquet_atomic(
+            _empty_table(schema),
+            shard_path,
+            codec=codec,
+            temp_dir=temp_dir,
+        )
 
     payload: dict[str, Any] = {
         "n_players": n_players,
@@ -2970,7 +2990,10 @@ def _build_rare_event_summary_shard(
         "strategy_sums": {str(strategy): sums for strategy, sums in strategy_sums.items()},
     }
     stats_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(stats_path)) as tmp_path:
+    with atomic_path(
+        str(stats_path),
+        temp_dir=temp_dir,
+    ) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     if publish_completion:
         write_stage_done(
@@ -2981,6 +3004,7 @@ def _build_rare_event_summary_shard(
             stage="game_stats",
             stage_config_sha=config_sha,
             cache_key_version=cache_key_version,
+            temp_dir=temp_dir,
         )
 
 
@@ -2992,6 +3016,7 @@ def _rare_event_details(
     output_path: Path,
     codec: Compression,
     progress_logging: ProgressLogConfig | None = None,
+    temp_dir: Path | None = None,
 ) -> int:
     """Write per-game rare-event rows to a separate parquet."""
 
@@ -3008,7 +3033,9 @@ def _rare_event_details(
     )
 
     rows_written = 0
-    writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
+    writer = ParquetShardWriter(
+        str(output_path), schema=schema, compression=codec, temp_dir=temp_dir
+    )
     try:
         for n_players, path in per_n_inputs:
             ds_in = ds.dataset(path)

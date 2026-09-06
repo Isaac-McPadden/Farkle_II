@@ -193,11 +193,16 @@ def plan_tournament_workload(
     return plan
 
 
-def write_workload_plan(path: Path, plan: TournamentWorkloadPlan) -> None:
+def write_workload_plan(
+    path: Path,
+    plan: TournamentWorkloadPlan,
+    *,
+    temp_dir: Path | None = None,
+) -> None:
     """Write a workload plan atomically using deterministic canonical JSON."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as temporary:
+    with atomic_path(str(path), temp_dir=temp_dir) as temporary:
         Path(temporary).write_text(
             json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

@@ -18,6 +18,12 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
   Override one loaded config value. The flag may be repeated.
 - `--log-level LEVEL`
   Set the root logging level before dispatch.
+- `--resource-limiters {enabled,memory-only,disabled}`
+  Select runtime host-resource controls for `run`, `analyze`, and
+  `two-seed-pipeline`. `enabled` is the default; `memory-only` retains memory
+  controls but leaves CPU/native-thread allocation to the OS; `disabled`
+  bypasses host-resource ceilings. Non-default values are rejected by `time`
+  and `watch`.
 
 ## Commands
 
@@ -38,6 +44,7 @@ Example:
 
 ```bash
 farkle --config configs/default_config.yaml \
+  --resource-limiters enabled \
   --set sim.seed=123 \
   --set sim.n_jobs=4 \
   run --metrics --row-dir data/results/fast_seed_123/rows
@@ -152,3 +159,4 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
   `two-seed-pipeline`.
 - Run `farkle <command> --help` for the exact parser output for your installed
   version.
+- Global options must appear before the command name.

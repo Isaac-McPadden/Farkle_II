@@ -13,7 +13,7 @@ from farkle.analysis.seat_analysis import SeatAnalysisArtifacts, build_canonical
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import sidecar_path
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
+    make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -38,12 +38,7 @@ def _require_paths(paths: Sequence[Path], *, label: str) -> None:
 def _all_player_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> list[Path]:
     tasks = [(cfg, int(k)) for k in player_counts]
     policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
-    guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    guard = make_process_tree_memory_guard(cfg.resources)
     results = process_map(
         _build_all_player_cell,
         tasks,

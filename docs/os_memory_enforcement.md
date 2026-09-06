@@ -1,12 +1,29 @@
 # Aggregate OS Memory Enforcement
 
 The public `farkle run`, `farkle analyze`, and `farkle two-seed-pipeline`
-surfaces start through a lightweight supervisor. The supervisor establishes one
-aggregate operating-system boundary before the real CLI imports numerical or
+surfaces default to starting through a lightweight supervisor. The supervisor
+establishes one aggregate operating-system boundary before the real CLI imports numerical or
 analysis modules. `process_tree_warning_threshold_mb` is the cooperative
 high-water threshold. `aggregate_memory_hard_limit_mb` is passed directly to
 the OS backend as the allocation-spike backstop; it is not derived from a
 multiplier.
+
+The global `--resource-limiters` option selects one of three runtime modes:
+
+- `enabled` (default) applies the complete existing Job/cgroup, memory
+  preflight/admission, RSS backpressure, logical-CPU, worker-memory, and
+  native-thread policy.
+- `memory-only` still establishes the configured aggregate memory boundary and
+  retains reserve checks, worker-memory admission, and RSS backpressure. It
+  ignores `logical_cpu_budget` and `native_threads_per_worker` and preserves
+  the caller's native-thread environment.
+- `disabled` runs the real CLI directly, without a new Job/cgroup boundary,
+  resource feasibility gate, memory admission/backpressure, CPU cap, or native
+  thread mutation. Explicit `n_jobs`, nested-process suppression, byte-bounded
+  streaming, and bounded submission queues remain active.
+
+Non-default modes are invalid for `time` and `watch`, which are not protected
+pipeline surfaces.
 
 ## Backends
 
@@ -54,8 +71,10 @@ Before launch, explicit CPU and memory values are checked against detected
 logical CPUs and physical memory. The configured host reserve must also be
 currently available. The same reserve is checked at cooperative scheduling
 boundaries. Enclosing Job/cgroup limits may reduce the effective hard limit;
-requested, resolved, and effective values are separately recorded in the run
-context and pipeline health metadata.
+requested, resolved, and effective values plus the selected limiter mode are
+separately recorded in run-context-v3 and pipeline health/telemetry metadata.
+Inactive effective ceilings are recorded as null rather than being presented
+as enforced.
 
 Strict setup failure exits with code 78 before the real analysis process starts.
 An OS memory event exits the supervisor with code 86 when the backend exposes

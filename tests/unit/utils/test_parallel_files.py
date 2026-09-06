@@ -500,6 +500,85 @@ def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
     assert policy.native_threads_per_process == 2
 
 
+def test_memory_only_ignores_cpu_and_native_caps_but_keeps_memory_admission(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class DummyCfg:
+        n_jobs: int | None = 20
+
+    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 32)
+    resources = ResourcesConfig(
+        scheduler_memory_budget_mb=768,
+        parent_process_memory_mb=192,
+        logical_cpu_budget=1,
+        native_threads_per_worker=16,
+        estimated_worker_memory_mb={"analysis": 160},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    resources.__dict__["_limiter_mode"] = "memory-only"
+
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
+
+    assert policy.process_workers == 3
+    assert policy.cpu_worker_cap == 20
+    assert policy.memory_worker_cap == 3
+    assert policy.limit_native_threads is False
+    assert policy.memory_limiters_enabled is True
+
+
+def test_disabled_uses_requested_workers_and_ignores_impossible_host_limits(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class DummyCfg:
+        n_jobs: int | None = 20
+
+    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 2)
+    resources = ResourcesConfig(
+        scheduler_memory_budget_mb=193,
+        parent_process_memory_mb=192,
+        aggregate_memory_hard_limit_mb=100_000,
+        minimum_system_available_memory_mb=100_000,
+        logical_cpu_budget=99,
+        native_threads_per_worker=99,
+        estimated_worker_memory_mb={"analysis": 100_000},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    resources.__dict__["_limiter_mode"] = "disabled"
+
+    resolved = parallel.resolve_resource_policy(
+        resources,
+        logical_cpu_count=2,
+        total_memory_mb=256,
+        available_memory_mb=1,
+        require_available_reserve=True,
+    )
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
+    guard = parallel.make_process_tree_memory_guard(resources)
+
+    assert resolved.as_metadata()["effective"]["logical_cpu_budget"] is None
+    assert resolved.as_metadata()["effective"]["aggregate_memory_hard_limit_mb"] is None
+    assert policy.process_workers == 20
+    assert policy.limit_native_threads is False
+    assert policy.memory_limiters_enabled is False
+    assert guard.enforcement_enabled is False
+
+
+def test_non_enabled_native_policy_preserves_user_environment(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("OMP_NUM_THREADS", "user-value")
+    policy = parallel.StageParallelPolicy(
+        total_cores=8,
+        process_workers=2,
+        python_threads=4,
+        arrow_threads=4,
+        native_threads_per_process=4,
+        limit_native_threads=False,
+    )
+
+    parallel.apply_native_thread_limits(policy)
+
+    assert os.environ["OMP_NUM_THREADS"] == "user-value"
+
+
 def test_machine_targeted_policy_resolves_fifteen_workers_on_sixteen_threads(
     monkeypatch: MonkeyPatch,
 ) -> None:

@@ -2,6 +2,7 @@
 # Reference template: leave values unassigned and use the comments as a guide.
 
 io:
+  temp_dir: null  # Path | null: optional absolute scratch directory for per-file staging
   results_dir_prefix:  # Path|str: prefix under data/ for root-specific results
   analysis_subdir:  # str: analysis output subdirectory under results_root
 

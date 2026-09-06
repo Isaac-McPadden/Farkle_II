@@ -27,7 +27,7 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.parallel import ProcessTreeMemoryGuard
+from farkle.utils.parallel import ProcessTreeMemoryGuard, make_process_tree_memory_guard
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -1055,12 +1055,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
     )
     if 2 in sources:
         assert mirror_root is not None
-        mirror_guard = ProcessTreeMemoryGuard(
-            cfg.resources.aggregate_memory_hard_limit_mb,
-            rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-            minimum_system_available_memory_mb=(cfg.resources.minimum_system_available_memory_mb),
-            sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-        )
+        mirror_guard = make_process_tree_memory_guard(cfg.resources)
         mirror_stage = run_partitioned_stage(
             root=mirror_root,
             identity=_mirrored_identity(cfg, sources[2]),
@@ -1069,6 +1064,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
                 str(sources[2]), tuple(_source_columns(2)), mirror_bytes, mirror_records
             ),
             resources=cfg.resources,
+            temp_dir=cfg.io.temp_dir,
             requested_workers=cfg.analysis.n_jobs,
             mp_start_method=cfg.analysis.mp_start_method,
             force=force,

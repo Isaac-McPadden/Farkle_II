@@ -68,9 +68,9 @@ from farkle.utils.authenticated_contract import (
 )
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
-    ProcessTreeMemoryGuard,
     apply_native_thread_limits,
     is_process_pool_worker,
+    make_process_tree_memory_guard,
     normalize_n_jobs,
     resolve_stage_parallel_policy,
 )
@@ -1371,7 +1371,7 @@ def run_single_n(
         extra={"stage": "simulation", **workload_plan.to_dict()},
     )
     if workload_plan.cap_exceeded:
-        write_workload_plan(workload_plan_path, workload_plan)
+        write_workload_plan(workload_plan_path, workload_plan, temp_dir=cfg.io.temp_dir)
         LOGGER.error(
             "Tournament workload blocked by configured cap",
             extra={"stage": "simulation", **workload_plan.to_dict()},
@@ -1440,7 +1440,7 @@ def run_single_n(
                     ),
                 )
             else:
-                write_parquet_atomic(manifest_table, manifest_path)
+                write_parquet_atomic(manifest_table, manifest_path, temp_dir=cfg.io.temp_dir)
         else:
             if is_v3_config(cfg):
                 validate_authenticated_artifact_metadata(manifest_path, cfg=cfg)
@@ -1466,7 +1466,7 @@ def run_single_n(
             strategy_manifest=manifest_path,
         )
     else:
-        write_workload_plan(workload_plan_path, workload_plan)
+        write_workload_plan(workload_plan_path, workload_plan, temp_dir=cfg.io.temp_dir)
 
     simulation_sources = [manifest_path, workload_plan_path]
     checkpoint_sidecar = (
@@ -1547,12 +1547,7 @@ def run_single_n(
         },
     )
     apply_native_thread_limits(resource_policy)
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
-    )
+    memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
     tournament_mod.run_tournament(
         global_seed=cfg.sim.seed,
@@ -1595,6 +1590,7 @@ def run_single_n(
             "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
             "runner_parent_pid": os.getpid(),
         },
+        temp_dir=cfg.io.temp_dir,
     )
 
     # --- Final checkpoint post-processing ---
@@ -1652,7 +1648,7 @@ def run_single_n(
                 sources=simulation_sources,
             )
         else:
-            write_parquet_atomic(summary_table, ckpt_parquet)
+            write_parquet_atomic(summary_table, ckpt_parquet, temp_dir=cfg.io.temp_dir)
 
     # (B) Expanded metrics parquet
     if cfg.sim.expanded_metrics:
@@ -1711,7 +1707,7 @@ def run_single_n(
                     sources=simulation_sources,
                 )
             else:
-                write_parquet_atomic(metrics_table, metrics_file)
+                write_parquet_atomic(metrics_table, metrics_file, temp_dir=cfg.io.temp_dir)
 
     outputs: list[Path] = [ckpt_path, workload_plan_path]
     ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"

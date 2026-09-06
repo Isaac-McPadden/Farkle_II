@@ -12,6 +12,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -48,6 +49,7 @@ _SEED_SCOPES: Final = {
 }
 _IO_RETRY_DELAYS: Final = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.5, 2.0, 2.0, 2.0)
 _JSON_VIEW_RETRY_DELAYS: Final = (0.05, 0.1, 0.2)
+_CROSS_FILESYSTEM_COPY_BUFFER_BYTES: Final = 8 * 1024 * 1024
 _RETRYABLE_ERRNOS: Final = {
     errno.EACCES,
     errno.EAGAIN,
@@ -125,6 +127,55 @@ def replace_file_atomic(source: Path | str, destination: Path | str) -> None:
     source_path = Path(source)
     destination_path = Path(destination)
     retry_transient_io(lambda: os.replace(source_path, destination_path))
+
+
+def make_staged_path(
+    final_path: Path | str,
+    *,
+    prefix: str,
+    temp_dir: Path | str | os.PathLike[str] | None = None,
+) -> tuple[int, Path]:
+    """Create a unique staging file in configured scratch or beside the destination."""
+
+    final = Path(final_path)
+    staging_dir = final.parent if temp_dir is None else Path(temp_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=prefix, dir=staging_dir)
+    return descriptor, Path(name)
+
+
+def publish_staged_file_atomic(
+    staged_path: Path | str,
+    final_path: Path | str,
+    *,
+    copy_buffer_bytes: int = _CROSS_FILESYSTEM_COPY_BUFFER_BYTES,
+    replace: Callable[[Path | str, Path | str], None] | None = None,
+) -> None:
+    """Publish a closed staged file, bridging cross-filesystem moves atomically."""
+
+    source = Path(staged_path)
+    destination = Path(final_path)
+    replace_operation = replace_file_atomic if replace is None else replace
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        replace_operation(source, destination)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+            raise
+    descriptor, bridge = make_staged_path(
+        destination,
+        prefix="._publish_",
+    )
+    try:
+        with source.open("rb") as source_handle, os.fdopen(descriptor, "wb") as output_handle:
+            shutil.copyfileobj(source_handle, output_handle, length=copy_buffer_bytes)
+            output_handle.flush()
+            os.fsync(output_handle.fileno())
+        replace_operation(bridge, destination)
+        source.unlink(missing_ok=True)
+    finally:
+        bridge.unlink(missing_ok=True)
 
 
 class OperationMethodContract(TypedDict):
@@ -513,9 +564,13 @@ def write_artifact_with_sidecar_atomic(
 
     final_path = Path(artifact_path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    data_fd, data_name = tempfile.mkstemp(prefix="._artifact_", dir=final_path.parent)
+    temp_dir = metadata._cfg.io.temp_dir if metadata._cfg is not None else None
+    data_fd, staged_data = make_staged_path(
+        final_path,
+        prefix="._artifact_",
+        temp_dir=temp_dir,
+    )
     os.close(data_fd)
-    staged_data = Path(data_name)
     try:
         write_data(staged_data)
         return publish_staged_artifact_with_sidecar(staged_data, final_path, metadata)
@@ -540,20 +595,21 @@ def publish_staged_artifact_with_sidecar(
     final_path.parent.mkdir(parents=True, exist_ok=True)
     if not staged_path.is_file() or staged_path.stat().st_size == 0:
         raise ArtifactContractError(f"artifact writer did not create {staged_path}")
-    if staged_path.parent.resolve() != final_path.parent.resolve():
-        raise ArtifactContractError("staged artifact must be on the destination filesystem")
-
-    sidecar_fd, sidecar_name = tempfile.mkstemp(prefix="._sidecar_", dir=final_path.parent)
+    temp_dir = metadata._cfg.io.temp_dir if metadata._cfg is not None else None
+    sidecar_fd, staged_sidecar = make_staged_path(
+        final_path,
+        prefix="._sidecar_",
+        temp_dir=temp_dir,
+    )
     os.close(sidecar_fd)
-    staged_sidecar = Path(sidecar_name)
     try:
         bound = replace(metadata.with_artifact_identity(staged_path), artifact_name=final_path.name)
         _validate_sidecar_fields(bound)
         staged_sidecar.write_text(_canonical_json(bound), encoding="utf-8")
 
         final_sidecar.unlink(missing_ok=True)
-        replace_file_atomic(staged_path, final_path)
-        replace_file_atomic(staged_sidecar, final_sidecar)
+        publish_staged_file_atomic(staged_path, final_path)
+        publish_staged_file_atomic(staged_sidecar, final_sidecar)
         validate_artifact_sidecar(final_path)
         return bound
     finally:
@@ -591,14 +647,18 @@ def ensure_artifact_sidecar_atomic(
         raise ArtifactContractError(f"artifact does not exist or is empty: {final_path}")
 
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(prefix="._sidecar_", dir=final_path.parent)
+    temp_dir = metadata._cfg.io.temp_dir if metadata._cfg is not None else None
+    sidecar_fd, staged_sidecar = make_staged_path(
+        final_path,
+        prefix="._sidecar_",
+        temp_dir=temp_dir,
+    )
     os.close(sidecar_fd)
-    staged_sidecar = Path(sidecar_name)
     try:
         bound = replace(metadata.with_artifact_identity(final_path), artifact_name=final_path.name)
         _validate_sidecar_fields(bound)
         staged_sidecar.write_text(_canonical_json(bound), encoding="utf-8")
-        replace_file_atomic(staged_sidecar, final_sidecar)
+        publish_staged_file_atomic(staged_sidecar, final_sidecar)
         return validate_artifact_sidecar(final_path, expected=expected)
     finally:
         staged_sidecar.unlink(missing_ok=True)
@@ -678,8 +738,10 @@ __all__ = [
     "SIDECAR_SUFFIX",
     "load_artifact_sidecar",
     "make_artifact_sidecar",
+    "make_staged_path",
     "manifest_hashes",
     "publish_staged_artifact_with_sidecar",
+    "publish_staged_file_atomic",
     "sha256_file",
     "sidecar_path",
     "validate_artifact_sidecar",

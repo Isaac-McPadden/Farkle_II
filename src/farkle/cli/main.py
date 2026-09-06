@@ -13,7 +13,9 @@ from typing import Any, Sequence
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
 from farkle.config import (
+    RESOURCE_LIMITER_MODES,
     AppConfig,
+    ResourceLimiterMode,
     apply_dot_overrides,
     assign_config_sha,
     expected_seed_list_length,
@@ -111,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub.add_parser("curate", help="Curate ingested data")
     combine_parser = analyze_sub.add_parser(
         "combine", help="Publish the normalized partitioned concat_ks dataset"
+    )
+    parser.add_argument(
+        "--resource-limiters",
+        choices=RESOURCE_LIMITER_MODES,
+        default=ResourceLimiterMode.ENABLED.value,
+        help="Resource controls: all, memory only, or OS-managed (default: enabled)",
     )
     combine_parser.add_argument(
         "--force", action="store_true", help="Rewrite every normalized partition"
@@ -310,6 +318,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (
+        args.command not in {"run", "analyze", "two-seed-pipeline"}
+        and args.resource_limiters != ResourceLimiterMode.ENABLED.value
+    ):
+        parser.error("--resource-limiters is supported only by run, analyze, and two-seed-pipeline")
     seed_pair_override = (
         resolve_seed_pair_args(args, parser) if args.command == "two-seed-pipeline" else None
     )
@@ -328,6 +341,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "config_path": str(args.config) if args.config is not None else None,
             "overrides": list(args.overrides or []),
             "log_level": logging.getLevelName(root_logger.level),
+            "resource_limiters": args.resource_limiters,
         },
     )
 
@@ -340,6 +354,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             load_app_config(*overlays, seed_list_len=expected_seed_len) if overlays else AppConfig()
         )
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
+        cfg.set_resource_limiter_mode(args.resource_limiters)
         if seed_pair_override is not None:
             cfg.sim.seed_list = list(seed_pair_override)
         if expected_seed_len is not None:
@@ -374,6 +389,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "analysis_dir": str(cfg.analysis_dir),
                 "n_players_list": list(cfg.sim.n_players_list),
                 "expanded_metrics": cfg.sim.expanded_metrics,
+                "resource_limiter_mode": cfg.resource_limiter_mode.value,
+                "temp_dir": str(cfg.io.temp_dir) if cfg.io.temp_dir is not None else None,
             },
         )
 

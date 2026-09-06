@@ -8,7 +8,7 @@ an actionable replacement message and are never reinterpreted.
 
 | Section | Purpose |
 | --- | --- |
-| `io` | Results-root prefix and analysis subdirectory |
+| `io` | Results-root prefix, analysis subdirectory, and optional scratch staging path |
 | `sim` | Roots, player counts, strategy grid, simulation workers, and checkpoints |
 | `rng` | RNG scheme and bit generator |
 | `profile` | Run purpose and production/release claim eligibility |
@@ -184,7 +184,7 @@ both the logical-CPU and schedulable-memory envelopes deterministically. Native
 BLAS/OpenMP/Arrow thread settings are capped in executor children, nested
 process pools collapse to one process, and `stage_batch_bytes` bounds projected
 Arrow batches. Resource controls and resolved policies are authenticated in
-run-context contract v2 but are excluded from statistical freshness; focused
+run-context contract v3 but are excluded from statistical freshness; focused
 worker-count, ordering, and batch-boundary invariance tests protect that split.
 RNG route units are planned greedily in canonical source-row-group order using
 the expanded fixed-width observation size. The production defaults target 64
@@ -203,6 +203,22 @@ a 4096 MiB minimum host reserve; the mega production profile retains 8192 MiB.
 Those values are not universal defaults. Preflight
 rejects an explicit CPU budget above detected logical CPUs or a hard-limit plus
 host-reserve total above detected physical memory.
+
+The CLI-only `--resource-limiters` mode is runtime provenance and is never
+written to `active_config.yaml`. `enabled` applies the complete configured
+CPU, native-thread, memory-admission, RSS-backpressure, and OS-boundary policy.
+`memory-only` retains every memory control while ignoring
+`logical_cpu_budget` and `native_threads_per_worker`. `disabled` establishes no
+Job/cgroup boundary and performs no resource-derived worker reduction or memory
+admission. Explicit stage `n_jobs`, nested-process suppression, bounded queues,
+and byte-bounded streaming remain active in every mode.
+
+`io.temp_dir` is either `null` or an absolute path. `null` stages each file
+beside its canonical destination. A configured path is created lazily and is
+used for growing artifact, sidecar, manifest, JSON, CSV, Parquet, partition,
+and analysis-workspace files. It is public path provenance but is excluded from
+all statistical hashes. Prefer a non-synchronized directory on the same
+filesystem as the results tree for inexpensive atomic renames.
 
 The two-root preflight log/manifest event also reports a declared upper-envelope
 projection for tournament row shards, H2H pair/root/order blocks, their adjacent

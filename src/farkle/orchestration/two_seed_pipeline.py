@@ -63,6 +63,7 @@ from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
     classify_resource_exception,
+    make_process_tree_memory_guard,
     normalize_n_jobs,
     resolve_resource_policy,
     resolve_stage_parallel_policy,
@@ -147,7 +148,7 @@ class _PerSeedPolicyBundle:
     requested_n_jobs: dict[str, int | None]
     resolved_n_jobs: dict[str, int]
 
-    def as_metadata(self) -> dict[str, dict[str, int | None]]:
+    def as_metadata(self) -> dict[str, dict[str, int | bool | str | None]]:
         return {
             name: {
                 "requested_n_jobs": self.requested_n_jobs[name],
@@ -165,6 +166,9 @@ class _PerSeedPolicyBundle:
                 "scheduler_memory_budget_mb": policy.scheduler_memory_budget_mb,
                 "parent_process_memory_mb": policy.parent_process_memory_mb,
                 "concurrent_roots": policy.concurrent_roots,
+                "resource_limiter_mode": policy.limiter_mode.value,
+                "native_thread_limit_enabled": policy.limit_native_threads,
+                "memory_limiters_enabled": policy.memory_limiters_enabled,
             }
             for name, policy in (
                 ("simulation", self.simulation),
@@ -654,20 +658,26 @@ def _run_one_seed(
     )
 
 
-def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
+def _write_pipeline_health(
+    path: Path, payload: dict[str, Any], *, temp_dir: Path | None = None
+) -> None:
+    if temp_dir is None and payload.get("temp_dir") is not None:
+        temp_dir = Path(str(payload["temp_dir"]))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as temporary:
+    with atomic_path(str(path), temp_dir=temp_dir) as temporary:
         Path(temporary).write_text(
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
 
-def _write_pipeline_telemetry(path: Path, payload: dict[str, object]) -> None:
+def _write_pipeline_telemetry(
+    path: Path, payload: dict[str, object], *, temp_dir: Path | None = None
+) -> None:
     """Publish one bounded operational snapshot without scanning result trees."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as temporary:
+    with atomic_path(str(path), temp_dir=temp_dir) as temporary:
         Path(temporary).write_text(
             json.dumps(payload, indent=2, sort_keys=True, default=str),
             encoding="utf-8",
@@ -872,6 +882,7 @@ def _run_pipeline_observed(
             "seed_pair": list(seed_pair),
             "status": "running",
             "config_sha": cfg.config_sha,
+            "temp_dir": str(cfg.io.temp_dir) if cfg.io.temp_dir is not None else None,
             "profile": profile_metadata,
             "resource_policy": resource_policy,
             "worker_policy": policy_bundle.as_metadata(),
@@ -1167,11 +1178,13 @@ def _run_pipeline_observed(
         "seed_pair": list(seed_pair),
         "status": overall_status,
         "config_sha": cfg.config_sha,
+        "temp_dir": str(cfg.io.temp_dir) if cfg.io.temp_dir is not None else None,
         "profile": _final_profile_metadata(
             cfg,
             pair_context if pair_error is None else None,
         ),
         "resource_telemetry": {
+            "resource_limiter_mode": cfg.resource_limiter_mode.value,
             "resource_policy": resource_policy,
             "worker_policy": policy_bundle.as_metadata(),
             "os_memory_boundary": boundary_provenance,
@@ -1184,13 +1197,19 @@ def _run_pipeline_observed(
             "warning_crossings": memory_guard.warning_crossings,
             "backpressure_seconds": memory_guard.backpressure_seconds,
             "high_water_timeout_seconds": memory_guard.high_water_timeout_seconds,
-            "aggregate_memory_hard_limit_mb": cfg.resources.aggregate_memory_hard_limit_mb,
-            "scheduler_memory_budget_mb": cfg.resources.scheduler_memory_budget_mb,
-            "process_tree_warning_threshold_mb": (cfg.resources.process_tree_warning_threshold_mb),
-            "minimum_system_available_memory_mb": (
-                cfg.resources.minimum_system_available_memory_mb
-            ),
-            "parent_process_memory_mb": cfg.resources.parent_process_memory_mb,
+            "aggregate_memory_hard_limit_mb": resource_policy["effective"][
+                "aggregate_memory_hard_limit_mb"
+            ],
+            "scheduler_memory_budget_mb": resource_policy["effective"][
+                "scheduler_memory_budget_mb"
+            ],
+            "process_tree_warning_threshold_mb": resource_policy["effective"][
+                "process_tree_warning_threshold_mb"
+            ],
+            "minimum_system_available_memory_mb": resource_policy["effective"][
+                "minimum_system_available_memory_mb"
+            ],
+            "parent_process_memory_mb": resource_policy["effective"]["parent_process_memory_mb"],
         },
         "pair_public_config_sha256": (
             pair_context.config.config_sha if pair_context is not None else None
@@ -1261,11 +1280,13 @@ def run_pipeline(
 ) -> None:
     """Run the two-root pipeline under one parent-owned heartbeat recorder."""
 
-    memory_guard = ProcessTreeMemoryGuard(
-        cfg.resources.aggregate_memory_hard_limit_mb,
-        rss_warning_mb=cfg.resources.process_tree_warning_threshold_mb,
-        minimum_system_available_memory_mb=cfg.resources.minimum_system_available_memory_mb,
-        sample_interval_seconds=cfg.resources.rss_sample_interval_seconds,
+    memory_guard = make_process_tree_memory_guard(cfg.resources)
+    telemetry_boundary = memory_boundary_provenance(cfg.resources)
+    telemetry_resource_policy = resolve_resource_policy(cfg.resources).as_metadata(
+        effective_hard_limit_mb=cast(
+            int | None,
+            telemetry_boundary.get("effective_hard_limit_mb"),
+        )
     )
     telemetry = SupervisorHeartbeatRecorder(
         LOGGER,
@@ -1274,7 +1295,14 @@ def run_pipeline(
         resource_sampler=memory_guard.snapshot,
         heartbeat_sink=lambda payload: _write_pipeline_telemetry(
             seed_pair_root(cfg, seed_pair) / "pipeline_telemetry.json",
-            dict(payload),
+            {
+                **dict(payload),
+                "resource_limiter_mode": cfg.resource_limiter_mode.value,
+                "resource_policy": telemetry_resource_policy,
+                "os_memory_boundary": telemetry_boundary,
+                "temp_dir": str(cfg.io.temp_dir) if cfg.io.temp_dir is not None else None,
+            },
+            temp_dir=cfg.io.temp_dir,
         ),
     )
     authentication_telemetry = AuthenticationTelemetry()

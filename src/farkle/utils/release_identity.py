@@ -9,6 +9,7 @@ sidecars are never upgraded or accepted as v3 sources.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from farkle.config import AppConfig, ArtifactScope, effective_config_dict
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
+    make_staged_path,
     read_json_file_with_retry,
     sha256_file,
     sidecar_path,
@@ -1258,9 +1260,18 @@ def write_v3_stage_completion(
         outputs=identities,
     )
     # Validate the complete graph before making success observable.
-    temporary = done_path.with_name(f".{done_path.name}.validation")
+    validation_fd, temporary = make_staged_path(
+        done_path,
+        prefix=f".{done_path.name}.validation_",
+        temp_dir=cfg.io.temp_dir,
+    )
+    os.close(validation_fd)
     try:
-        write_authenticated_completion_atomic(temporary, completion)
+        write_authenticated_completion_atomic(
+            temporary,
+            completion,
+            temp_dir=cfg.io.temp_dir,
+        )
         state = classify_authenticated_lifecycle(
             temporary,
             cfg=cfg,
@@ -1281,7 +1292,11 @@ def write_v3_stage_completion(
             )
     finally:
         temporary.unlink(missing_ok=True)
-    write_authenticated_completion_atomic(done_path, completion)
+    write_authenticated_completion_atomic(
+        done_path,
+        completion,
+        temp_dir=cfg.io.temp_dir,
+    )
 
 
 def resolve_v3_stage_state(
