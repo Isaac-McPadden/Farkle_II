@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -538,18 +539,22 @@ def test_diagnostic_aggregate_is_worker_count_invariant_and_scans_once_per_cell(
     scans = 0
     original_iter = screening_module.pq.ParquetFile.iter_batches
 
-    def counted_iter(self: pq.ParquetFile, *args: object, **kwargs: object):
+    def counted_iter(self: pq.ParquetFile, *args: Any, **kwargs: Any):
         nonlocal scans
         scans += 1
         yield from original_iter(self, *args, **kwargs)
 
     monkeypatch.setattr(screening_module.pq.ParquetFile, "iter_batches", counted_iter)
     cfg.analysis.n_jobs = 1
-    single = pq.read_table(build_screening_diagnostics(cfg, cells, force=True)).to_pydict()
+    single_path = build_screening_diagnostics(cfg, cells, force=True)
+    assert single_path is not None
+    single = pq.read_table(single_path).to_pydict()
     assert scans <= len(cells) * 2
 
     cfg.analysis.n_jobs = 2
-    parallel = pq.read_table(build_screening_diagnostics(cfg, cells, force=True)).to_pydict()
+    parallel_path = build_screening_diagnostics(cfg, cells, force=True)
+    assert parallel_path is not None
+    parallel = pq.read_table(parallel_path).to_pydict()
     assert parallel == single
 
 

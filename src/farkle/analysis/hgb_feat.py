@@ -8,6 +8,7 @@ from typing import Final
 
 from farkle.analysis import run_hgb as _hgb
 from farkle.analysis import stage_logger
+from farkle.analysis.parameter_responses import build_parameter_responses, response_paths
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.release_identity import is_v3_config
@@ -28,6 +29,7 @@ def _hgb_freshness_key(cfg: AppConfig) -> dict[str, object]:
         "hgb_method_version": HGB_METHOD_VERSION,
         "hgb_rng_method_version": HGB_RNG_METHOD_VERSION,
         "hgb_fold_construction_version": HGB_FOLD_CONSTRUCTION_VERSION,
+        "parameter_response_method_version": 1,
         "target": "win_rate",
         "feature_specification": [list(specification) for specification in _hgb.FEATURE_SPECS],
         "fold_unit": "whole_strategy_configuration",
@@ -82,6 +84,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         *importance_paths,
         *predictive_paths,
         *fold_paths,
+        *(p for k in players for p in response_paths(cfg, k)),
     ]
     done = stage_done_path(cfg.hgb_stage_dir, "hgb")
     freshness_key = _hgb_freshness_key(cfg)
@@ -112,6 +115,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         metrics_paths=metrics_paths,
         manifest_path=manifest_path,
     )
+    for k in players:
+        build_parameter_responses(cfg, k, force=force)
     missing_outputs = [path for path in outputs if not path.exists()]
     if missing_outputs:
         raise RuntimeError(f"HGB did not publish required outputs: {missing_outputs}")

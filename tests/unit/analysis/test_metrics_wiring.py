@@ -36,6 +36,9 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
         return True
 
     monkeypatch.setattr(metrics, "stage_is_up_to_date", _up_to_date)
+    monkeypatch.setattr(metrics, "outcome_is_up_to_date", lambda *a, **kw: True)
+    monkeypatch.setattr(metrics, "precision_is_up_to_date", lambda *a, **kw: True)
+    monkeypatch.setattr(metrics, "behavior_is_up_to_date", lambda *a, **kw: True)
     monkeypatch.setattr(
         metrics,
         "check_pre_metrics",
@@ -50,6 +53,10 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
         cfg.metrics_all_player_batch_path(2).with_suffix(".manifest.jsonl") in captured["outputs"]
     )
     assert cfg.seat_batch_counts_path(2).with_suffix(".manifest.jsonl") in captured["outputs"]
+    assert set(metrics.outcome_publication_paths(cfg, 2)).issubset(captured["outputs"])
+    assert set(metrics.precision_publication_paths(cfg, 2)).issubset(captured["outputs"])
+    assert set(metrics.behavior_paths(cfg, 2)).issubset(captured["outputs"])
+    assert cfg.turn_opportunity_equal_k_path() in captured["outputs"]
 
 
 def test_stale_metrics_validates_before_building(tmp_path: Path, monkeypatch) -> None:
@@ -94,3 +101,35 @@ def test_stale_metrics_validates_before_building(tmp_path: Path, monkeypatch) ->
         metrics.run(cfg)
 
     assert events == ["freshness", "validation"]
+
+
+def test_stale_metrics_does_not_force_seat_children(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, n_players_list=[2]),
+    )
+    cfg.screening.delta_across_k = 0.03
+    for path in (
+        cfg.combined_manifest_path(),
+        cfg.ingested_rows_curated(2),
+        cfg.combined_rows_by_k(2),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+    monkeypatch.setattr(metrics, "stage_is_up_to_date", lambda *a, **kw: False)
+    monkeypatch.setattr(metrics, "check_pre_metrics", lambda *a, **kw: None)
+    monkeypatch.setattr(metrics, "_all_player_metrics", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        metrics, "build_canonical_performance", lambda *a, **kw: SimpleNamespace(all_paths=[])
+    )
+
+    def seat_child(config, *, force=False):
+        assert config is cfg
+        assert force is False
+        raise InterruptedError("seat child reached without forced rebuild")
+
+    monkeypatch.setattr(metrics, "build_canonical_seat_analysis", seat_child)
+    with pytest.raises(InterruptedError, match="without forced"):
+        metrics.run(cfg)

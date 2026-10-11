@@ -134,6 +134,18 @@ completion roots rather than enumerating every concrete shard as an ad hoc input
 The lifecycle pass and snapshot parse remain separate checks, but neither is
 multiplied by writer, publisher, validator, or finalization layers.
 
+Ingest physical layout 3 coalesces adjacent Arrow batches before writing each
+by-k partition. Its pending decoded buffer uses one quarter of the configured
+ingest byte allowance, with a conservative schema-derived row limit capped by
+`ingest.row_group_size`; periodic chunk compaction bounds chunk metadata too.
+Input and compaction/writer headroom occupy the remaining allowance. Ordered
+logical rows, values and nullable/list types are preserved. This prevents a
+row group per shuffle from exhausting downstream source-footer admission.
+Ingest cache version 4 and shared `ingest_physical_layout_version` identity
+reject incompatible units. Footer admission still fails closed on actual
+outputs; [Task 10](implementation/task10_report.md) records the bounded and
+production-sized physical-layout evidence without production game execution.
+
 Combine normalizes one canonical physical Parquet partition per k. The logical
 `concat_ks` table is the deterministic k-ordered, row-ordered scan of those
 partitions; no canonical monolithic Parquet is stored. The shared partitioned

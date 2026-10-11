@@ -637,6 +637,29 @@ def test_sequential_resource_failure_prevents_second_root_and_pair_workflow(
     assert pair_calls == []
 
 
+def test_h2h_refusal_is_a_resumable_operational_stop(monkeypatch, tmp_path) -> None:
+    from farkle.analysis.h2h_authorization import H2HAuthorizationRequired
+
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+
+    def refuse(*args, **kwargs):
+        raise H2HAuthorizationRequired("refused", "resume with the exact plan token")
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_root_pair_analysis", refuse)
+    with pytest.raises(H2HAuthorizationRequired, match="refused"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+    health_path = two_seed_pipeline.seed_pair_root(cfg, (11, 22)) / "pipeline_health.json"
+    health = json.loads(health_path.read_text())
+    assert health["status"] == "blocked_by_cap"
+    assert health["pair_workflow"]["status"] == "blocked_by_cap"
+    assert health["pair_workflow"]["failure_classification"] == "blocked_by_cap"
+
+
 def test_hard_supervisor_exit_cannot_leave_successful_health(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

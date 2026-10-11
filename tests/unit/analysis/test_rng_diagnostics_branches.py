@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -1011,7 +1011,7 @@ def test_rng_config_freshness_and_typed_metadata_migrate_to_method_v4() -> None:
     baseline = cfg.stage_config_sha("rng_diagnostics")
     cfg.analysis.rng_diagnostic_partitions = 64
     assert cfg.stage_config_sha("rng_diagnostics") != baseline
-    assert resolve_stage_definition("rng_diagnostics").cache_key_version == 6
+    assert resolve_stage_definition("rng_diagnostics").cache_key_version == 7
 
     capacity = rng_diagnostics.RNGDiagnosticCapacityMetadata(
         effective_matchup_group_cap=100,
@@ -1033,7 +1033,10 @@ def test_rng_config_freshness_and_typed_metadata_migrate_to_method_v4() -> None:
         usable_groups_per_lag=(),
         completeness_status="complete",
     )
-    parameters = rng_diagnostics._rng_method_parameters(capacity, strat_cols=("P1_strategy",))
+    parameters = cast(
+        dict[str, Any],
+        rng_diagnostics._rng_method_parameters(capacity, strat_cols=("P1_strategy",)),
+    )
     assert parameters["rng_diagnostic_method_version"] == 4
     assert parameters["tracked_matchup_group_count"] == 5
     assert parameters["skipped_matchup_group_count"] == 3

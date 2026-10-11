@@ -18,12 +18,6 @@ __all__ = [
 ]
 
 
-def _rng_diagnostics_disabled(cfg: AppConfig) -> bool:
-    """Return whether the root-local RNG diagnostic stage is disabled."""
-
-    return cfg.analysis.disable_rng_diagnostics
-
-
 @dataclass(frozen=True, slots=True)
 class StageDefinition:
     """Declarative description of a pipeline or analytics stage."""
@@ -105,6 +99,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "ingest",
         group="pipeline",
+        cache_key_version=4,
         cache_scope=(
             "io",
             "sim.seed",
@@ -138,7 +133,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "batching",
             "k_aggregation",
         ),
-        cache_key_version=2,
+        cache_key_version=6,
     ),
     StageDefinition(
         "game_stats",
@@ -162,18 +157,19 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "rng_diagnostics",
         group="diagnostics",
         folder_stub="rng",
-        depends_on=("combine",),
+        depends_on=("combine", "metrics"),
         cache_scope=(
             "io",
             "sim.seed",
             "sim.n_players_list",
+            "sim.n_jobs",
             "rng",
+            "analysis.disable_rng_diagnostics",
             "analysis.rng_max_matchup_groups",
             "analysis.rng_diagnostic_lags",
             "analysis.rng_diagnostic_partitions",
         ),
-        cache_key_version=6,
-        disabled_predicate=_rng_diagnostics_disabled,
+        cache_key_version=7,
     ),
     StageDefinition(
         "trueskill",
@@ -187,7 +183,13 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "trueskill",
         ),
     ),
-    StageDefinition("hgb", group="analytics", depends_on=("metrics",), cache_scope=("io", "hgb")),
+    StageDefinition(
+        "hgb",
+        group="analytics",
+        depends_on=("metrics",),
+        cache_scope=("io", "hgb"),
+        cache_key_version=2,
+    ),
     StageDefinition(
         "screening",
         group="analytics",
@@ -231,33 +233,35 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="single_root_tail",
         depends_on=("h2h_power",),
         cache_scope=("head2head", "rng"),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_inference",
         group="single_root_tail",
         depends_on=("h2h_execute",),
         cache_scope=("head2head",),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_digest",
         group="single_root_tail",
         depends_on=("h2h_inference",),
         cache_scope=("head2head",),
-        cache_key_version=4,
+        cache_key_version=5,
     ),
     StageDefinition(
         "agreement",
         group="single_root_tail",
         depends_on=("h2h_digest",),
         cache_scope=("artifact_contract",),
+        cache_key_version=2,
     ),
     StageDefinition(
         "reporting",
         group="single_root_tail",
         depends_on=("agreement",),
         cache_scope=("artifact_contract", "profile"),
+        cache_key_version=2,
     ),
 )
 
@@ -302,33 +306,35 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         group="root_pair",
         depends_on=("h2h_power",),
         cache_scope=("head2head", "rng"),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_inference",
         group="root_pair",
         depends_on=("h2h_execute",),
         cache_scope=("head2head",),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_digest",
         group="root_pair",
         depends_on=("h2h_inference",),
         cache_scope=("head2head",),
-        cache_key_version=4,
+        cache_key_version=5,
     ),
     StageDefinition(
         "agreement",
         group="root_pair",
         depends_on=("h2h_digest",),
         cache_scope=("artifact_contract",),
+        cache_key_version=2,
     ),
     StageDefinition(
         "reporting",
         group="root_pair",
         depends_on=("agreement",),
         cache_scope=("artifact_contract", "profile"),
+        cache_key_version=2,
     ),
 )
 

@@ -8,8 +8,24 @@ from typing import Sequence
 
 from farkle.analysis.all_player_metrics import build_all_player_batch_metrics
 from farkle.analysis.checks import check_pre_metrics
+from farkle.analysis.outcome_precision import (
+    build_outcome_precision,
+    precision_is_up_to_date,
+    precision_publication_paths,
+)
+from farkle.analysis.outcome_publication import (
+    build_outcome_distributions,
+    outcome_is_up_to_date,
+    outcome_publication_paths,
+)
 from farkle.analysis.performance import PerformanceArtifacts, build_canonical_performance
 from farkle.analysis.seat_analysis import SeatAnalysisArtifacts, build_canonical_seat_analysis
+from farkle.analysis.seat_behavior import (
+    behavior_is_up_to_date,
+    behavior_paths,
+    build_equal_k_opportunity,
+    build_seat_behavior,
+)
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import sidecar_path
 from farkle.utils.parallel import (
@@ -89,7 +105,20 @@ def run(cfg: AppConfig) -> None:
         cfg.seat_selfplay_diagnostic_path(),
         cfg.seat_mirrored_diagnostic_path(),
     ]
-    outputs = [*all_player_outputs, *performance_outputs, *seat_outputs]
+    outcome_outputs = [path for k in player_counts for path in outcome_publication_paths(cfg, k)]
+    precision_outputs = [
+        path for k in player_counts for path in precision_publication_paths(cfg, k)
+    ]
+    behavior_outputs = [p for k in player_counts for p in behavior_paths(cfg, k)]
+    outputs = [
+        *behavior_outputs,
+        cfg.turn_opportunity_equal_k_path(),
+        *all_player_outputs,
+        *performance_outputs,
+        *seat_outputs,
+        *outcome_outputs,
+        *precision_outputs,
+    ]
     inputs = [concatenated_rows, *per_k_curated, *per_k_combined]
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
     if stage_is_up_to_date(
@@ -99,6 +128,11 @@ def run(cfg: AppConfig) -> None:
         cfg=cfg,
         stage="metrics",
         sidecar_artifacts=outputs,
+    ) and all(
+        outcome_is_up_to_date(cfg, k)
+        and precision_is_up_to_date(cfg, k)
+        and behavior_is_up_to_date(cfg, k)
+        for k in player_counts
     ):
         LOGGER.info("Metrics stage up-to-date", extra={"stage": "metrics", "path": str(done)})
         return
@@ -108,12 +142,21 @@ def run(cfg: AppConfig) -> None:
     # The enclosing stage is stale, but performance owns authenticated per-k
     # matrices and replicate ranges that remain reusable after interruption.
     performance: PerformanceArtifacts = build_canonical_performance(cfg)
-    seats: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg, force=True)
+    seats: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg)
+    # Each outcome producer owns parallel independent slices and merge units.
+    outcome_paths = [path for k in player_counts for path in build_outcome_distributions(cfg, k)]
+    precision_paths = [path for k in player_counts for path in build_outcome_precision(cfg, k)]
+    behavior_emitted = [p for k in player_counts for p in build_seat_behavior(cfg, k)]
+    opportunity = build_equal_k_opportunity(cfg)
     emitted = [
+        *behavior_emitted,
+        opportunity,
         *all_player_paths,
         *(path.with_suffix(".manifest.jsonl") for path in all_player_paths),
         *performance.all_paths,
         *seats.publication_paths,
+        *outcome_paths,
+        *precision_paths,
     ]
     _require_paths(emitted, label="derived artifact")
     _require_paths([sidecar_path(path) for path in emitted], label="derived sidecar")

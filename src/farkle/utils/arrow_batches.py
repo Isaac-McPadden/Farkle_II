@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 
 import pyarrow as pa
@@ -11,6 +11,47 @@ import pyarrow.parquet as pq
 
 class OversizedArrowRowError(MemoryError):
     """Raised when one Arrow row alone exceeds the configured batch ceiling."""
+
+
+def coalesce_arrow_tables(
+    tables: Iterable[pa.Table], *, max_buffer_bytes: int, target_rows: int
+) -> Iterator[pa.Table]:
+    """Combine small adjacent batches without retaining unbounded Arrow chunks.
+
+    Inputs must already satisfy the byte ceiling. Pending decoded bytes and
+    rows stay bounded; compact every 128 batches to bound chunk metadata too.
+    Compaction can temporarily hold both old and new buffers, so callers must
+    reserve twice this allowance in addition to their input/writer allocation.
+    Row order, types and values are preserved, including nullable/list fields.
+    """
+    if max_buffer_bytes < 1 or target_rows < 1:
+        raise ValueError("positive coalescing byte and row bounds required")
+    pending: list[pa.Table] = []
+    pending_bytes = pending_rows = 0
+    schema: pa.Schema | None = None
+    for table in tables:
+        if schema is None:
+            schema = table.schema
+        elif not table.schema.equals(schema, check_metadata=True):
+            raise ValueError("coalescing requires one exact Arrow schema")
+        if not table.num_rows:
+            continue
+        if table.nbytes > max_buffer_bytes or table.num_rows > target_rows:
+            raise MemoryError("coalescing input exceeds its byte or row allowance")
+        if pending and (
+            pending_bytes + table.nbytes > max_buffer_bytes
+            or pending_rows + table.num_rows > target_rows
+        ):
+            yield pa.concat_tables(pending).combine_chunks()
+            pending = []
+            pending_bytes = pending_rows = 0
+        pending.append(table)
+        pending_bytes += table.nbytes
+        pending_rows += table.num_rows
+        if len(pending) >= 128:
+            pending = [pa.concat_tables(pending).combine_chunks()]
+    if pending:
+        yield pa.concat_tables(pending).combine_chunks()
 
 
 def _conservative_projected_row_width(schema: pa.Schema, columns: Sequence[str]) -> int:

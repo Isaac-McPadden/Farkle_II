@@ -10,6 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.stats import kendalltau, spearmanr
 
+from farkle.analysis.h2h_inference import CONCLUSION_FLAGS
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
@@ -62,10 +63,10 @@ def _preference(rank_a: object, rank_b: object) -> str | None:
     return "a" if value_a < value_b else "b"
 
 
-def _h2h_direction(decision: str) -> str | None:
-    if decision.endswith("_a"):
+def _h2h_direction(row: dict[str, Any]) -> str | None:
+    if row["statistical_advantage_a"]:
         return "a"
-    if decision.endswith("_b"):
+    if row["statistical_advantage_b"]:
         return "b"
     return None
 
@@ -93,7 +94,7 @@ def _pair_agreement(membership: pd.DataFrame, inference: pd.DataFrame) -> pd.Dat
         win_preference = _preference(row_a["win_rate_rank"], row_b["win_rate_rank"])
         trueskill_preference = _preference(row_a["trueskill_rank"], row_b["trueskill_rank"])
         decision = str(raw["decision_class"])
-        h2h_direction = _h2h_direction(decision)
+        h2h_direction = _h2h_direction(raw)
         rows.append(
             {
                 "family_hash": str(raw["family_hash"]),
@@ -101,6 +102,7 @@ def _pair_agreement(membership: pd.DataFrame, inference: pd.DataFrame) -> pd.Dat
                 "strategy_a": strategy_a,
                 "strategy_b": strategy_b,
                 "decision_class": decision,
+                **{name: bool(raw[name]) for name in CONCLUSION_FLAGS},
                 "h2h_direction": h2h_direction,
                 "win_rate_preference": win_preference,
                 "trueskill_preference": trueskill_preference,
@@ -185,13 +187,13 @@ def _summary(
         "selection_conditioned_h2h": {
             "unordered_pair_count": int(len(pairs)),
             "directional_pair_count": int(len(directional)),
-            "unresolved_pair_count": int(
-                pairs["decision_class"].astype(str).str.startswith("unresolved").sum()
+            "unresolved_pair_count": int((pairs["unresolved"] | pairs["nonviable"]).sum()),
+            "unresolved_nonviable_pair_count": int(pairs["nonviable"].sum()),
+            "equivalent_pair_count": int(pairs["equivalent"].sum()),
+            "statistical_advantage_and_equivalence_pair_count": int(
+                (pairs["equivalent"] & pairs["h2h_direction"].notna()).sum()
             ),
-            "unresolved_nonviable_pair_count": int(
-                pairs["decision_class"].eq("unresolved_nonviable").sum()
-            ),
-            "equivalent_pair_count": int(pairs["decision_class"].eq("equivalent").sum()),
+            "equivalence_is_pairwise_not_transitive": True,
             "win_rate_trueskill_direction_agreement_fraction": _fraction(
                 pairs, "win_rate_trueskill_agree"
             ),

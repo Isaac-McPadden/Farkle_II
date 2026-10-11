@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "6",
+  "status": "complete",
+  "date": "2026-10-03",
+  "workspace": {
+    "commit": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+    "state": "development_dirty",
+    "pre_existing_changes_preserved": true,
+    "no_working_repository_commit_or_reset": true
+  },
+  "implementation": {
+    "authorization_schema_version": 1,
+    "h2h_execution_cache_key_version": 6,
+    "h2h_method_version": 2,
+    "h2h_power_cache_key_version": 5,
+    "canonical_artifact": "cfg.h2h_2p_dir('h2h_execute') / 'cap_authorization.json'",
+    "noninteractive_option": "--h2h-authorize PLAN_SHA256:MAX_ATTEMPTS",
+    "operational_stop_exit_code": 3,
+    "production_cap_and_sampling_targets_changed": false
+  },
+  "isolated_validation_snapshots": {
+    "runtime": {
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task6-final-zxzdcm1g",
+      "commit": "cabf3bf5039e8fd15f30993a30e88e48c1ecdd9d",
+      "python": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe"
+    },
+    "boundaries": {
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task6-acceptance-vo3sdqc2",
+      "commit": "d1ddca4e3a50121811967101a2289565293af3a8"
+    },
+    "full_oracle": {
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task6-oracle-lwy_dvcz",
+      "commit": "0820c5df28babc2b83512191740dfd0f757ee67c"
+    }
+  },
+  "source_equivalence": {
+    "python_source_files": 95,
+    "source_inventory_sha256": "5c839d7e1b1b8f86e00c0174b6d769be81967fb49c26294c5f518bb5cbafb797",
+    "runtime_snapshot_exact_source_match": true,
+    "boundary_snapshot_exact_source_match": true,
+    "note": "All three checkouts use the repository Python 3.12 venv and identical production source. The boundary snapshot expands partial-progress publication cases; the full oracle snapshot also checks cap_authorization_sha256 in its exact-state assertion.",
+    "full_oracle_snapshot_exact_source_match": true
+  },
+  "production_config": {
+    "path": "configs/farkle_mega_config.yaml",
+    "sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+    "unchanged_from_starting_task6_snapshot": true
+  },
+  "tests": {
+    "focused": {
+      "tests": 192,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 477.192,
+      "junit_path": "data/task6-focused.xml",
+      "junit_sha256": "eaa757be5f3403d33239c70ef378799d6c7151e92a98254d4140901277769e71"
+    },
+    "expanded_authorization_boundaries": {
+      "tests": 28,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 135.236,
+      "junit_path": "data/task6-boundaries.xml",
+      "junit_sha256": "83c5bca50fa92346f6843aa80f912232915cd1f3b940be96d386a0795f289b86"
+    },
+    "note": "Suites overlap; their case counts must not be summed as unique tests.",
+    "full_simulation_to_report_oracle": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 1295.868,
+      "properties": {
+        "raw_simulation_to_report_runtime_seconds": 1292.647,
+        "required_preflight_runtime_seconds": 546.764,
+        "total_runtime_ceiling_seconds": 3840.0
+      },
+      "junit_path": "data/task6-full-oracle.xml",
+      "junit_sha256": "7542cc36694bda19a96958b99048de33540da52e37f166ee4061792f57dbc3fc",
+      "checks": [
+        "One interactive approval for the exact 24-attempt plan against preset cap 23.",
+        "Configured cap unchanged after approval.",
+        "Real required RNG preflights and batch monitors.",
+        "Authenticated root/root/pair graph, reporting and final byte-deep release audit.",
+        "Ordinary no-force replay without interactive policy reuses durable authorization.",
+        "Stable workflow file bytes and H2H block count after replay."
+      ],
+      "warning": "Pytest record_property emits the existing xunit2 compatibility warning; measured properties are retained in the XML."
+    }
+  },
+  "static_checks": {
+    "ruff_src_tests_scripts": "passed",
+    "mypy_all_95_source_files": "passed",
+    "pyright_six_affected_runtime_modules": "passed",
+    "git_diff_check": "passed",
+    "public_cli_help": "passed",
+    "black_15_touched_python_files": "passed"
+  },
+  "existing_repository_gate": {
+    "check": "scripts/check_terminology.py",
+    "exit_code": 1,
+    "status": "pre_existing_findings",
+    "source": "src/farkle/analysis/outcome_publication.py",
+    "source_unchanged_by_task6": true,
+    "lines": [
+      995,
+      1031,
+      1080,
+      1186
+    ],
+    "reason": "Four existing uses of pooled, including the durable pooled_merge unit name; retained rather than changing unrelated publication layout."
+  },
+  "limitations": [
+    "No production simulation or production cap override was run.",
+    "No changes to candidate families, power targets, replacement allocation, RNG coordinates, batches, or bootstrap counts.",
+    "Full Windows launcher/resource/storage and production capacity qualification remains Task 10.",
+    "Synthetic structural toy RNG inputs explicitly say insufficient_evidence; the raw pipeline oracle runs real preflight."
+  ]
+}

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from farkle.analysis import seat_analysis as seats
 from farkle.analysis.seat_analysis import build_canonical_seat_analysis
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
@@ -273,3 +276,185 @@ def test_mirrored_partition_shards_resume_after_missing_or_corrupt_unit(tmp_path
         pq.read_table(repaired.mirrored_diagnostic)["paired_mirrored_games"].to_pylist()
         == [1] * 2_100
     )
+
+
+@pytest.mark.parametrize("budget", [8 * 1024, 32 * 1024 * 1024])
+def test_streaming_counts_match_independent_oracle(
+    tmp_path: Path, monkeypatch, budget: int
+) -> None:
+    cfg = _cfg(tmp_path)
+    rows = []
+    expected: dict[tuple[int, int, int], list[int]] = {}
+    for batch in range(31):
+        for game in range(13):
+            strategies = [10 + (game + batch + seat) % 5 for seat in range(4)]
+            row = _row(4, game, strategies, 1 + game % 4, batch=batch)
+            safety = (batch + game) % 7 == 0
+            if safety:
+                row.update(
+                    termination_status="safety_limit", winner_seat=None, winner_strategy=None
+                )
+            rows.append(row)
+            for seat, strategy in enumerate(strategies, 1):
+                value = expected.setdefault((batch, strategy, seat), [0, 0, 0, 0])
+                value[0] += int(not safety and seat == 1 + game % 4)
+                value[1] += 1
+                value[2] += int(not safety)
+                value[3] += int(safety)
+    source = _write_source(cfg, 4, rows)
+    tables = list(seats._iter_seat_count_tables(source, 4, max_bytes=budget))
+    counts = pa.concat_tables(tables)
+    observed = {
+        (r["deterministic_batch_id"], r["strategy"], r["seat"]): [r[c] for c in seats._COUNT_FIELDS]
+        for r in counts.to_pylist()
+    }
+    assert observed == expected
+    count_path = tmp_path / "counts.parquet"
+    pq.write_table(counts, count_path, row_group_size=17)
+    oracle = seats._within_k_frames(counts.to_pandas(), 4)
+    monkeypatch.setattr(pq, "read_table", lambda *a, **kw: pytest.fail("whole-file read"))
+    actual = seats._stream_within_k_frames(count_path, 4, budget)
+    for result, reference in zip(actual, oracle, strict=True):
+        pd.testing.assert_frame_equal(result, reference)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("P1_strategy", None),
+        ("winner_seat", None),
+        ("game_index", None),
+        ("termination_status", "bad"),
+    ],
+)
+def test_missing_required_records_are_not_zero_filled(tmp_path: Path, field, value) -> None:
+    cfg = _cfg(tmp_path)
+    row = _row(2, 0, [10, 20], 1)
+    row[field] = value
+    source = _write_source(cfg, 2, [row])
+    with pytest.raises(ValueError):
+        list(seats._iter_seat_count_tables(source, 2))
+
+
+def test_seat_roster_admission_and_integer_overflow() -> None:
+    total = seats._SeatTotals(2, 1024)
+    with pytest.raises(MemoryError, match="roster"):
+        total.add(np.array([1, 2]), np.array([0, 0]), np.array([[1, 1, 1, 0]] * 2))
+    total = seats._SeatTotals(2, 8192)
+    maximum = np.iinfo(np.int64).max
+    total.add(np.array([1]), np.array([0]), np.array([[maximum, maximum, maximum, 0]]))
+    with pytest.raises(OverflowError):
+        total.add(np.array([1]), np.array([0]), np.array([[1, 1, 1, 0]]))
+
+
+def _stamps(paths):
+    return {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in paths}
+
+
+def test_interrupted_parent_reuses_children_and_rejects_stale_support(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.analysis.n_jobs = 1
+    _write_inputs(cfg)
+    original = seats._standardized_frames
+
+    def interrupted(*args, **kwargs):
+        raise InterruptedError("after per-k publication")
+
+    monkeypatch.setattr(seats, "_standardized_frames", interrupted)
+    with pytest.raises(InterruptedError):
+        build_canonical_seat_analysis(cfg)
+    children = [p for k in (2, 4) for p in seats._seat_cell_outputs(cfg, k)]
+    initial = _stamps(children)
+    monkeypatch.setattr(seats, "_standardized_frames", original)
+    artifacts = build_canonical_seat_analysis(cfg)
+    assert _stamps(children) == initial
+    # A stale child is repaired; other valid cells and its valid count history survive.
+    cfg.seat_effects_by_k_path(4).write_bytes(b"corrupt")
+    build_canonical_seat_analysis(cfg)
+    assert (
+        _stamps([cfg.seat_batch_counts_path(4)])[cfg.seat_batch_counts_path(4)]
+        == initial[cfg.seat_batch_counts_path(4)]
+    )
+    assert _stamps(seats._seat_cell_outputs(cfg, 2)) == {
+        p: initial[p] for p in seats._seat_cell_outputs(cfg, 2)
+    }
+    assert pq.read_table(cfg.seat_effects_by_k_path(4)).num_rows > 0
+    # Relevant source edits invalidate their cell even when the parent had completed.
+    _write_source(cfg, 4, [_row(4, 0, [10, 20, 10, 20], 1)])
+    build_canonical_seat_analysis(cfg)
+    assert _stamps(seats._seat_cell_outputs(cfg, 2)) == {
+        p: initial[p] for p in seats._seat_cell_outputs(cfg, 2)
+    }
+    assert pq.read_table(cfg.seat_population_by_k_path(4))["raw_exposures"].to_pylist() == [1] * 4
+    # Missing required support fails; previously published outputs cannot hide it.
+    cfg.combined_rows_by_k(4).unlink()
+    with pytest.raises(FileNotFoundError, match="missing"):
+        build_canonical_seat_analysis(cfg)
+    assert artifacts.by_k
+
+
+def test_empty_diagnostics_have_explicit_nonempty_schemas(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.sim.n_players_list = [4]
+    _write_source(cfg, 4, [_row(4, 0, [10, 20, 10, 20], 1)])
+    artifacts = build_canonical_seat_analysis(cfg)
+    for path, columns in (
+        (artifacts.selfplay_diagnostic, seats._SELFPLAY_COLUMNS),
+        (artifacts.mirrored_diagnostic, seats._MIRRORED_COLUMNS),
+    ):
+        table = pq.read_table(path)
+        assert table.num_rows == 0
+        assert table.schema.equals(seats._frame_schema(columns), check_metadata=False)
+        assert not any(pa.types.is_null(field.type) for field in table.schema)
+    schema = pq.read_schema(artifacts.standardized_across_k)
+    assert schema.field("strategy").type == pa.int32()
+    assert schema.field("common_k_support").type == pa.list_(pa.int16())
+
+
+def test_cell_method_changes_invalidate_and_explicit_force_rebuilds(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.sim.n_players_list = [4]
+    _write_source(cfg, 4, [_row(4, 0, [10, 20, 10, 20], 1)])
+    seats._build_seat_cell((cfg, 4, False))
+    assert seats._seat_cell_valid(cfg, 4)
+    counts = cfg.seat_batch_counts_path(4)
+    initial = counts.stat().st_mtime_ns
+    seats._build_seat_cell((cfg, 4, True))
+    assert counts.stat().st_mtime_ns != initial
+    assert seats._seat_cell_valid(cfg, 4)
+    cfg.k_aggregation.method = "declared-mapping"
+    cfg.k_aggregation.k_weights = {4: 1.0}
+    assert not seats._seat_cell_valid(cfg, 4)
+
+
+def test_per_k_workers_preserve_canonical_results(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.analysis.n_jobs = 1
+    _write_inputs(cfg)
+    artifacts = build_canonical_seat_analysis(cfg)
+    expected = {path: pq.read_table(path) for path in artifacts.all_paths}
+    cfg.analysis.n_jobs = 2
+    build_canonical_seat_analysis(cfg, force=True)
+    for path, table in expected.items():
+        assert pq.read_table(path).equals(table)
+
+
+def test_mirrored_merge_bounds_fanin_and_sums_duplicate_keys(tmp_path: Path) -> None:
+    paths = []
+    for i in range(35):
+        path = tmp_path / f"part-{i}.parquet"
+        rows = []
+        for a, b in [(10, 20), (30, 40)]:
+            rows.append(
+                dict(zip(seats._MERGE_SCHEMA.names, [11, a, b, 1, -1, 2, 0, 0, 0], strict=True))
+            )
+        pq.write_table(pa.Table.from_pylist(rows, schema=seats._MERGE_SCHEMA), path)
+        paths.append(path)
+    reduced = seats._reduce_mirror_fanin(paths, tmp_path, 8192)
+    assert len(reduced) <= seats._MIRROR_FANIN
+    assert list(seats._merge_mirror_rows(reduced, 8192)) == [
+        ((11, 10, 20), [35, -35, 70, 0, 0, 0]),
+        ((11, 30, 40), [35, -35, 70, 0, 0, 0]),
+    ]

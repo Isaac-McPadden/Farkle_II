@@ -316,8 +316,10 @@ class SimConfig:
 class AnalysisConfig:
     """Analysis-stage parameters that remain outside typed method settings."""
 
+    # Compatibility spelling: omit only exhaustive game-level lags. Required
+    # preflight, batch monitoring, and integrity checks always remain active.
     disable_rng_diagnostics: bool = False
-    """Disable RNG diagnostics in the root-local workflow."""
+    """Omit exhaustive game-level lags while retaining required RNG evidence."""
 
     n_jobs: int = 1
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
@@ -1015,10 +1017,84 @@ class AppConfig:
 
         return self.input_scope_path("rng_diagnostics", ArtifactScope.DIAGNOSTICS, name)
 
+    def rng_preflight_evidence_path(self) -> Path:
+        return self.rng_input_path("preflight_evidence.json")
+
+    def rng_monitor_coverage_path(self) -> Path:
+        return self.rng_input_path("monitor_coverage.json")
+
+    def rng_production_monitor_path(self) -> Path:
+        return self.rng_input_path("production_monitor.parquet")
+
+    def rng_preflight_dir(self) -> Path:
+        return self.rng_input_path("preflight")
+
     def metrics_all_player_batch_path(self, k: int) -> Path:
         """Canonical unconditional player-exposure batch metrics for ``k`` players."""
 
         return self.metrics_per_k_dir(k) / "all_player_batch_metrics.parquet"
+
+    def outcome_frequencies_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_frequencies.parquet"
+
+    def outcome_batch_stats_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_batch_stats.parquet"
+
+    def outcome_batch_inventory_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_batch_inventory.parquet"
+
+    def outcome_support_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_support.parquet"
+
+    def outcome_summaries_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_summaries.parquet"
+
+    def outcome_units_dir(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "_outcome_units"
+
+    def outcome_checkpoint_inventory_path(self, k: int) -> Path:
+        return self.outcome_units_dir(k) / "publication.json"
+
+    def outcome_precision_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "outcome_precision.parquet"
+
+    def outcome_precision_ranges_dir(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "_outcome_precision_ranges"
+
+    def outcome_precision_inventory_path(self, k: int) -> Path:
+        return self.outcome_precision_ranges_dir(k) / "publication.json"
+
+    def seat_behavior_batch_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "seat_behavior_batch.parquet"
+
+    def seat_behavior_summaries_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "seat_behavior_summaries.parquet"
+
+    def seat_behavior_units_dir(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "_seat_behavior_units"
+
+    def turn_opportunity_batch_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "turn_opportunity_batch.parquet"
+
+    def turn_opportunity_path(self, k: int) -> Path:
+        return self.metrics_per_k_dir(k) / "turn_opportunity.parquet"
+
+    def turn_opportunity_equal_k_path(self) -> Path:
+        return (
+            self.scope_dir("metrics", ArtifactScope.ACROSS_K) / "turn_opportunity_equal_k.parquet"
+        )
+
+    def parameter_responses_path(self, k: int) -> Path:
+        return self.hgb_per_k_dir(k) / "parameter_responses.parquet"
+
+    def parameter_nonadditivity_path(self, k: int) -> Path:
+        return self.hgb_per_k_dir(k) / "parameter_nonadditivity.parquet"
+
+    def parameter_response_support_path(self, k: int) -> Path:
+        return self.hgb_per_k_dir(k) / "parameter_response_support.parquet"
+
+    def simulation_workload_plan_path(self, k: int) -> Path:
+        return self.n_dir(k) / "simulation_workload_plan.json"
 
     def performance_batch_matrix_path(self, k: int) -> Path:
         """Memory-mappable canonical batch-count matrix for ``k`` players."""
@@ -1224,6 +1300,11 @@ class AppConfig:
 
         return self.h2h_2p_dir("h2h_power") / "block_manifest.parquet"
 
+    def h2h_cap_authorization_path(self) -> Path:
+        """Authenticated operational consent for this exact frozen H2H plan."""
+
+        return self.h2h_2p_dir("h2h_execute") / "cap_authorization.json"
+
     def h2h_execution_state_path(self) -> Path:
         """Resumable H2H execution lifecycle independent of the power plan."""
 
@@ -1300,6 +1381,14 @@ class AppConfig:
         """Machine-readable canonical structure report."""
 
         return self.diagnostics_dir("reporting") / "structure_report.json"
+
+    def analysis_guide_json_path(self) -> Path:
+        """Task 0 G product owned by the reporting stage."""
+        return self.scope_dir("reporting", ArtifactScope.DIAGNOSTICS) / "analysis_guide.json"
+
+    def analysis_guide_markdown_path(self) -> Path:
+        """Human-readable rendering of the authenticated G JSON."""
+        return self.scope_dir("reporting", ArtifactScope.DIAGNOSTICS) / "analysis_guide.md"
 
     def structure_report_markdown_path(self) -> Path:
         """Human-readable canonical structure report."""

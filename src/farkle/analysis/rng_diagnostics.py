@@ -599,6 +599,7 @@ def run(
     lags: Sequence[int] | None = None,
     force: bool = False,
     _route_row_groups_per_unit: int | None = None,
+    _completion_name: str = "rng_diagnostics",
 ) -> None:
     """Compute bounded, resumable lag diagnostics from curated rows."""
 
@@ -628,7 +629,7 @@ def run(
     summary_file = cfg.rng_output_path("rng_diagnostics_summary.json")
     selection_file = cfg.rng_output_path("rng_group_selection.parquet")
     selection_report_file = cfg.rng_output_path("rng_group_selection_summary.json")
-    stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
+    stamp_path = stage_done_path(cfg.rng_stage_dir, _completion_name)
     normalized_lags = _normalize_lags(cfg.analysis.rng_diagnostic_lags if lags is None else lags)
     if not normalized_lags:
         stage_log.missing_input("no valid lags provided")

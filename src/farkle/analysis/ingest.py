@@ -23,7 +23,11 @@ import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope, load_app_config
 from farkle.simulation.runner import simulation_is_complete
-from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
+from farkle.utils.arrow_batches import (
+    _conservative_projected_row_width,
+    coalesce_arrow_tables,
+    iter_parquet_tables_by_bytes,
+)
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     make_artifact_sidecar,
@@ -60,6 +64,8 @@ from farkle.utils.schema_helpers import (
 )
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import ParquetShardWriter
+
+INGEST_PHYSICAL_LAYOUT_VERSION = 3
 
 LOGGER = logging.getLogger(__name__)
 
@@ -662,17 +668,29 @@ class _IngestUnitWriter:
         snapshot = {source.n_players: source for source in self.sources}[n_players]
         schema = raw_simulation_schema_for(n_players)
         max_bytes = int(self.cfg.resources.stage_batch_bytes["ingest"])
+        # Reserve independent input, pending, compaction and writer allocations.
+        buffer_bytes = max_bytes // 4
+        row_limit = min(
+            self.cfg.row_group_size,
+            max(1, buffer_bytes // _conservative_projected_row_width(schema, schema.names)),
+        )
+        source_tables = (
+            table
+            for table, _path in _iter_shards_arrow(
+                snapshot.shards,
+                columns=tuple(schema.names),
+                max_batch_bytes=buffer_bytes,
+                max_batch_rows=min(row_limit, max(1, int(self.cfg.ingest.batch_rows))),
+            )
+        )
         with ParquetShardWriter(
             out_path=str(staged),
             schema=schema,
             compression=self.cfg.parquet_codec,
             row_group_size=self.cfg.row_group_size,
         ) as writer:
-            for table, _path in _iter_shards_arrow(
-                snapshot.shards,
-                columns=tuple(schema.names),
-                max_batch_bytes=max_bytes,
-                max_batch_rows=max(1, int(self.cfg.ingest.batch_rows)),
+            for table in coalesce_arrow_tables(
+                source_tables, max_buffer_bytes=buffer_bytes, target_rows=row_limit
             ):
                 if table.nbytes > max_bytes:
                     raise MemoryError("ingest working batch crossed its configured byte ceiling")
@@ -811,7 +829,7 @@ def _ingest_partition_identity(
         statistical_config_sha256=cfg.stage_config_sha("ingest"),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=2,
-        method_version=2,
+        method_version=INGEST_PHYSICAL_LAYOUT_VERSION,
     )
 
 

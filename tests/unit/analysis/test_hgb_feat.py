@@ -77,6 +77,7 @@ def _hgb_outputs(cfg: AppConfig) -> list[Path]:
         cfg.hgb_importance_path(2),
         cfg.hgb_predictive_scores_path(2),
         cfg.hgb_fold_metrics_path(2),
+        *hgb_feat.response_paths(cfg, 2),
     ]
 
 
@@ -124,6 +125,7 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
         cfg.hgb_importance_path(2),
         cfg.hgb_predictive_scores_path(2),
         cfg.hgb_fold_metrics_path(2),
+        *hgb_feat.response_paths(cfg, 2),
     ]
     write_stage_done(
         stage_done_path(cfg.hgb_stage_dir, "hgb"),
@@ -162,6 +164,9 @@ def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyP
         called["output"] = json_out
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
+    monkeypatch.setattr(
+        hgb_feat, "build_parameter_responses", lambda cfg, k, **kw: hgb_feat.response_paths(cfg, k)
+    )
     hgb_feat.run(cfg)
     assert called
     assert not any(cfg.analysis_dir.glob("*.pkl"))
@@ -185,6 +190,9 @@ def test_hgb_authenticated_completion_recomputes_on_contract_mutation(
         _publish_output_placeholders(cfg, mtime=1010 + calls)
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
+    monkeypatch.setattr(
+        hgb_feat, "build_parameter_responses", lambda cfg, k, **kw: hgb_feat.response_paths(cfg, k)
+    )
     hgb_feat.run(cfg)
     hgb_feat.run(cfg)
     assert calls == 1, "unchanged authenticated HGB work must skip"
@@ -248,6 +256,9 @@ def test_hgb_force_recomputes_and_corrupt_bytes_cannot_be_blessed(
         _publish_output_placeholders(cfg, mtime=1010 + calls)
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
+    monkeypatch.setattr(
+        hgb_feat, "build_parameter_responses", lambda cfg, k, **kw: hgb_feat.response_paths(cfg, k)
+    )
     hgb_feat.run(cfg)
     hgb_feat.run(cfg, force=True)
     assert calls == 2
@@ -275,6 +286,9 @@ def test_hgb_rejects_invalid_strategy_manifest_sidecar_at_consumer(
         _publish_output_placeholders(cfg, mtime=1010 + calls)
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
+    monkeypatch.setattr(
+        hgb_feat, "build_parameter_responses", lambda cfg, k, **kw: hgb_feat.response_paths(cfg, k)
+    )
     hgb_feat.run(cfg)
     assert calls == 1, "valid authenticated HGB control must reach the consumer"
 
@@ -374,6 +388,7 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
         cfg.hgb_importance_path(2),
         cfg.hgb_predictive_scores_path(2),
         cfg.hgb_fold_metrics_path(2),
+        *hgb_feat.response_paths(cfg, 2),
         cfg.hgb_future_proposals_path(),
         cfg.concat_ks_dir("hgb") / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
         cfg.across_k_dir("hgb") / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,
@@ -386,9 +401,14 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
             output,
             validate_provenance=False,
         )
+        expected_sources = {source, manifest_path}
+        if output in hgb_feat.response_paths(cfg, 2):
+            expected_sources.update(
+                {cfg.hgb_predictive_scores_path(2), cfg.hgb_fold_metrics_path(2)}
+            )
         assert {
             identity.artifact.location.path(cfg) for identity in authenticated.source_artifacts
-        } == {source, manifest_path}
+        } == expected_sources
     concat_metadata = validate_artifact_sidecar(
         cfg.concat_ks_dir("hgb") / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
         expected={

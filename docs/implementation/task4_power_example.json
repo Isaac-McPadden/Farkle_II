@@ -1,0 +1,60 @@
+{
+  "contract": "first_release_task0_v1",
+  "power_method": "conditional_exact_power_first_crossing_v2",
+  "candidate_count": 150,
+  "pair_count": 11175,
+  "root_seeds": [
+    102,
+    103
+  ],
+  "family_alpha": 0.02,
+  "alpha_per_pair": 1.7897091722595078e-06,
+  "planned_effect": 0.03,
+  "target_detection_power": 0.8,
+  "equivalence_margin": 0.03,
+  "n_completed_per_root_order_block": 2191,
+  "n_completed_per_order": 4382,
+  "n_completed_per_pair": 8764,
+  "total_planned_completed_games": 97937700,
+  "scenario_powers": [
+    {
+      "seat1_advantage": 0.0,
+      "rejection_power": 0.8005929234211554
+    },
+    {
+      "seat1_advantage": 0.03,
+      "rejection_power": 0.802084293777481
+    },
+    {
+      "seat1_advantage": 0.06,
+      "rejection_power": 0.8117396123566817
+    }
+  ],
+  "worst_scenario_rejection_power": 0.8005929234211554,
+  "example": {
+    "seat1_wins_order_ab": 2322,
+    "seat1_wins_order_ba": 2060,
+    "d_ab": 0.029895025102692818,
+    "simultaneous_d_low": 0.0043885407002990234,
+    "simultaneous_d_high": 0.055244657698271915,
+    "p_value": 2.1769122459695643e-08,
+    "holm_adjusted_p": 0.0002432699434870988,
+    "other_pair_p_values": 1.0,
+    "statistical_advantage_a": true,
+    "statistical_advantage_b": false,
+    "practical_dominance_a": false,
+    "practical_dominance_b": false,
+    "equivalent": false,
+    "unresolved": false,
+    "nonviable": false,
+    "decision_class": "statistical_only_advantage_a"
+  },
+  "interpretation": "Planned power is rejection power for zero advantage under the stated alternatives, conditional on completed-game support. It is not power to prove practical dominance or equivalence. Separate flags describe what the synthetic observed interval supports. Holm superiority and simultaneous-interval equivalence have separate multiplicity statements; no single joint family-wise guarantee is asserted.",
+  "elapsed_seconds": 15.842142099980265,
+  "config_sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+  "source_sha256": {
+    "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\scripts\\task4_h2h_example.py": "a83ab9f3e9cbc058c9634bf030b963737ea99e2c46c889438e37aa36b35529ea",
+    "src\\farkle\\analysis\\h2h_schedule.py": "1de9070adb77602df54e759626fd25705c7fe6dc9379a60d4047d97b6e95fa11",
+    "src\\farkle\\analysis\\h2h_inference.py": "62e7207c2b8c6cbb74402b72eda68acdb4bbfd2596de3e8207810e784cd2d2e4"
+  }
+}

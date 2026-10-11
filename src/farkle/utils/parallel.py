@@ -274,8 +274,12 @@ class ResolvedResourcePolicy:
                 "minimum_system_available_memory_mb": (
                     self.minimum_system_available_memory_mb if memory_enabled else None
                 ),
-                "parent_process_memory_mb": self.parent_process_memory_mb if memory_enabled else None,
-                "native_threads_per_worker": self.native_threads_per_worker if cpu_enabled else None,
+                "parent_process_memory_mb": (
+                    self.parent_process_memory_mb if memory_enabled else None
+                ),
+                "native_threads_per_worker": (
+                    self.native_threads_per_worker if cpu_enabled else None
+                ),
             },
             "effective": {
                 "logical_cpu_budget": self.resolved_logical_cpu_budget if cpu_enabled else None,
@@ -291,8 +295,12 @@ class ResolvedResourcePolicy:
                 "minimum_system_available_memory_mb": (
                     self.minimum_system_available_memory_mb if memory_enabled else None
                 ),
-                "parent_process_memory_mb": self.parent_process_memory_mb if memory_enabled else None,
-                "native_threads_per_worker": self.native_threads_per_worker if cpu_enabled else None,
+                "parent_process_memory_mb": (
+                    self.parent_process_memory_mb if memory_enabled else None
+                ),
+                "native_threads_per_worker": (
+                    self.native_threads_per_worker if cpu_enabled else None
+                ),
             },
         }
 
@@ -743,9 +751,7 @@ def resolve_stage_parallel_policy(
     if resources is not None:
         machine_policy = resolve_resource_policy(resources, logical_cpu_count=detected_cores)
         total_cores = (
-            machine_policy.resolved_logical_cpu_budget
-            if cpu_limiters_enabled
-            else detected_cores
+            machine_policy.resolved_logical_cpu_budget if cpu_limiters_enabled else detected_cores
         )
 
     requested_n_jobs = (

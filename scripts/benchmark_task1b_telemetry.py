@@ -131,7 +131,9 @@ def _run_fixture(
     )
 
 
-def _summarize(name: str, measurements: list[tuple[_Measurement, _Measurement]]) -> dict[str, object]:
+def _summarize(
+    name: str, measurements: list[tuple[_Measurement, _Measurement]]
+) -> dict[str, object]:
     disabled = [item[0] for item in measurements]
     enabled = [item[1] for item in measurements]
     disabled_wall = statistics.median(item.wall_seconds for item in disabled)

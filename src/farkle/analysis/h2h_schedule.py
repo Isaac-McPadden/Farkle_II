@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
 
+from farkle.analysis.h2h_authorization import resolve_cap_authorization
 from farkle.config import AppConfig, ArtifactScope
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.simulation.game_profile import GameProfile
@@ -40,7 +41,10 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
-from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.authenticated_contract import (
+    AuthenticatedContractError,
+    load_authenticated_sidecar,
+)
 from farkle.utils.parallel import (
     apply_native_thread_limits,
     make_process_tree_memory_guard,
@@ -781,7 +785,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         sidecar_artifacts=expected_outputs,
     ):
         existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
-        _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+        authorization = _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+        blocked = authorization["execution_authorization"] != "ready"
         return H2HScheduleArtifacts(
             power_plan=power_path,
             block_manifest=schedule_path,
@@ -815,22 +820,15 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
                     "published H2H statistical design differs from the requested design; "
                     "use a new output root"
                 )
-            _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+            authorization = _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+            blocked = authorization["execution_authorization"] != "ready"
             write_stage_done(
                 done,
                 inputs=family_sources,
                 outputs=[power_path, schedule_path],
                 cfg=cfg,
                 stage="h2h_power",
-                status="blocked_by_cap" if blocked else "success",
-                reason=(
-                    (
-                        f"maximum H2H attempts {maximum_total_attempts} exceed "
-                        f"head2head.total_game_cap={cap}"
-                    )
-                    if blocked
-                    else None
-                ),
+                status="success",
                 sidecar_artifacts=[power_path, schedule_path],
             )
             return H2HScheduleArtifacts(
@@ -876,19 +874,15 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         sidecar=schedule_sidecar,
         codec=cfg.parquet_codec,
     )
-    _refresh_execution_authorization(cfg, plan, blocked=blocked)
+    authorization = _refresh_execution_authorization(cfg, plan, blocked=blocked)
+    blocked = authorization["execution_authorization"] != "ready"
     write_stage_done(
         done,
         inputs=family_sources,
         outputs=[power_path, schedule_path],
         cfg=cfg,
         stage="h2h_power",
-        status="blocked_by_cap" if blocked else "success",
-        reason=(
-            (f"maximum H2H attempts {maximum_total_attempts} exceed head2head.total_game_cap={cap}")
-            if blocked
-            else None
-        ),
+        status="success",
         sidecar_artifacts=[power_path, schedule_path],
     )
     return H2HScheduleArtifacts(
@@ -906,23 +900,22 @@ def _write_execution_state(
     *,
     completed_block_count: int,
     block_rows: Sequence[Mapping[str, Any]] | None = None,
+    previous: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically publish mutable execution progress outside the power stage."""
 
     total = int(plan["total_block_count"])
     if not 0 <= completed_block_count <= total:
         raise ValueError("completed H2H block count lies outside the frozen schedule")
+    authorization = resolve_cap_authorization(cfg, plan)
     payload = {
+        **(previous or {}),
         "family_hash": str(plan["family_hash"]),
         "schedule_hash": str(plan["schedule_hash"]),
-        "authorized_total_game_cap": cfg.head2head.total_game_cap,
+        "authorized_total_game_cap": authorization["authorized_total_game_cap"],
+        "cap_authorization_sha256": sha256_file(cfg.h2h_cap_authorization_path()),
         "maximum_total_attempts": int(plan["maximum_total_attempts"]),
-        "execution_authorization": (
-            "blocked_by_cap"
-            if cfg.head2head.total_game_cap is not None
-            and int(plan["maximum_total_attempts"]) > cfg.head2head.total_game_cap
-            else "ready"
-        ),
+        "execution_authorization": authorization["execution_authorization"],
         "execution_state": state.value,
         "completed_block_count": completed_block_count,
         "total_block_count": total,
@@ -953,7 +946,11 @@ def _write_execution_state(
             }
         )
     state_path = cfg.h2h_execution_state_path()
-    sources = [cfg.h2h_power_plan_path(), cfg.h2h_block_manifest_path()]
+    sources = [
+        cfg.h2h_power_plan_path(),
+        cfg.h2h_block_manifest_path(),
+        cfg.h2h_cap_authorization_path(),
+    ]
     sidecar = make_artifact_sidecar(
         cfg,
         state_path,
@@ -997,7 +994,10 @@ def _refresh_execution_authorization(
 ) -> dict[str, Any]:
     """Publish cap authorization without changing immutable statistical design."""
 
+    authorization = resolve_cap_authorization(cfg, plan)
+    blocked = authorization["execution_authorization"] != "ready"
     state_path = cfg.h2h_execution_state_path()
+    existing: dict[str, Any] = {}
     if state_path.exists():
         try:
             existing = cast(
@@ -1010,7 +1010,9 @@ def _refresh_execution_authorization(
                     },
                 ),
             )
-        except ArtifactContractError:
+        except (ArtifactContractError, AuthenticatedContractError):
+            # A checkpoint publication may have been interrupted; block files
+            # remain the independent authority for exact execution progress.
             existing = {}
         if existing:
             for field in ("family_hash", "schedule_hash", "total_block_count"):
@@ -1018,26 +1020,23 @@ def _refresh_execution_authorization(
                     raise ValueError(
                         f"H2H execution state conflicts with immutable plan field {field}"
                     )
-            current_state = str(existing.get("execution_state"))
-            current_authorization = str(existing.get("execution_authorization"))
-            desired_authorization = "blocked_by_cap" if blocked else "ready"
             if (
-                current_authorization == desired_authorization
-                and existing.get("authorized_total_game_cap") == cfg.head2head.total_game_cap
+                existing.get("execution_authorization") == authorization["execution_authorization"]
+                and existing.get("authorized_total_game_cap")
+                == authorization["authorized_total_game_cap"]
+                and existing.get("cap_authorization_sha256")
+                == sha256_file(cfg.h2h_cap_authorization_path())
             ):
                 return existing
-            if current_state not in {
-                CompletionState.NOT_STARTED.value,
-                CompletionState.BLOCKED_BY_CAP.value,
-            }:
-                raise RuntimeError(
-                    "cannot change H2H cap authorization after execution progress exists"
-                )
+    state = CompletionState(str(existing.get("execution_state", CompletionState.NOT_STARTED.value)))
+    if state in {CompletionState.NOT_STARTED, CompletionState.BLOCKED_BY_CAP}:
+        state = CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED
     return _write_execution_state(
         cfg,
         plan,
-        CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED,
-        completed_block_count=0,
+        state,
+        completed_block_count=int(existing.get("completed_block_count", 0)),
+        previous=existing,
     )
 
 
@@ -1632,25 +1631,9 @@ def execute_h2h_schedule(
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("H2H execution requires a complete valid power plan")
-    authorization = cast(
-        dict[str, Any],
-        read_json_artifact(
-            state_path,
-            expected_sidecar={
-                "scope": ArtifactScope.H2H_2P.value,
-                "operation": "h2h_execution_state",
-            },
-        ),
-    )
-    for field in ("family_hash", "schedule_hash", "total_block_count"):
-        if authorization.get(field) != plan.get(field):
-            raise ValueError(f"H2H execution authorization conflicts with plan field {field}")
-    if authorization.get("execution_authorization") == "blocked_by_cap":
-        raise RuntimeError(
-            "H2H execution is blocked; raise head2head.total_game_cap to the planned workload"
-        )
-    if authorization.get("execution_authorization") != "ready":
-        raise RuntimeError("H2H execution state lacks a valid cap authorization")
+    _refresh_execution_authorization(cfg, plan, blocked=False)
+    resolve_cap_authorization(cfg, plan, request=True)
+    _refresh_execution_authorization(cfg, plan, blocked=False)
     validate_artifact_sidecar(
         schedule_path,
         expected={
@@ -1672,7 +1655,7 @@ def execute_h2h_schedule(
     total_pairs = int(schedule["pair_id"].nunique())
     total_planned_games = int(schedule["n_completed_required"].sum())
     block_paths = tuple(_block_path(cfg, record) for record in records)
-    stage_outputs = [state_path, output, *block_paths]
+    stage_outputs = [cfg.h2h_cap_authorization_path(), state_path, output, *block_paths]
     if stage_is_up_to_date(
         done,
         inputs=[plan_path, schedule_path],
@@ -1712,7 +1695,7 @@ def execute_h2h_schedule(
             outputs=stage_outputs,
             cfg=cfg,
             stage="h2h_execute",
-            sidecar_artifacts=[state_path, output],
+            sidecar_artifacts=[cfg.h2h_cap_authorization_path(), state_path, output],
         )
         artifacts = H2HExecutionArtifacts(
             execution_state=state_path,
@@ -2163,7 +2146,7 @@ def execute_h2h_schedule(
         outputs=stage_outputs,
         cfg=cfg,
         stage="h2h_execute",
-        sidecar_artifacts=[state_path, output],
+        sidecar_artifacts=[cfg.h2h_cap_authorization_path(), state_path, output],
     )
     completion_publication_seconds += time.perf_counter() - completion_started
     if recorder is not None and scope is not None:

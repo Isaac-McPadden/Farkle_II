@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.h2h_inference import CONCLUSION_FLAGS, validate_pair_conclusions
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import (
@@ -29,6 +30,10 @@ _ALLOWED_DECISIONS: Final = {
     "practical_dominance_b",
     "statistical_only_advantage_a",
     "statistical_only_advantage_b",
+    "practical_dominance_a_and_equivalent",
+    "practical_dominance_b_and_equivalent",
+    "statistical_only_advantage_a_and_equivalent",
+    "statistical_only_advantage_b_and_equivalent",
     "equivalent",
     "unresolved",
     "unresolved_nonviable",
@@ -156,6 +161,8 @@ def _read_inference(cfg: AppConfig) -> pd.DataFrame:
         },
     )
     required = {
+        *CONCLUSION_FLAGS,
+        "delta_equivalence",
         "family_hash",
         "pair_id",
         "strategy_a",
@@ -182,6 +189,7 @@ def _read_inference(cfg: AppConfig) -> pd.DataFrame:
     frame = pq.read_table(path, columns=sorted(required)).to_pandas()
     if frame.empty:
         raise ValueError("H2H dominance requires nonempty pairwise inference")
+    validate_pair_conclusions(frame)
     if frame["pair_id"].duplicated().any():
         raise ValueError("H2H inference contains duplicate pair identifiers")
     if frame["strategy_a"].astype(str).eq(frame["strategy_b"].astype(str)).any():
@@ -282,16 +290,16 @@ def _edge_frames(
         decision = str(raw["decision_class"])
         strategy_a = str(raw["strategy_a"])
         strategy_b = str(raw["strategy_b"])
-        directed = decision.endswith("_a") or decision.endswith("_b")
+        directed = bool(raw["statistical_advantage_a"] or raw["statistical_advantage_b"])
         if bool(raw["holm_reject"]) != directed:
             raise ValueError("Holm decisions and directional decision classes disagree")
-        if decision.endswith("_a"):
+        if bool(raw["statistical_advantage_a"]):
             winner, loser = strategy_a, strategy_b
-        elif decision.endswith("_b"):
+        elif bool(raw["statistical_advantage_b"]):
             winner, loser = strategy_b, strategy_a
         else:
             continue
-        is_practical = decision.startswith("practical_dominance")
+        is_practical = bool(raw["practical_dominance_a"] or raw["practical_dominance_b"])
         if is_practical and not bool(raw["holm_reject"]):
             raise ValueError("practical dominance must also satisfy the Holm decision")
         if bool(raw["holm_reject"]):
@@ -303,6 +311,8 @@ def _edge_frames(
                     "winner": winner,
                     "loser": loser,
                     "decision_class": decision,
+                    "equivalent": bool(raw["equivalent"]),
+                    "delta_equivalence": raw["delta_equivalence"],
                     "d_ab": float(raw["d_ab"]),
                     "simultaneous_d_low": float(raw["simultaneous_d_low"]),
                     "simultaneous_d_high": float(raw["simultaneous_d_high"]),
@@ -314,7 +324,7 @@ def _edge_frames(
             threshold = float(raw["practical_delta"])
             distance = (
                 float(raw["simultaneous_d_low"]) - threshold
-                if decision.endswith("_a")
+                if bool(raw["practical_dominance_a"])
                 else -float(raw["simultaneous_d_high"]) - threshold
             )
             practical_edges.add((winner, loser))
@@ -325,6 +335,8 @@ def _edge_frames(
                     "winner": winner,
                     "loser": loser,
                     "decision_class": decision,
+                    "equivalent": bool(raw["equivalent"]),
+                    "delta_equivalence": raw["delta_equivalence"],
                     "d_ab": float(raw["d_ab"]),
                     "simultaneous_d_low": float(raw["simultaneous_d_low"]),
                     "simultaneous_d_high": float(raw["simultaneous_d_high"]),
@@ -338,6 +350,8 @@ def _edge_frames(
         "winner",
         "loser",
         "decision_class",
+        "equivalent",
+        "delta_equivalence",
         "d_ab",
         "simultaneous_d_low",
         "simultaneous_d_high",
@@ -677,6 +691,11 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         "decision_counts": {str(key): int(value) for key, value in decision_counts.items()},
         "practical_edge_count": len(practical_edges),
         "statistical_edge_count": len(statistical_edges),
+        "equivalent_pair_count": int(inference["equivalent"].sum()),
+        "statistical_advantage_and_equivalence_pair_count": int(
+            (inference["equivalent"] & inference["holm_reject"]).sum()
+        ),
+        "equivalence_is_pairwise_not_transitive": True,
         "practical_cycle_group_count": len(practical.cycles),
         "statistical_cycle_group_count": len(statistical.cycles),
         "practical_front_count": max(practical.fronts.values()),

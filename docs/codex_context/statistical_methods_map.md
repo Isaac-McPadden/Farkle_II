@@ -1,5 +1,24 @@
 # Codex Statistical Methods Map
 
+Task 8 adds `analysis_guide.py` and the frozen 62-target `guide_questions.py` map. The guide carries ten workbook groups and all B/C resolutions, actual published values/statuses/denominators, explicit weights and claim boundaries. It adds no statistical analysis or RNG. H2H fronts/cycles/unresolved/pairwise equivalence lead; planned alternative/power, attained support and interval widths remain separate. Diagnostics distinguish validation capability, production observations and optional omission. See [Task 8](../implementation/task8_report.md).
+
+Task 7's `seat_behavior.py` keeps completed, safety-limit and all-attempt
+views separate, including ratio-of-sums and mean-of-game-ratios actual-turn
+returns. Its round proxy gap is exact minus proxy. Opportunity counts games
+once, uses completed actual turns, and reports fixed equal-k weights separately
+within each root; a zero-completed k makes the overall mean unavailable.
+`parameter_responses.py` uses the all-attempt target, complete matched canonical
+backgrounds, at most 25 levels per feature, and only the frozen three pairs.
+Observed probability-scale nonadditivity and held-out corner means are separate;
+there is no cross-fold predicted interaction. All findings are descriptive or
+predictive finite-grid associations. See [Task 7](../implementation/task7_report.md).
+
+Task 5C integrates the frozen Task 5B batch-lag/half-drift method. Required
+preflight/coverage/results remain active when exhaustive lags are omitted;
+unsupported series remain insufficient and warnings do not increase games.
+See [Task 5C](../implementation/task5c_report.md) for selection, support,
+capability evidence, topology coverage and blind spots.
+
 This is a review index, not proof. Verify formulas and sidecars in the named
 modules and use hand-checkable tests before accepting a claim.
 
@@ -38,6 +57,14 @@ modules and use hand-checkable tests before accepting a claim.
 - `analysis/screening.py`: descriptive evidence only. Screening does not imply
   equality, final tiers, or unique-best status, and consumes the canonical
   all-attempt performance conditioning.
+- `analysis/outcome_precision.py`: first-release completed win/loss rates,
+  completed deficit and conditional margins use pointwise batch percentile
+  intervals. Purpose 402 shares each root/k/replicate draw across all strategies,
+  seats and ratios. Safety attempts never enter these completed denominators;
+  seat=0 sums actual-seat vectors first. Insufficient batches/replicates,
+  undefined or degenerate resamples withhold intervals and MCSE. This assumes
+  exchangeable independent batches; it supplies neither simultaneous coverage
+  nor additional H2H decisions. Configured game/replicate targets stay fixed.
 
 ## Seat, game, and RNG diagnostics
 
@@ -58,6 +85,17 @@ modules and use hand-checkable tests before accepting a claim.
   allocated only after eligibility. Cap selection uses semantic priority;
   exhaustion is `blocked_by_cap`. Zero-centered descriptive references use
   lagged-pair support and make no independence conclusion.
+- [First-release Task 5A](../implementation/task5a_contract.md) specifies bounded
+  correctness preflight and evidence/applicability rules. New statistical labels
+  require Task 5B's versioned capability/alert recipe; until then their status is
+  insufficient evidence. This specification does not change current production
+  diagnostics or validate a replacement batch monitor.
+- Task 5B's `analysis/batch_monitor.py` implements bounded descriptive lag-one
+  and half-drift arithmetic, with exact batch inventory/count checks and explicit
+  unsupported/degenerate results. See the [protocol](../implementation/task5b_protocol.md)
+  and [measured report](../implementation/task5b_report.md). Its conservative effect
+  thresholds have no calibrated family-wise guarantee; the pure helper does not
+  certify source/capability applicability. Production wiring remains Task 5C.
 - `analysis/roll_enumeration.py`: exact enumeration of all `6**d` ordered
   outcomes for dice counts one through six.
 
@@ -101,10 +139,17 @@ modules and use hand-checkable tests before accepting a claim.
   mutable state outside the byte-immutable plan and manifest.
 - `analysis/h2h_inference.py`: `d_AB = 0.5(q_AB-q_BA)`, constrained-null score
   test, score-inversion intervals, Holm decisions, simultaneous practical
-  bounds, optional equivalence, and labeled root diagnostics.
+  bounds, independent optional equivalence, and labeled root diagnostics.
+  Eligible pairs expose separate directional statistical/practical flags,
+  equivalence, unresolved, and nonviability. Equivalence requires both strict
+  simultaneous bounds inside the configured tolerance, including when Holm
+  rejects. Mixed display labels append `_and_equivalent`. The production 0.03
+  tolerance is a declared cost/resolution compromise, not universal negligibility.
 - `analysis/dominance.py`: separate practical/statistical graphs, SCC cycles,
   condensation fronts, noninferential within-front order, and direct practical
-  dominance over all finalists for unique best.
+  dominance over all finalists for unique best. Equivalent statistical advantages
+  retain their directed edge and equivalence flag. Pairwise equivalence never
+  forms transitive all-equivalent groups.
 
 ## Reporting and agreement
 
@@ -116,6 +161,12 @@ modules and use hand-checkable tests before accepting a claim.
   and reports TrueSkill's completed-game/safety-limit conditioning explicitly.
   Claim language is constrained by support, unresolved comparisons, cycles,
   configured equivalence, and direct-dominance evidence.
+  Contract 6 retains all independent flags and actual completed-game intervals,
+  configured tolerance wording, and separate superiority/equivalence error-control
+  statements. Planning power concerns rejection of zero advantage at the planning
+  effect; changing only equivalence cannot increase sample targets. The current
+  exact 150-finalist numerical example is reproducible with
+  `scripts/task4_h2h_example.py`; no games are simulated by that script.
 
 ## Primary oracles
 

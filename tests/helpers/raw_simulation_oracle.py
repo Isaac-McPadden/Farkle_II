@@ -203,7 +203,7 @@ def load_completed_pipeline_contexts(
         lineage = configure_run_lineage(
             context,
             code_identity=code_identity,
-            game_profile_sha256=persisted["lineage_extensions"]["game_profile_sha256"],
+            game_profile_sha256=persisted.get("lineage_extensions", {}).get("game_profile_sha256"),
         )
         assert lineage == persisted["run_lineage_sha256"]
         contexts.append(context)
@@ -222,7 +222,7 @@ def load_completed_pipeline_contexts(
         pair_context,
         code_identity=pair_code_identity,
         parent_lifecycle_roots=tuple(pair_persisted["parent_lifecycle_roots"]),
-        game_profile_sha256=pair_persisted["lineage_extensions"]["game_profile_sha256"],
+        game_profile_sha256=pair_persisted.get("lineage_extensions", {}).get("game_profile_sha256"),
     )
     assert pair_lineage == pair_persisted["run_lineage_sha256"]
     assert all(

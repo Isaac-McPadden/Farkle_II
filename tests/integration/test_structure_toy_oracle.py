@@ -10,6 +10,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.task7_fixture import publish_task7_reporting_fixture
+from tests.unit.analysis.test_structure_reporting import _publish_rng_inputs
 
 from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING, all_player_batch_schema
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
@@ -18,7 +20,7 @@ from farkle.analysis.h2h_inference import run_h2h_inference
 from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
 from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.analysis.root_stability import RootBatchCell, build_two_root_stability
-from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resolve_stage_layout
 from farkle.analysis.structure_agreement import run as run_structure_agreement
 from farkle.analysis.structure_reporting import run as run_structure_reporting
 from farkle.analysis.trueskill_screening import (
@@ -29,7 +31,7 @@ from farkle.analysis.trueskill_screening import (
 )
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import SEED_PAIR_ANALYSIS_DIRNAME, RunContextConfig
-from farkle.orchestration.seed_utils import prepare_seed_config
+from farkle.orchestration.seed_utils import base_results_dir, prepare_seed_config
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
@@ -109,10 +111,17 @@ def _cfg(root: Path) -> AppConfig:
     base.screening.mandatory_diagnostics = []
     base.head2head.candidate_cap = None
     base.head2head.total_game_cap = None
+    # This structural fixture does not execute RNG validation. Publish explicit
+    # insufficient-evidence inputs for the required Task 5C reporting contract.
+    for seed in (11, 22):
+        root_cfg = prepare_seed_config(base, seed=seed, base_results_dir=base_results_dir(base))
+        _publish_rng_inputs(root_cfg)
+        publish_task7_reporting_fixture(root_cfg)
     pair_root = root / "results_seed_pair_11_22"
     return RunContextConfig.from_base(
         base,
         analysis_root=pair_root / SEED_PAIR_ANALYSIS_DIRNAME,
+        root_input_layout=resolve_stage_layout(base),
         stage_layout=resolve_root_pair_stage_layout(base),
     )
 
@@ -256,7 +265,21 @@ def _prepare(cfg: AppConfig, root: Path) -> tuple[Any, Any, Any]:
     schedule = plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": [1, 2, 3]}), manifest_path)
+    manifest_table = pa.table({"strategy_id": [1, 2, 3]})
+    manifest_sidecar = make_artifact_sidecar(
+        cfg,
+        manifest_path,
+        producer="toy_oracle",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope="synthetic_fixture",
+        operation="synthetic_guide_fixture",
+        conditioning="synthetic_structural_fixture",
+        consistency_columns=manifest_table.schema.names,
+        player_counts=cfg.sim.n_players_list,
+        required_player_counts=cfg.sim.n_players_list,
+        missing_cell_policy="fail",
+    )
+    write_parquet_artifact_atomic(manifest_table, manifest_path, sidecar=manifest_sidecar)
     return stability, family, schedule
 
 
@@ -416,6 +439,8 @@ def test_two_root_multi_k_resume_matches_oracle(
         resumed_cfg.structure_report_json_path(),
         resumed_cfg.structure_report_markdown_path(),
         resumed_cfg.structure_report_plot_path(),
+        resumed_cfg.analysis_guide_json_path(),
+        resumed_cfg.analysis_guide_markdown_path(),
         resumed_cfg.migration_report_path(),
     ]
     _assert_one_sidecar(derived)

@@ -1,0 +1,10 @@
+{
+  "contract_id": "first_release_task0_v1",
+  "event": "protocol_frozen_before_full_64_seed_assessment",
+  "utc": "2026-09-28T18:26:58.516605+00:00",
+  "sha256": {
+    "configs/validation/task5b_capability.json": "d7e86f1a6202ccf69dae1602186bc6faf55cbf86e4a7b4438f2f18dca1bd77b7",
+    "docs/implementation/task5b_protocol.md": "63342febe03141fba9ba11b344b396c469103584139c189faac62113dad79d9c"
+  },
+  "acceptance_changes_after_assessment": "require_versioned_revision_not_silent_tuning"
+}

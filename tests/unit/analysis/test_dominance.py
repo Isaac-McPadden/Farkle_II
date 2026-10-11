@@ -40,9 +40,10 @@ def _decision_row(
     strategy_b: str,
     decision: str,
 ) -> dict[str, object]:
-    favors_a = decision.endswith("_a")
+    base_decision = decision.removesuffix("_and_equivalent")
+    favors_a = base_decision.endswith("_a")
     practical = decision.startswith("practical_dominance")
-    directed = decision not in {"unresolved", "equivalent"}
+    directed = base_decision not in {"unresolved", "equivalent"}
     effect = (0.10 if practical else 0.01) * (1 if favors_a else -1) if directed else 0.0
     return {
         "family_hash": "c" * 64,
@@ -56,6 +57,14 @@ def _decision_row(
         "holm_reject": directed,
         "practical_delta": 0.03,
         "decision_class": decision,
+        "statistical_advantage_a": directed and favors_a,
+        "statistical_advantage_b": directed and not favors_a,
+        "practical_dominance_a": practical and favors_a,
+        "practical_dominance_b": practical and not favors_a,
+        "equivalent": "equivalent" in decision,
+        "delta_equivalence": 0.03 if "equivalent" in decision else None,
+        "unresolved": decision == "unresolved",
+        "nonviable": False,
         "pair_claim_eligible": True,
         "strategy_a_completion_rate": 1.0,
         "strategy_b_completion_rate": 1.0,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -398,14 +399,14 @@ def test_root_stability_parses_each_source_only_for_its_immutable_matrix(
     original = root_stability_module.pq.read_table
     original_scan = performance_module.iter_parquet_tables_by_bytes
 
-    def counted(*args: object, **kwargs: object) -> pa.Table:
+    def counted(*args: Any, **kwargs: Any) -> pa.Table:
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
     monkeypatch.setattr(root_stability_module.pq, "read_table", counted)
 
-    def counted_scan(*args: object, **kwargs: object) -> object:
+    def counted_scan(*args: Any, **kwargs: Any) -> object:
         nonlocal scans
         scans += 1
         return original_scan(*args, **kwargs)

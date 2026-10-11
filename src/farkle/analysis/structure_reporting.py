@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from farkle.analysis.h2h_inference import CONCLUSION_FLAGS, validate_pair_conclusions
 from farkle.config import AppConfig, ArtifactScope
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.utils.artifact_contract import (
@@ -23,7 +24,57 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
-STRUCTURE_REPORT_CONTRACT_VERSION: Final = 5
+STRUCTURE_REPORT_CONTRACT_VERSION: Final = 9
+
+
+def _rng_evidence_summary(
+    cfg: AppConfig, roots: tuple[int, ...]
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    from farkle.orchestration.seed_utils import base_results_dir, resolve_results_dir
+
+    summaries, sources = [], []
+    for root in roots:
+        folder = cfg.root_input_stage_folder("rng_diagnostics")
+        if folder is None:
+            raise ValueError("required RNG evidence stage is absent")
+        directory = (
+            cfg.rng_input_path(".")
+            if len(roots) == 1
+            else resolve_results_dir(base_results_dir(cfg), root)
+            / cfg.io.analysis_subdir
+            / folder
+            / "diagnostics"
+        )
+        paths = [
+            directory / name
+            for name in (
+                "preflight_evidence.json",
+                "monitor_coverage.json",
+                "production_monitor.parquet",
+            )
+        ]
+        for path in paths:
+            validate_artifact_sidecar(path, expected={"operation": "first_release_rng_evidence"})
+        preflight, coverage = (json.loads(path.read_text(encoding="utf-8")) for path in paths[:2])
+        if any(
+            p["root_seed"] != root or p["required_ks"] != sorted(set(cfg.sim.n_players_list))
+            for p in (preflight, coverage)
+        ):
+            raise ValueError("required RNG evidence has incompatible root/k coverage")
+        summaries.append(
+            {
+                "root_seed": root,
+                "preflight_status": preflight["status"],
+                "monitor_status": coverage["status"],
+                "coverage_complete": coverage["coverage_complete"],
+                "warning_count": coverage["statistical_warning_count"],
+                "check_opportunities": coverage["check_opportunities"],
+                "exhaustive_status": coverage["exhaustive_status"],
+                "limits": coverage["applicability"]["blind_spots"],
+            }
+        )
+        sources.extend(paths)
+    return summaries, sources
 
 
 def _read_json(path: Path, *, operation: str) -> tuple[dict[str, Any], ArtifactSidecar]:
@@ -164,7 +215,9 @@ def _by_k_vectors(
     return values, sources, safety_cells
 
 
-def _robustness(vectors: dict[str, list[float]]) -> dict[str, Any]:
+def _robustness(
+    vectors: dict[str, list[float]], player_counts: list[int] | None = None
+) -> dict[str, Any]:
     strategies = sorted(vectors)
     pareto: list[str] = []
     for strategy in strategies:
@@ -191,6 +244,18 @@ def _robustness(vectors: dict[str, list[float]]) -> dict[str, Any]:
         "pareto_member_count": len(pareto),
         "maximin_descriptive_leader": maximin_leader,
         "maximin_value": maximin_value,
+        "per_k_specialists": [
+            {
+                "k": player_counts[index] if player_counts is not None else index,
+                "strategies": [
+                    s
+                    for s in strategies
+                    if vectors[s][index] == max(v[index] for v in vectors.values())
+                ],
+                "chance_delta": max(v[index] for v in vectors.values()),
+            }
+            for index in range(len(next(iter(vectors.values()))))
+        ],
         "interpretation": "pareto_membership_and_maximin_are_distinct_descriptive_summaries",
     }
 
@@ -292,7 +357,9 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
         lines.append(f"{h2h['cycle_group_count']} directed cycle groups remain explicit.")
     if h2h["equivalent_pair_count"]:
         lines.append(
-            f"{h2h['equivalent_pair_count']} comparisons satisfy the configured equivalence rule."
+            f"{h2h['equivalent_pair_count']} comparisons satisfy the configured equivalence rule: "
+            f"equivalent within +/-{100 * h2h['delta_equivalence']:g} percentage points of "
+            "50% balanced win probability, conditional on completed games."
         )
     unique = h2h["unique_best"]
     if unique is not None and h2h["unique_best_claim_permitted"]:
@@ -308,6 +375,41 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
     else:
         lines.append("No unique-best claim is permitted by the direct-dominance rule.")
     return lines
+
+
+def _h2h_method_notes(cfg: AppConfig, plan: dict[str, Any]) -> list[str]:
+    h = cfg.head2head
+    tolerance = (
+        f"The configured equivalence tolerance is +/-{100 * h.delta_equivalence:g} percentage points "
+        "of 50% balanced win probability. Both simultaneous effect bounds must be strictly "
+        "inside that tolerance; equality at a boundary does not establish equivalence."
+        if h.delta_equivalence is not None
+        else "Equivalence reporting is disabled."
+    )
+    return [
+        f"The planner targets {100 * plan['target_power']:g}% rejection power for the zero-advantage "
+        f"null at a balanced-win effect of {100 * plan['target_effect']:g} percentage points, under "
+        "the declared seat scenarios and achieved completed-game support. This is not power "
+        "to establish practical dominance or equivalence, nor post-hoc power from the observed effect.",
+        f"The superiority family-wise target is {100 * plan['family_alpha']:g}% using Holm. "
+        "Equivalence uses the retained Bonferroni simultaneous interval independently of Holm rejection. "
+        "No single joint family-wise guarantee over all superiority and equivalence declarations is asserted.",
+        tolerance,
+        "The initial +/-3 percentage-point tolerance is a user-declared compromise between "
+        "resolving small differences and simulation cost, not a universal negligible-effect definition. "
+        "Any nondefault configured tolerance above replaces that initial value.",
+        "Statistical advantage and equivalence may both hold. All conclusions are conditional on "
+        "completed games and require viable support. Pairwise equivalence is not transitive; "
+        "equivalent links are never merged into an all-equivalent group.",
+        "Smaller planning effects generally need approximately inverse-square more games under "
+        "comparable conditions; workload claims use the actual frozen planner counts. Changing only "
+        "the equivalence margin changes classification, not target sample size. Code/config freshness "
+        "may still invalidate saved artifacts; automatic reuse is not promised. No extra games are "
+        "scheduled to force an equivalence conclusion.",
+        "Unresolved means no statistical advantage, practical dominance, or equivalence conclusion. "
+        "Nonviability is reported separately. Display classes append '_and_equivalent' when both "
+        "a directional conclusion and equivalence hold; independent flags are authoritative.",
+    ]
 
 
 def render_markdown(report: dict[str, Any]) -> str:
@@ -340,6 +442,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Resolved workload by k: `{profile['workload_by_k']}`",
         f"- Bootstrap replicates: `{profile['bootstrap_replicates']}`",
         f"- RNG partitions: `{profile['rng_partitions']}`",
+        f"- RNG preflight and monitoring: `{report.get('rng_evidence', [])}`",
         (
             "- Candidate contribution size by method: "
             f"`{profile['candidate_contribution_size_by_method']}`"
@@ -385,6 +488,44 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Ordinary intervals and simultaneous practical bounds are retained in `{h2h['pair_intervals_artifact']}`.",
         "",
     ]
+    lines.extend(f"- {note}" for note in h2h.get("method_notes", []))
+    lines.extend(
+        [
+            "",
+            "### Pairwise completed-game conclusions",
+            "",
+            "Effect and interval values below are percentage-point deviations from 50% balanced win probability.",
+            "",
+            "| Pair | Completed games | Effect | Simultaneous interval | Conclusion |",
+            "| --- | ---: | ---: | --- | --- |",
+        ]
+    )
+    for row in h2h.get("pair_intervals", []):
+        low, high, effect = row["simultaneous_d_low"], row["simultaneous_d_high"], row["d_ab"]
+        interval = (
+            "unavailable" if low is None or high is None else f"[{100 * low:.4g}, {100 * high:.4g}]"
+        )
+        estimate = "unavailable" if effect is None else f"{100 * effect:.4g}"
+        lines.append(
+            f"| {row['strategy_a']} / {row['strategy_b']} | {row['games_completed']} | "
+            f"{estimate} | {interval} | {row['decision_class']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Descriptive specialists and robustness",
+            "",
+            f"- Per-k specialists (absolute probability-point advantage over 1/k): `{report['robustness'].get('per_k_specialists', [])}`.",
+            f"- Equal-k screening leaders: `{report.get('performance', {}).get('screening_score_leaders', [])}`.",
+            f"- Pareto members: `{report['robustness']['pareto_members']}`.",
+            f"- Maximin leader: `{report['robustness']['maximin_descriptive_leader']}`.",
+            "These summaries describe the finite grid; they are not significance claims.",
+        ]
+    )
+    from farkle.analysis.behavior_reporting import task7_markdown
+
+    if "behavior_opportunity_parameters" in report:
+        lines.extend(task7_markdown(report["behavior_opportunity_parameters"]))
     return "\n".join(lines)
 
 
@@ -441,6 +582,7 @@ def run(
     *,
     force: bool = False,
     execution_scope: str = "root_pair",
+    oracle_game_profile: Any | None = None,
 ) -> None:
     """Build JSON, Markdown, and plot outputs from compatible canonical artifacts."""
 
@@ -471,6 +613,14 @@ def run(
         agreement_path, operation="selection_conditioned_method_agreement"
     )
     inference, _ = _read_frame(inference_path, operation="seat_adjusted_score_inference")
+    validate_pair_conclusions(inference)
+    expected_margin = cfg.head2head.delta_equivalence
+    if not inference["practical_delta"].eq(cfg.head2head.practical_delta).all() or not (
+        inference["delta_equivalence"].isna().all()
+        if expected_margin is None
+        else inference["delta_equivalence"].eq(expected_margin).all()
+    ):
+        raise ValueError("H2H report configuration differs from inference thresholds")
     h2h_counts, _ = _read_frame(h2h_counts_path, operation="concatenate_root_order_blocks")
     dominance, _ = _read_json(dominance_path, operation="summarize_dominance_claims")
     fronts, _ = _read_frame(fronts_path, operation="condensation_dag_fronts")
@@ -523,6 +673,21 @@ def run(
         migration_path,
         *per_k_sources,
     ]
+    from farkle.analysis.behavior_reporting import task7_summary
+
+    behavior_summary, behavior_sources = task7_summary(cfg, roots)
+    sources.extend(behavior_sources)
+    rng_evidence, rng_sources = _rng_evidence_summary(cfg, roots)
+    sources.extend(rng_sources)
+    from farkle.analysis.analysis_guide import (
+        build_guide,
+        guide_product_reusable,
+        guide_sources,
+        render_guide_markdown,
+        validate_guide,
+    )
+
+    sources.extend(guide_sources(cfg, roots))
     tournament_stability: dict[str, Any]
     if len(roots) == 2:
         rank_path = cfg.root_rank_stability_path()
@@ -539,9 +704,17 @@ def run(
             "interpretation": "single_root_no_combined_root_stability_claim",
         }
     output_json = cfg.structure_report_json_path()
+    sources = list(dict.fromkeys(sources))
     output_markdown = cfg.structure_report_markdown_path()
     output_plot = cfg.structure_report_plot_path()
-    outputs = [output_json, output_markdown, output_plot, migration_path]
+    outputs = [
+        output_json,
+        output_markdown,
+        output_plot,
+        migration_path,
+        cfg.analysis_guide_json_path(),
+        cfg.analysis_guide_markdown_path(),
+    ]
     done = stage_done_path(cfg.stage_dir("reporting"), "structure_reporting")
     if not force and stage_is_up_to_date(
         done,
@@ -557,10 +730,8 @@ def run(
     best_score = float(scores.max())
     screening_leaders = sorted(scores.index[np.isclose(scores, best_score)].tolist())
     decision_counts = inference["decision_class"].astype(str).value_counts().to_dict()
-    unresolved_pair_count = int(
-        inference["decision_class"].astype(str).str.startswith("unresolved").sum()
-    )
-    if decision_counts.get("equivalent", 0) and cfg.head2head.delta_equivalence is None:
+    unresolved_pair_count = int((inference["unresolved"] | inference["nonviable"]).sum())
+    if inference["equivalent"].any() and cfg.head2head.delta_equivalence is None:
         raise ValueError("equivalent H2H decisions require an explicit equivalence margin")
     configured_only_2p = player_counts == [2]
     unique_dominator = dominance.get("unique_best")
@@ -591,6 +762,9 @@ def run(
             "simultaneous_d_high",
             "holm_adjusted_p",
             "decision_class",
+            *CONCLUSION_FLAGS,
+            "practical_delta",
+            "delta_equivalence",
         ],
     )
     candidate_viability: dict[str, dict[str, Any]] = {}
@@ -620,6 +794,8 @@ def run(
     h2h_replacements = int(h2h_counts["replacement_attempt_count"].sum())
     report: dict[str, Any] = {
         "report_contract_version": STRUCTURE_REPORT_CONTRACT_VERSION,
+        "rng_evidence": rng_evidence,
+        "behavior_opportunity_parameters": behavior_summary,
         "profile": resolved_profile_metadata(
             cfg,
             final_candidate_count=int(family["candidate_count"]),
@@ -697,7 +873,7 @@ def run(
                 or (len(roots) == 1 and cell["estimate_scope"].startswith("root_"))
             ),
         },
-        "robustness": _robustness(vectors),
+        "robustness": _robustness(vectors, player_counts),
         "agreement": agreement,
         "h2h": {
             "role": h2h_role,
@@ -710,8 +886,26 @@ def run(
             ),
             "decision_counts": {str(key): int(value) for key, value in decision_counts.items()},
             "unresolved_pair_count": unresolved_pair_count,
-            "unresolved_nonviable_pair_count": int(decision_counts.get("unresolved_nonviable", 0)),
-            "equivalent_pair_count": int(decision_counts.get("equivalent", 0)),
+            "unresolved_nonviable_pair_count": int(inference["nonviable"].sum()),
+            "equivalent_pair_count": int(inference["equivalent"].sum()),
+            "statistical_advantage_pair_count": int(
+                (inference["statistical_advantage_a"] | inference["statistical_advantage_b"]).sum()
+            ),
+            "statistical_advantage_and_equivalence_pair_count": int(
+                (
+                    inference["equivalent"]
+                    & (inference["statistical_advantage_a"] | inference["statistical_advantage_b"])
+                ).sum()
+            ),
+            "practical_dominance_pair_count": int(
+                (inference["practical_dominance_a"] | inference["practical_dominance_b"]).sum()
+            ),
+            "delta_equivalence": cfg.head2head.delta_equivalence,
+            "practical_delta": cfg.head2head.practical_delta,
+            "superiority_family_alpha": float(power_plan["family_alpha"]),
+            "planned_detection_power": float(power_plan["target_power"]),
+            "planned_worst_scenario_power": float(power_plan["worst_scenario_achieved_power"]),
+            "method_notes": _h2h_method_notes(cfg, power_plan),
             "games_attempted": h2h_games_attempted,
             "games_completed": h2h_games_completed,
             "games_safety_limit": h2h_games_safety_limit,
@@ -782,6 +976,8 @@ def run(
         "artifact_sources": [str(path) for path in sources],
     }
     report["claim_language"] = _claim_lines(report)
+    guide = build_guide(cfg, report, sources, oracle_game_profile=oracle_game_profile)
+    validate_guide(guide)
     common: dict[str, Any] = {
         "producer": "structure_reporting",
         "scope": ArtifactScope.DIAGNOSTICS,
@@ -808,6 +1004,32 @@ def run(
         **common,
     )
     write_json_artifact_atomic(report, output_json, sidecar=json_sidecar)
+    guide_json_sidecar = make_artifact_sidecar(
+        cfg,
+        cfg.analysis_guide_json_path(),
+        operation="render_analysis_guide_v1",
+        consistency_columns=list(guide),
+        **common,
+    )
+    if force or not guide_product_reusable(
+        cfg, cfg.analysis_guide_json_path(), guide, guide_json_sidecar
+    ):
+        write_json_artifact_atomic(
+            guide, cfg.analysis_guide_json_path(), sidecar=guide_json_sidecar
+        )
+    guide_markdown_sidecar = make_artifact_sidecar(
+        cfg,
+        cfg.analysis_guide_markdown_path(),
+        operation="render_analysis_guide_v1",
+        consistency_columns=list(guide),
+        source_artifacts=[cfg.analysis_guide_json_path()],
+        **{key: value for key, value in common.items() if key != "source_artifacts"},
+    )
+    guide_markdown = render_guide_markdown(guide)
+    if force or not guide_product_reusable(
+        cfg, cfg.analysis_guide_markdown_path(), guide_markdown, guide_markdown_sidecar
+    ):
+        _write_text(cfg.analysis_guide_markdown_path(), guide_markdown, guide_markdown_sidecar)
     markdown = render_markdown(report)
     markdown_sidecar = make_artifact_sidecar(
         cfg,

@@ -103,7 +103,7 @@ def build_root_stage_plan(
         screening,
         trueskill,
     )
-    from farkle.analysis import rng_diagnostics as rng_module
+    from farkle.analysis import rng_monitor as rng_module
 
     use_rng = (
         not cfg.analysis.disable_rng_diagnostics
@@ -139,13 +139,13 @@ def build_root_stage_plan(
         root_item("metrics", metrics.run),
         root_item("game_stats", lambda inner: game_stats.run(inner, force=force)),
     ]
-    if use_rng:
-        plan.append(
-            root_item(
-                "rng_diagnostics",
-                lambda inner: rng_module.run(inner, lags=rng_lags, force=force),
-            )
+    plan.append(
+        root_item(
+            "rng_diagnostics",
+            lambda inner: rng_module.run(inner, lags=rng_lags, force=force, exhaustive=use_rng),
+            freshness_key=rng_module.freshness_key(cfg, use_rng, rng_lags),
         )
+    )
     plan.extend(
         [
             root_item(
@@ -208,7 +208,12 @@ def _h2h_tail_plan(
         run_structure_agreement(inner, force=force, execution_scope=execution_scope)
 
     def _reporting(inner: AppConfig) -> None:
-        run_structure_reporting(inner, force=force, execution_scope=execution_scope)
+        run_structure_reporting(
+            inner,
+            force=force,
+            execution_scope=execution_scope,
+            oracle_game_profile=oracle_game_profile,
+        )
 
     return [
         StagePlanItem(
@@ -236,6 +241,7 @@ def _h2h_tail_plan(
             _execute,
             metadata={"execution_scope": execution_scope},
             required_outputs=(
+                cfg.h2h_cap_authorization_path(),
                 cfg.h2h_execution_state_path(),
                 cfg.h2h_order_counts_path(),
                 cfg.h2h_block_results_dir(),
@@ -284,6 +290,8 @@ def _h2h_tail_plan(
                 cfg.structure_report_json_path(),
                 cfg.structure_report_markdown_path(),
                 cfg.structure_report_plot_path(),
+                cfg.analysis_guide_json_path(),
+                cfg.analysis_guide_markdown_path(),
                 cfg.migration_report_path(),
             ),
             completion_stamp=stage_done_path(cfg.stage_dir("reporting"), "structure_reporting"),

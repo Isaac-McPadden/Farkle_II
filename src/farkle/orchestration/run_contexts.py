@@ -438,9 +438,10 @@ def load_run_context(path: Path, *, active_config_path: Path | None = None) -> d
         expected_temp_dir = (
             str(config.io.temp_dir.resolve()) if config.io.temp_dir is not None else None
         )
-        if not isinstance(resolved_paths, Mapping) or resolved_paths.get(
-            "temp_dir"
-        ) != expected_temp_dir:
+        if (
+            not isinstance(resolved_paths, Mapping)
+            or resolved_paths.get("temp_dir") != expected_temp_dir
+        ):
             raise ValueError("run context does not bind the adjacent scratch path")
     return payload
 

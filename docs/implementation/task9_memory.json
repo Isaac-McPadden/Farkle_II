@@ -1,0 +1,23 @@
+{
+  "fixture_rows": 6192000,
+  "strategies": 5160,
+  "seats": 12,
+  "deterministic_batches": 100,
+  "batch_and_state_allowance_bytes_each": 33554432,
+  "declared_incremental_rss_budget_bytes": 134217728,
+  "baseline_rss_bytes": 207601664,
+  "peak_sampled_rss_bytes": 230019072,
+  "incremental_rss_bytes": 22417408,
+  "sampling_interval_seconds": 0.005,
+  "elapsed_seconds": 1.0428212999831885,
+  "exact_count_checks_passed": true,
+  "within_budget": true,
+  "verification_date": "2026-09-24",
+  "snapshot_commit": "0d171b6c377edc2e269dd550643036f901d34e18",
+  "source_sha256": {
+    "src/farkle/analysis/seat_analysis.py": "33db87d9382856ca4cb70cd324ed553e71f3d0f1a8d71fb4cb94605993a80466",
+    "src/farkle/analysis/metrics.py": "9383fd37ed7d97566695b80602e5dc296624e03127682a98461d16262f0b63c8",
+    "src/farkle/analysis/stage_registry.py": "81147829c122396c0ca8d3ab9bc70ccbffc6b17a53bc9c1f98b74cffb3edebd8",
+    "scripts/benchmark_task9_seat_aggregation.py": "8344c2809fae453e3f04bd67c477c4482a93e38706fdea09d13999aae2260b02"
+  }
+}

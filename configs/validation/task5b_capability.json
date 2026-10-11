@@ -1,0 +1,172 @@
+{
+  "contract_id": "first_release_task0_v1",
+  "recipe_id": "batch_dependence_capability_v1",
+  "method_id": "batch_lag_half_drift_descriptive_v1",
+  "output_dir": "data/task5b-capability-v1",
+  "fixture_root_seeds": [
+    51001,
+    51002,
+    51003,
+    51004,
+    51005,
+    51006,
+    51007,
+    51008,
+    51009,
+    51010,
+    51011,
+    51012,
+    51013,
+    51014,
+    51015,
+    51016,
+    51017,
+    51018,
+    51019,
+    51020,
+    51021,
+    51022,
+    51023,
+    51024,
+    51025,
+    51026,
+    51027,
+    51028,
+    51029,
+    51030,
+    51031,
+    51032,
+    51033,
+    51034,
+    51035,
+    51036,
+    51037,
+    51038,
+    51039,
+    51040,
+    51041,
+    51042,
+    51043,
+    51044,
+    51045,
+    51046,
+    51047,
+    51048,
+    51049,
+    51050,
+    51051,
+    51052,
+    51053,
+    51054,
+    51055,
+    51056,
+    51057,
+    51058,
+    51059,
+    51060,
+    51061,
+    51062,
+    51063,
+    51064
+  ],
+  "batch_counts": [
+    30,
+    100
+  ],
+  "sentinel_count": 16,
+  "metric_ids": [
+    "attempted_win_rate",
+    "attempted_safety_rate",
+    "completed_win_rate",
+    "mean_deficit_completed",
+    "mean_losing_margin",
+    "mean_winning_margin"
+  ],
+  "attempted_exposures_per_batch": 10000,
+  "latent_dimensions": 4,
+  "burn_in": 200,
+  "fixtures": [
+    {
+      "id": "clean",
+      "kind": "iid",
+      "strength": 0.0
+    },
+    {
+      "id": "serial_positive",
+      "kind": "ar1",
+      "strength": 0.85
+    },
+    {
+      "id": "serial_negative",
+      "kind": "ar1",
+      "strength": -0.85
+    },
+    {
+      "id": "half_drift",
+      "kind": "step",
+      "strength": 4.0
+    },
+    {
+      "id": "weak_serial",
+      "kind": "ar1",
+      "strength": 0.2
+    },
+    {
+      "id": "weak_drift",
+      "kind": "step",
+      "strength": 0.5
+    }
+  ],
+  "injection": "only sentinel index zero; all four latent quantities; other sentinels remain clean",
+  "policy": {
+    "minimum_batches": 30,
+    "supported_batch_counts": [
+      30,
+      100
+    ],
+    "lag_effect_floor": 0.5,
+    "lag_support_multiplier": 4.0,
+    "half_drift_threshold": 1.5,
+    "threshold_comparison": "strict_greater",
+    "zero_denominator_policy": "insufficient_entire_series_no_dropping",
+    "constant_series_policy": "insufficient",
+    "cell_selection": "16 or fewer evenly spaced sorted canonical strategy IDs, all-seat view, every required root/k; no outcome-dependent selection"
+  },
+  "acceptance": {
+    "primary_batches": 100,
+    "maximum_clean_family_alerts": 4,
+    "minimum_strong_fault_detections": 58,
+    "strong_fixture_ids": [
+      "serial_positive",
+      "serial_negative",
+      "half_drift"
+    ],
+    "required_support_cases": [
+      "short",
+      "zero_denominator",
+      "constant",
+      "unvalidated_batch_count"
+    ],
+    "integrity_faults": [
+      "missing_batch",
+      "duplicate_batch",
+      "out_of_order",
+      "negative_count",
+      "noninteger_count",
+      "completion_conservation",
+      "win_loss_conservation",
+      "zero_loss_nonzero_deficit",
+      "zero_win_nonzero_margin"
+    ]
+  },
+  "multiplicity": "Descriptive triage, no calibrated family-wise or per-check false-positive guarantee. Record series/check opportunities and any-warning family rates at each batch count; 4/64 clean-family gate applies to this bounded primary fixture family only.",
+  "execution": {
+    "workers": 2,
+    "native_threads": 1,
+    "maximum_batches_per_series": 100,
+    "maximum_series_per_fixture": 96
+  },
+  "blind_spot_seed": 59001,
+  "common_fault_seed": 59002,
+  "no_production_wiring": true
+}

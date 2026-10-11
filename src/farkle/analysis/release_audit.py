@@ -22,6 +22,7 @@ from farkle.utils.authenticated_graph import (
     AuthenticatedGraphSnapshot,
     SnapshotGeneration,
     SnapshotUseError,
+    excluded_graph_path,
 )
 from farkle.utils.authentication_telemetry import active_authentication_telemetry
 from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
@@ -117,7 +118,7 @@ def _is_scoped_artifact(path: Path, root: Path) -> bool:
         and not path.name.endswith(_SIDECAR_SUFFIX)
         and not path.name.endswith(_STATE_SUFFIXES)
         and not path.name.startswith("._")
-        and not any(part.startswith("_") for part in relative.parts)
+        and not excluded_graph_path(path, root)
         and path.suffix.lower() in _DERIVED_SUFFIXES
         and (
             bool(_CANONICAL_SCOPE_PARTS.intersection(relative.parts))
@@ -231,8 +232,7 @@ def _build_audit_index(
     sidecar_paths = tuple(
         path
         for path in files
-        if path.name.endswith(_SIDECAR_SUFFIX)
-        and not any(part.startswith("_") for part in path.relative_to(root).parts)
+        if path.name.endswith(_SIDECAR_SUFFIX) and not excluded_graph_path(path, root)
     )
     explicit_completion_paths = (
         tuple(sorted(Path(path).resolve() for path in completion_paths))
@@ -341,6 +341,84 @@ def _validate_indexed_artifacts(index: _AuditIndex) -> list[str]:
                 raise ValueError("indexed canonical location changed during validation")
             record.metadata = metadata
             record.sidecar_sha256 = sha256_file(record.sidecar_path)
+            if location.stage_key == "h2h_execute" and path.name == "execution_state.json":
+                from farkle.analysis.h2h_authorization import (
+                    validate_authorization,
+                    validate_authorization_sources,
+                )
+
+                # Resolve the plan through the existing canonical provenance index.
+                assert isinstance(metadata, AuthenticatedSidecar)
+                power_source = next(
+                    source
+                    for source in metadata.source_artifacts
+                    if source.artifact.location.stage_key == "h2h_power"
+                    and source.artifact.location.relative_path == "power_plan.json"
+                )
+                manifest_source = next(
+                    source
+                    for source in metadata.source_artifacts
+                    if source.artifact.location.stage_key == "h2h_power"
+                    and source.artifact.location.relative_path == "block_manifest.parquet"
+                )
+                power_record = index.resolve(power_source.artifact.location)
+                manifest_record = index.resolve(manifest_source.artifact.location)
+                authorization_path = path.with_name("cap_authorization.json")
+                if (
+                    power_record is None
+                    or manifest_record is None
+                    or authorization_path not in index.by_path
+                ):
+                    raise ValueError("H2H execution is missing its plan or cap authorization")
+                authorization = read_json_file_with_retry(authorization_path)
+                plan = read_json_file_with_retry(power_record.path)
+                state = read_json_file_with_retry(path)
+                if state.get("cap_authorization_sha256") != sha256_file(authorization_path):
+                    raise ValueError("H2H execution references a different cap authorization")
+                validate_authorization(authorization, plan, require_ready=True)
+                validate_authorization_sources(
+                    authorization, power_record.path, manifest_record.path
+                )
+                for field in (
+                    "family_hash",
+                    "schedule_hash",
+                    "maximum_total_attempts",
+                    "total_block_count",
+                    "authorized_total_game_cap",
+                    "execution_authorization",
+                ):
+                    if state.get(field) != authorization.get(field):
+                        raise ValueError(f"H2H execution disagrees with cap authorization: {field}")
+            if path.name == "publication.json" and path.parent.name == "preflight":
+                from farkle.analysis.rng_monitor import validate_preflight_inventory
+
+                if not validate_preflight_inventory(path):
+                    raise ValueError("required preflight inventory is incomplete or corrupt")
+            if path.name == "analysis_guide.json":
+                from farkle.analysis.analysis_guide import render_guide_markdown, validate_guide
+
+                guide = read_json_file_with_retry(path)
+                validate_guide(guide)
+                markdown_path = path.with_suffix(".md")
+                if markdown_path.read_text(encoding="utf-8") != render_guide_markdown(guide):
+                    raise ValueError("analysis guide Markdown differs from its JSON rendering")
+            if path.name == "publication.json" and path.parent.name == "_seat_behavior_units":
+                from farkle.analysis.seat_behavior import validate_behavior_checkpoints
+
+                if not validate_behavior_checkpoints(path):
+                    raise ValueError("seat behavior checkpoint inventory is incomplete or corrupt")
+            if path.name == "publication.json" and path.parent.name == "_outcome_units":
+                from farkle.analysis.outcome_publication import validate_outcome_checkpoints
+
+                if not validate_outcome_checkpoints(path):
+                    raise ValueError("outcome checkpoint inventory is incomplete or corrupt")
+            if path.name == "publication.json" and path.parent.name == "_outcome_precision_ranges":
+                from farkle.analysis.outcome_precision import validate_precision_checkpoints
+
+                if not validate_precision_checkpoints(path):
+                    raise ValueError(
+                        "outcome precision checkpoint inventory is incomplete or corrupt"
+                    )
         except Exception as exc:  # noqa: BLE001
             failures.append(f"incompatible sidecar: {path}: {exc}")
             index.invalid_paths.add(path)
@@ -459,6 +537,14 @@ def _audit_completion(path: Path, index: _AuditIndex) -> list[str]:
             raise ValueError("completion inventory is not in canonical order")
         if len(canonical_locations) != len(set(canonical_locations)):
             raise ValueError("completion inventory has duplicate canonical locations")
+        if any(location.stage_key == "reporting" for location in canonical_locations):
+            reporting_names = {
+                location.relative_path
+                for location in canonical_locations
+                if location.stage_key == "reporting"
+            }
+            if not {"analysis_guide.json", "analysis_guide.md"}.issubset(reporting_names):
+                raise ValueError("reporting completion omits required analysis guide products")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"incompatible completion: {path}: {exc}")
     return failures

@@ -137,7 +137,8 @@ def test_fast_config_keeps_pipeline_execution_mechanisms_and_principal_stages() 
         ),
         (
             "farkle_mega_config.yaml",
-            "8df3969cc051aef72a541437ef803c924013a971ee8074e750f018d50d8cd7e4",
+            # Task 4 explicitly set the mega equivalence tolerance to 0.03.
+            "eb4a90baa6401faa33dbb62448ffff2517883ed3451250a3c575632bdb016bcd",
             [2, 3, 4, 5, 6, 8, 10, 12],
         ),
     ],

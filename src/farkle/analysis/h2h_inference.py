@@ -881,38 +881,125 @@ def _pairwise_estimates(
     ].astype(bool)
     practical = cfg.head2head.practical_delta
     equivalence = cfg.head2head.delta_equivalence
-    classifications: list[str] = []
-    decision_rows = cast(list[dict[str, Any]], output.to_dict(orient="records"))
-    for row in decision_rows:
-        if not bool(row["pair_claim_eligible"]):
-            classifications.append("unresolved_nonviable")
-            continue
-        simultaneous_low = float(row["simultaneous_d_low"])
-        simultaneous_high = float(row["simultaneous_d_high"])
-        effect = float(row["d_ab"])
-        if simultaneous_low > practical:
-            classification = "practical_dominance_a"
-        elif simultaneous_high < -practical:
-            classification = "practical_dominance_b"
-        elif bool(row["holm_reject"]):
-            classification = (
-                "statistical_only_advantage_a" if effect > 0.0 else "statistical_only_advantage_b"
-            )
-        elif (
-            equivalence is not None
-            and simultaneous_low > -equivalence
-            and simultaneous_high < equivalence
-        ):
-            classification = "equivalent"
-        else:
-            classification = "unresolved"
-        classifications.append(classification)
+    conclusions = [
+        pair_conclusions(
+            eligible=bool(row["pair_claim_eligible"]),
+            holm_reject=bool(row["holm_reject"]),
+            effect=float(row["d_ab"]) if pd.notna(row["d_ab"]) else math.nan,
+            low=(
+                float(row["simultaneous_d_low"])
+                if pd.notna(row["simultaneous_d_low"])
+                else math.nan
+            ),
+            high=(
+                float(row["simultaneous_d_high"])
+                if pd.notna(row["simultaneous_d_high"])
+                else math.nan
+            ),
+            practical_delta=practical,
+            delta_equivalence=equivalence,
+        )
+        for row in output.to_dict(orient="records")
+    ]
     output["practical_delta"] = practical
     output["delta_equivalence"] = equivalence
     output["equivalence_enabled"] = equivalence is not None
-    output["decision_class"] = classifications
+    for column in (*CONCLUSION_FLAGS, "decision_class"):
+        output[column] = [row[column] for row in conclusions]
     output["multiplicity_method"] = "holm"
     return output
+
+
+CONCLUSION_FLAGS = (
+    "statistical_advantage_a",
+    "statistical_advantage_b",
+    "practical_dominance_a",
+    "practical_dominance_b",
+    "equivalent",
+    "unresolved",
+    "nonviable",
+)
+
+
+def pair_conclusions(
+    *,
+    eligible: bool,
+    holm_reject: bool,
+    effect: float,
+    low: float,
+    high: float,
+    practical_delta: float,
+    delta_equivalence: float | None,
+) -> dict[str, Any]:
+    """Independent conclusions; strict bounds and viability apply to every claim."""
+    flags = dict.fromkeys(CONCLUSION_FLAGS, False)
+    if not eligible:
+        return {**flags, "nonviable": True, "decision_class": "unresolved_nonviable"}
+    if not all(math.isfinite(v) for v in (effect, low, high)) or not low <= effect <= high:
+        raise ValueError("eligible H2H comparison requires finite enclosing bounds")
+    flags["statistical_advantage_a"] = bool(holm_reject and effect > 0)
+    flags["statistical_advantage_b"] = bool(holm_reject and effect < 0)
+    flags["practical_dominance_a"] = low > practical_delta
+    flags["practical_dominance_b"] = high < -practical_delta
+    flags["equivalent"] = (
+        delta_equivalence is not None and low > -delta_equivalence and high < delta_equivalence
+    )
+    if (flags["practical_dominance_a"] or flags["practical_dominance_b"]) and not holm_reject:
+        raise ValueError("practical dominance must also satisfy Holm rejection")
+    if holm_reject and effect == 0:
+        raise ValueError("Holm rejection cannot have zero estimated direction")
+    if flags["practical_dominance_a"] or flags["practical_dominance_b"]:
+        label = (
+            "practical_dominance_a" if flags["practical_dominance_a"] else "practical_dominance_b"
+        )
+    elif holm_reject:
+        label = "statistical_only_advantage_a" if effect > 0 else "statistical_only_advantage_b"
+    else:
+        label = "equivalent" if flags["equivalent"] else "unresolved"
+    if holm_reject and flags["equivalent"]:
+        label += "_and_equivalent"
+    flags["unresolved"] = label == "unresolved"
+    return {**flags, "decision_class": label}
+
+
+def validate_pair_conclusions(frame: pd.DataFrame) -> None:
+    """Refuse missing or contradictory independent conclusions at consumers."""
+    required = {
+        *CONCLUSION_FLAGS,
+        "decision_class",
+        "pair_claim_eligible",
+        "holm_reject",
+        "d_ab",
+        "simultaneous_d_low",
+        "simultaneous_d_high",
+        "practical_delta",
+        "delta_equivalence",
+    }
+    if not required.issubset(frame.columns):
+        raise ValueError(
+            f"H2H inference lacks conclusion columns: {sorted(required.difference(frame.columns))}"
+        )
+    for row in frame.to_dict(orient="records"):
+        margin = row["delta_equivalence"]
+        expected = pair_conclusions(
+            eligible=bool(row["pair_claim_eligible"]),
+            holm_reject=bool(row["holm_reject"]),
+            effect=float(row["d_ab"]) if pd.notna(row["d_ab"]) else math.nan,
+            low=(
+                float(row["simultaneous_d_low"])
+                if pd.notna(row["simultaneous_d_low"])
+                else math.nan
+            ),
+            high=(
+                float(row["simultaneous_d_high"])
+                if pd.notna(row["simultaneous_d_high"])
+                else math.nan
+            ),
+            practical_delta=float(row["practical_delta"]),
+            delta_equivalence=float(margin) if pd.notna(margin) else None,
+        )
+        if any(row[name] != value for name, value in expected.items()):
+            raise ValueError("H2H independent conclusions disagree with intervals or viability")
 
 
 def _root_specific_diagnostics(

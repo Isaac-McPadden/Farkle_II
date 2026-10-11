@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar, cast
 
 from farkle import analysis
+from farkle.analysis.h2h_authorization import H2HAuthorizationRequired
 from farkle.analysis.release_audit import (
     AuthenticatedReleaseAuditTarget,
     audit_authenticated_release_graphs,
@@ -124,6 +125,9 @@ def _run_timed_phase(
     try:
         with use_supervisor_recorder(recorder, scope):
             return action()
+    except H2HAuthorizationRequired:
+        status = "blocked_by_cap"
+        raise
     except BaseException:
         status = "failed"
         raise
@@ -981,6 +985,7 @@ def _run_pipeline_observed(
     pair_context: RootPairRunContext | None = None
     pair_snapshot: AuthenticatedGraphSnapshot | None = None
     pair_generation: SnapshotGeneration | None = None
+    authorization_stop: H2HAuthorizationRequired | None = None
     pair_error: str | None = None
     pair_failure_classification: str | None = None
     if not root_failures:
@@ -1025,7 +1030,13 @@ def _run_pipeline_observed(
             pair_stage_timings = _stage_timing_metadata(pair_result)
         except Exception as exc:  # noqa: BLE001
             pair_error = f"{type(exc).__name__}: {exc}"
-            pair_failure_classification = classify_resource_exception(exc) or "non_resource_failure"
+            if isinstance(exc, H2HAuthorizationRequired):
+                authorization_stop = exc
+                pair_failure_classification = "blocked_by_cap"
+            else:
+                pair_failure_classification = (
+                    classify_resource_exception(exc) or "non_resource_failure"
+                )
     pair_stage_states: dict[str, str] = {}
     if pair_context is not None and pair_error is None:
         try:
@@ -1144,12 +1155,16 @@ def _run_pipeline_observed(
     resource_classifications = [*root_resource_classifications]
     if orchestration_resource_classification is not None:
         resource_classifications.append(orchestration_resource_classification)
-    if pair_failure_classification not in (None, "non_resource_failure"):
+    if pair_failure_classification not in (None, "non_resource_failure", "blocked_by_cap"):
         resource_classifications.append(pair_failure_classification)
     overall_status = (
         "complete_success"
         if not root_failures and pair_error is None
-        else ("resource_failure" if resource_classifications else "failed")
+        else (
+            "blocked_by_cap"
+            if authorization_stop is not None
+            else "resource_failure" if resource_classifications else "failed"
+        )
     )
     timing_summary = {
         "schema_version": 1,
@@ -1218,7 +1233,11 @@ def _run_pipeline_observed(
         "release_audit": release_audit,
         "operational_telemetry_artifact": str(pair_root / "pipeline_telemetry.json"),
         "pair_workflow": {
-            "status": "complete" if pair_context is not None and pair_error is None else "failed",
+            "status": (
+                "blocked_by_cap"
+                if authorization_stop is not None
+                else "complete" if pair_context is not None and pair_error is None else "failed"
+            ),
             "analysis_root": str(pair_context.analysis_root) if pair_context else None,
             "error": pair_error or (root_failures[0] if root_failures else None),
             "failure_classification": pair_failure_classification,
@@ -1262,6 +1281,8 @@ def _run_pipeline_observed(
             "finalization_phases": finalization_timings,
         },
     )
+    if authorization_stop is not None:
+        raise authorization_stop
     if root_failures or pair_error is not None:
         if resource_classifications:
             raise ResourceFailureError(

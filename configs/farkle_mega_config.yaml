@@ -89,7 +89,7 @@ head2head:
   practical_delta: 0.03
   sensitivity_deltas: [0.03, 0.04]
   seat1_advantage_scenarios: [0.0, 0.03, 0.06]
-  delta_equivalence: null
+  delta_equivalence: 0.03
   candidate_cap: null
   candidate_cap_policy: "balanced-tail"
   min_candidate_completion_rate: 0.99

@@ -249,6 +249,7 @@ def test_portable_cgroup_accounting_seam_is_distinct_from_rss(
 
     sample = parallel._cgroup_memory_sample()
 
+    assert sample is not None
     assert sample == parallel.AggregateMemorySample("cgroup_v2", 1234, 5678, 9999)
     assert sample.current_bytes != parallel.process_tree_rss_bytes()
 

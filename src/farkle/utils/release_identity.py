@@ -182,6 +182,13 @@ def _method_versions(
         ):
             versions[key] = int(value)
     hgb_versions: dict[str, int] = {}
+    ingest_versions: dict[str, int] = {"tournament_method_version": TOURNAMENT_METHOD_VERSION}
+    if stage_key == "ingest":
+        from farkle.analysis.ingest import INGEST_PHYSICAL_LAYOUT_VERSION
+
+        ingest_versions["ingest_physical_layout_version"] = INGEST_PHYSICAL_LAYOUT_VERSION
+    from farkle.analysis.outcome_distributions import OUTCOME_METHOD_VERSION
+
     if stage_key == "hgb":
         # Import lazily to avoid making the authenticated-contract primitives
         # depend on analysis modules during module initialization.  HGB owns
@@ -193,11 +200,22 @@ def _method_versions(
             "hgb_method_version": hgb_feat.HGB_METHOD_VERSION,
             "hgb_rng_method_version": hgb_feat.HGB_RNG_METHOD_VERSION,
             "hgb_fold_construction_version": hgb_feat.HGB_FOLD_CONSTRUCTION_VERSION,
+            "parameter_response_method_version": 1,
         }
     stage_versions = {
         "simulation": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
-        "ingest": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
-        "rng_diagnostics": {"rng_diagnostic_method_version": 4},
+        "ingest": ingest_versions,
+        "metrics": {
+            "outcome_distribution_method_version": OUTCOME_METHOD_VERSION,
+            "outcome_precision_method_version": 1,
+            "seat_behavior_method_version": 1,
+            "turn_opportunity_method_version": 1,
+        },
+        "rng_diagnostics": {
+            "rng_diagnostic_method_version": 4,
+            "rng_monitor_method_version": 1,
+            "rng_preflight_method_version": 1,
+        },
         "trueskill": {
             "trueskill_method_version": 3,
             "trueskill_diagnostic_method_version": 2,
@@ -211,14 +229,15 @@ def _method_versions(
         "h2h_execute": {"h2h_method_version": 2, "h2h_execution_method_version": 2},
         "h2h_inference": {
             "h2h_method_version": 2,
-            "h2h_inference_method_version": 2,
+            "h2h_inference_method_version": 3,
         },
-        "h2h_digest": {"h2h_method_version": 2, "dominance_method_version": 1},
-        "agreement": {"structure_agreement_method_version": 1},
+        "h2h_digest": {"h2h_method_version": 2, "dominance_method_version": 2},
+        "agreement": {"structure_agreement_method_version": 2},
         "reporting": {
-            "structure_report_contract_version": 5,
+            "structure_report_contract_version": 9,
+            "analysis_guide_method_version": 1,
             "migration_report_version": 3,
-            "reporting_method_version": 1,
+            "reporting_method_version": 2,
         },
     }
     versions.update(stage_versions.get(stage_key, {}))

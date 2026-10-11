@@ -1,0 +1,80 @@
+{
+  "contract_id": "first_release_task0_v1",
+  "date": "2026-09-27",
+  "focused_suite": {
+    "tests": 119,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 389.947,
+    "properties": {}
+  },
+  "structural_oracle": {
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 107.429,
+    "properties": {}
+  },
+  "full_workflow_initial": {
+    "tests": 1,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 256.355,
+    "properties": {
+      "raw_simulation_to_report_runtime_seconds": "253.38"
+    }
+  },
+  "full_workflow_unchanged_rerun": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 226.148,
+    "properties": {
+      "raw_simulation_to_report_runtime_seconds": "224.557"
+    }
+  },
+  "passing_distinct_checks": 122,
+  "initial_workflow_failure": "Only the final 240-second assertion failed. All functional, authenticated graph, artifact inventory, claim, and no-force resume assertions passed before that check.",
+  "runtime_limit_seconds": 240,
+  "snapshot": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task4-verify-5anb_zgw",
+  "snapshot_commit": "b3245b6bc70ac8302258f4d79e1fb40753e956c7",
+  "working_branch_head_unchanged": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+  "source_config_test_sha256": {
+    "configs/farkle_mega_config.yaml": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+    "src/farkle/analysis/h2h_inference.py": "62e7207c2b8c6cbb74402b72eda68acdb4bbfd2596de3e8207810e784cd2d2e4",
+    "src/farkle/analysis/dominance.py": "30a9f0aa093555f342ba7accf6681fc8ad113773dc86219034edfa7fc70998ce",
+    "src/farkle/analysis/structure_agreement.py": "e66aebd508071f2f997a80842b412542a7a771018f99af523af6e5f0d745f398",
+    "src/farkle/analysis/structure_reporting.py": "2aa3659237e480fa90e88dc27ad4fbf11c7aedab7baa5dd9777f14f6c4412d02",
+    "src/farkle/analysis/stage_registry.py": "9dde6dabb9cd48f082acdff016ec4bea944525ce03d59e2d05578392ccf48907",
+    "src/farkle/utils/release_identity.py": "9c9357fb1f48cdb36e30df2bb751569e74d9825b0223fd5f4c2b8fceb9022668",
+    "scripts/task4_h2h_example.py": "a83ab9f3e9cbc058c9634bf030b963737ea99e2c46c889438e37aa36b35529ea",
+    "tests/unit/analysis/test_h2h_conclusions.py": "30c562dbf56cbf1d12db31414e500f614021374d3ddfa3a68d74741a21e366b9",
+    "tests/unit/analysis/test_dominance.py": "f0a815345e25f2f2d3c47422e950379e244dd533f9db04188c8ba7cecc5be472",
+    "tests/unit/analysis/test_structure_agreement.py": "ee58d76ce83b989d99aa65518e66ae094968d41cd18f43d5d8d65c3bef051c28",
+    "tests/unit/analysis/test_structure_reporting.py": "5144d5158181e9cbfe841fb5e6f1fbce90878dbc0b06bb7a9c9f1b061f54a502",
+    "tests/helpers/simulation_to_report_oracle.py": "a126c2d1595cae180bbd39e40da9c9a6c4167bcb004fe3363ec9fb8fa24d54db"
+  },
+  "checks": {
+    "ruff_repository": true,
+    "mypy_all_90_source_files": true,
+    "black_targeted_12_python_files": true,
+    "pyright_four_changed_analysis_modules": true,
+    "git_diff_check": true,
+    "snapshot_selected_files_byte_identical": true,
+    "oracle_helper_matches_with_normalized_newlines": true,
+    "numerical_example_source_hashes_match": true,
+    "no_game_targets_changed": true,
+    "no_production_simulation": true
+  },
+  "numerical_example": "task4_power_example.json",
+  "limitations": [
+    "Full workflow timing is variable: initial runtime assertion failed, unchanged rerun passed. The 240-second assertion remains unchanged.",
+    "No single joint 2% family-wise guarantee for all superiority and equivalence declarations is asserted.",
+    "The 150-finalist observations are synthetic and the computed power is conditional on planned completed support.",
+    "No production capacity, release qualification, or artifact migration was performed."
+  ]
+}

@@ -2,6 +2,88 @@
 
 Use this prompt in a new Codex conversation for this repository.
 
+For the September 24 first-release implementation backlog, Task 0's completed
+design is [implementation/task0_contract.md](../implementation/task0_contract.md),
+with question coverage and artifact/schema companions. It specifies future
+Tasks 1–10; it does not claim those producers or runtime contracts are already
+implemented. In particular, verified zero exposure requires authenticated full
+coverage; missing required inputs must never be converted to zero counts.
+
+Task 9 is implemented: see [its report](../implementation/task9_report.md).
+Seat histories now use byte-bounded roster aggregation and authenticated per-k
+reuse; metrics cache-key version is 3 and seat output schemas are explicit.
+Task 1A is also implemented: [report](../implementation/task1a_report.md).
+`outcome_distributions` computes exact partial frequencies and batch statistics
+from bounded curated slices, with typed empty outputs and honest conditional
+support. It does not certify zero exposure or publish final distributions.
+Task 1B plus Task 2 now add `outcome_publication`: authenticated source slices,
+bounded merges, complete batch/roster certification, F/B/I/S/Q publication,
+and exact inverse-CDF summaries. That work advanced the metrics cache-key to 4
+and added `outcome_distribution_method_version=1` to its shared version identity.
+The graph snapshot and final audit retain `_outcome_units` artifacts and
+validate their complete unit manifests; quarantine/execution scratch is excluded.
+See [the implementation report](../implementation/task1b2_report.md).
+Task 3 is implemented: `outcome_precision` publishes the frozen five selected
+completed-outcome summaries with pointwise batch percentile intervals and MCSE.
+Purpose 402 owns shared root/k/replicate draws; sparse, undefined, and degenerate
+support withholds intervals explicitly. Authenticated vector/range/reduction
+tiles retain exact resume and enter the release graph. Metrics cache-key version
+is 5, with `outcome_precision_method_version=1`. Simulation targets are unchanged.
+See [the Task 3 report](../implementation/task3_report.md).
+Task 4 implements independent H2H statistical/practical/equivalence conclusions,
+with explicit unresolved/nonviable flags and combined display labels. Production
+equivalence tolerance is 0.03; practical thresholds and game allocations are
+unchanged. Equivalence is pairwise, uses strict simultaneous bounds, and is not
+conditioned on Holm non-rejection. Reporting contract is 6. See
+[the Task 4 report](../implementation/task4_report.md).
+Task 5A's [preflight contract](../implementation/task5a_contract.md) and
+[bounded recipe](../implementation/task5a_recipe.json) are specified. They define
+correctness coverage, evidence/status/reuse rules, and applicability limits;
+they do not implement preflight or establish statistical detection capability.
+Task 5B adds bounded diagnostic arithmetic and a seeded capability driver under
+the [frozen protocol](../implementation/task5b_protocol.md). Its
+[report](../implementation/task5b_report.md) records detection, false alerts,
+unsupported cases, and batch/common-root blind spots; consult that evidence
+before accepting applicability. This does not run the Task 5A all-k matrix.
+Task 5C adds authenticated preflight and required batch monitoring. The existing
+`disable_rng_diagnostics` switch now omits only exhaustive game-level lags;
+PE/MC/MR remain required. RNG stage cache is 7 and reporting contract is 7.
+The bounded all-k matrix includes an explicit requested-worker extension up to
+16 workers; validation observations remain separate from production. See
+[the Task 5C report](../implementation/task5c_report.md) for evidence and limits.
+Task 6 adds plan-specific H2H cap authorization: terminal Y/N consent or the
+runtime-only `--h2h-authorize PLAN_SHA256:MAX_ATTEMPTS` option, durable approval
+separate from progress, and exact resume without editing the configured cap.
+Execution cache version is 6; statistical planning and RNG identities are
+unchanged. Refusal is an operational `blocked_by_cap` stop (CLI exit 3), and
+final audit retains/checks authorization. See [Task 6](../implementation/task6_report.md).
+Task 7 adds authenticated seat behavior and once-per-game turn opportunity,
+plus bounded matched parameter responses/nonadditivity from observed all-attempt
+performance and held-out HGB predictions. Metrics cache is 6, HGB cache is 2,
+and reporting contract is 8. Check [Task 7](../implementation/task7_report.md)
+for acceptance evidence and limits.
+Task 8 is complete: authenticated `analysis_guide.json`/`.md` at reporting diagnostics,
+covering all ten workbook groups and 62 targets. Reporting contract is 9 and
+guide method is 1; metrics cache 6 and HGB cache 2 are unchanged. Required missing
+inputs fail; verified zeros, unestimable estimates, deferred work and intentionally
+omitted diagnostics stay distinct. Markdown renders the JSON, and final audit
+checks both products. See [Task 8](../implementation/task8_report.md).
+
+Task 10 is complete at its validation/documentation boundary, with all 1,584
+collected functional cases passing across isolated runs and clean static gates.
+Its integrated qualification is documented in
+[its report](../implementation/task10_report.md), with a conditional capacity
+refresh and [operating review](../implementation/task10_operations.md).
+The required checks include a protected Windows launcher, strict Job Object,
+S: results/C: scratch, exact-plan authorization, no-force replay, missing-product
+recovery and final root/root/pair audit. Ingest now coalesces adjacent shard
+batches within its existing byte allowance: physical layout/partition method 3,
+ingest cache 4. This repairs a production footer-admission blocker without
+changing ordered rows, coordinates, schemas, RNG or statistical methods.
+The four inherited terminology findings are resolved, including the internal
+`all_batch_merge` checkpoint name; current code fingerprints reject incompatible
+old units. No production run, cap increase or optimization follows qualification.
+
 ```text
 You are working in Farkle Mk II, a deterministic Monte Carlo simulation and
 statistical analysis project. Read AGENTS.md and the files under
@@ -198,7 +280,8 @@ Preserve these invariants:
   bundles with an H2H physical-layout identity advance; it does not authorize
   implementation. Using the slower accepted Task 6 rerun, current pre-remediation
   capacity is 127.30 hours central and 240.44 hours planning upper, still
-  `not_capacity_ready`. Task 8 remains untriggered.
+  `not_capacity_ready`. The older remediation Task 8 remains untriggered;
+  this is distinct from the September 24 first-release analysis-guide Task 8.
 - Task 7B evaluated deterministic width-16 H2H block-range bundles on the real
   Windows-spawn path but closed `performance_gate_failed`. Exact schedule,
   logical Arrow, schema, execution-state, and inference equivalence held.

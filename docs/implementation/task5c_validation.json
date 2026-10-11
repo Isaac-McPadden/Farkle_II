@@ -1,0 +1,389 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "5C",
+  "status": "complete",
+  "date": "2026-10-01",
+  "workspace_code": {
+    "commit": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+    "dirty_fingerprint_sha256": "a31fc7a4959e2e4600c0f05e378f2336a7c8dc430fc9c58ec1c302e896065ee6",
+    "policy": "development_dirty",
+    "state": "development_dirty"
+  },
+  "isolated_validation_snapshot_commit": "fb52bfd108c9a5e49087e497c913dd2949937f73",
+  "snapshot_note": "Temporary independent repository; no working-repository commit or reset performed.",
+  "preflight": {
+    "publication": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task5c-validation_seed_102\\analysis\\05_rng\\diagnostics\\preflight\\publication.json",
+    "publication_sha256": "003227736e563c7fd84c9e7c0bf75aad8b325f6233a067785818741ace517daa",
+    "initial_seconds": 206.1356477998197,
+    "reuse_seconds": 19.501430300064385,
+    "repair_seconds": 22.09334919997491,
+    "retained_data_units": 356,
+    "reused_files": 1068,
+    "exact_byte_and_mtime_reuse": true,
+    "corruption_rejected": true,
+    "repair_restored_exact_bytes": true,
+    "other_unit_mtimes_preserved": true,
+    "resources": {
+      "elapsed_seconds": 192.93799999984913,
+      "note": "parent I/O excludes child process I/O",
+      "parent_io_delta": {
+        "other_bytes": 43702746,
+        "other_count": 638970,
+        "read_bytes": 526715059,
+        "read_count": 45825,
+        "write_bytes": 25753460,
+        "write_count": 6758
+      },
+      "peak_sampled_process_tree_rss_bytes": 3798147072,
+      "sampling": "at_matrix_and_capability_unit_completions",
+      "worker_topologies": [
+        1,
+        2,
+        16
+      ]
+    }
+  },
+  "supplemental_correctness": {
+    "selected_nodes": [
+      "tests/integration/test_raw_simulation_oracle.py::test_authenticated_raw_two_root_oracle",
+      "tests/unit/analysis/test_h2h_schedule.py::test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordinate",
+      "tests/unit/analysis/test_h2h_schedule.py::test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt",
+      "tests/unit/analysis/test_outcome_distributions.py::test_all_tied_selfplay_retains_one_win_and_three_zero_margin_losses",
+      "tests/unit/analysis/test_outcome_distributions.py::test_exact_counts_conservation_and_slice_invariance",
+      "tests/unit/analysis/test_outcome_publication.py::test_all_safety_support_keeps_completed_summaries_undefined",
+      "tests/unit/analysis/test_outcome_publication.py::test_authenticated_publication_resume_and_missing_unit",
+      "tests/unit/analysis/test_outcome_publication.py::test_explicit_roster_multiplicity_certifies_repeated_strategy_exposures",
+      "tests/unit/analysis/test_outcome_publication.py::test_interrupted_parallel_source_units_resume_without_replaying_valid_work",
+      "tests/unit/analysis/test_outcome_publication.py::test_required_support_faults_are_not_zero_filled",
+      "tests/unit/analysis/test_rng_diagnostics_branches.py::test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion",
+      "tests/unit/analysis/test_rng_diagnostics_branches.py::test_full_canonical_key_distinguishes_an_injected_digest_collision",
+      "tests/unit/analysis/test_rng_diagnostics_branches.py::test_insufficient_observations_publish_explicit_not_estimable_summary",
+      "tests/unit/analysis/test_rng_diagnostics_branches.py::test_interrupted_coarsened_route_is_atomic_and_resumes_exactly_once",
+      "tests/unit/game/test_engine.py::test_final_round_override",
+      "tests/unit/game/test_engine.py::test_game_stops_at_default_max_rounds",
+      "tests/unit/game/test_scoring.py::test_default_score_cases",
+      "tests/unit/simulation/test_run_tournament.py::test_metric_only_checkpoint_resume_commits_statistics_before_ownership",
+      "tests/unit/simulation/test_simulation_publication_v3.py::test_interruption_boundaries_never_create_false_completion",
+      "tests/unit/simulation/test_simulation_publication_v3.py::test_real_two_worker_tournament_uses_producer_owned_publication",
+      "tests/unit/simulation/test_simulation_publication_v3.py::test_routine_resume_rejects_mutated_publication",
+      "tests/unit/simulation/test_simulation_publication_v3.py::test_stale_code_and_config_identity_are_rejected",
+      "tests/unit/test_rng_contract.py::test_repository_rngs_are_coordinate_owned",
+      "tests/unit/utils/test_random_utils.py::test_coordinate_bytes_ignore_executor_count_order_and_resume_boundary",
+      "tests/unit/utils/test_random_utils.py::test_coordinate_changes_are_local_and_do_not_depend_on_draw_history",
+      "tests/unit/utils/test_random_utils.py::test_purpose_registry_is_unique_and_unknown_namespaces_fail",
+      "tests/unit/utils/test_random_utils.py::test_v2_separates_root_k_batch_seat_and_purpose_and_replays"
+    ],
+    "cases_executed": 43,
+    "elapsed_seconds": 99.96900000004098,
+    "exit_code": 0,
+    "all_passed": true
+  },
+  "topology_extension": {
+    "additional_attempts": 1688,
+    "aggregate_worker_bound": 16,
+    "id": "target_workers_v1",
+    "maximum_total_game_attempts": 7174,
+    "maximum_total_player_exposures": 32640,
+    "workers": 16
+  },
+  "covered_ks": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    8,
+    10,
+    12
+  ],
+  "covered_workers": [
+    1,
+    2,
+    16
+  ],
+  "capability_assessment": {
+    "clean/b100": {
+      "drift_detections": 0,
+      "family_alerts": 0,
+      "fixtures": 64,
+      "lag_detections": 0
+    },
+    "clean/b30": {
+      "drift_detections": 0,
+      "family_alerts": 0,
+      "fixtures": 64,
+      "lag_detections": 0
+    },
+    "half_drift/b100": {
+      "drift_detections": 64,
+      "family_alerts": 64,
+      "fixtures": 64,
+      "lag_detections": 64
+    },
+    "half_drift/b30": {
+      "drift_detections": 64,
+      "family_alerts": 64,
+      "fixtures": 64,
+      "lag_detections": 61
+    },
+    "serial_negative/b100": {
+      "drift_detections": 0,
+      "family_alerts": 64,
+      "fixtures": 64,
+      "lag_detections": 64
+    },
+    "serial_negative/b30": {
+      "drift_detections": 0,
+      "family_alerts": 64,
+      "fixtures": 64,
+      "lag_detections": 64
+    },
+    "serial_positive/b100": {
+      "drift_detections": 2,
+      "family_alerts": 64,
+      "fixtures": 64,
+      "lag_detections": 64
+    },
+    "serial_positive/b30": {
+      "drift_detections": 21,
+      "family_alerts": 59,
+      "fixtures": 64,
+      "lag_detections": 59
+    },
+    "weak_drift/b100": {
+      "drift_detections": 0,
+      "family_alerts": 0,
+      "fixtures": 64,
+      "lag_detections": 0
+    },
+    "weak_drift/b30": {
+      "drift_detections": 0,
+      "family_alerts": 0,
+      "fixtures": 64,
+      "lag_detections": 0
+    },
+    "weak_serial/b100": {
+      "drift_detections": 0,
+      "family_alerts": 1,
+      "fixtures": 64,
+      "lag_detections": 1
+    },
+    "weak_serial/b30": {
+      "drift_detections": 0,
+      "family_alerts": 0,
+      "fixtures": 64,
+      "lag_detections": 0
+    }
+  },
+  "integrity_and_support": {
+    "clean_integrity_passed": true,
+    "faults": {
+      "completion_conservation": {
+        "detected": true,
+        "reason": "batch completion or win/loss conservation failure"
+      },
+      "duplicate_batch": {
+        "detected": true,
+        "reason": "batch coverage/order differs from the frozen expected inventory"
+      },
+      "missing_batch": {
+        "detected": true,
+        "reason": "batch coverage/order differs from the frozen expected inventory"
+      },
+      "negative_count": {
+        "detected": true,
+        "reason": "invalid nonnegative integer batch counts: wins"
+      },
+      "noninteger_count": {
+        "detected": true,
+        "reason": "invalid nonnegative integer batch counts: wins"
+      },
+      "out_of_order": {
+        "detected": true,
+        "reason": "batch coverage/order differs from the frozen expected inventory"
+      },
+      "win_loss_conservation": {
+        "detected": true,
+        "reason": "batch completion or win/loss conservation failure"
+      },
+      "zero_loss_nonzero_deficit": {
+        "detected": true,
+        "reason": "nonzero margin sum without its conditional support"
+      },
+      "zero_win_nonzero_margin": {
+        "detected": true,
+        "reason": "nonzero margin sum without its conditional support"
+      }
+    },
+    "support": {
+      "constant": [
+        {
+          "check_id": "lag_one",
+          "effect_threshold": 0.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "constant_series",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 100
+        },
+        {
+          "check_id": "half_drift",
+          "effect_threshold": 1.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "constant_series",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 100
+        }
+      ],
+      "short": [
+        {
+          "check_id": "lag_one",
+          "effect_threshold": 0.7559289460184544,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "fewer_than_30_batches",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 29
+        },
+        {
+          "check_id": "half_drift",
+          "effect_threshold": 1.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "fewer_than_30_batches",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 29
+        }
+      ],
+      "unvalidated_batch_count": [
+        {
+          "check_id": "lag_one",
+          "effect_threshold": 0.7302967433402214,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "batch_count_outside_capability_recipe",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 31
+        },
+        {
+          "check_id": "half_drift",
+          "effect_threshold": 1.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "batch_count_outside_capability_recipe",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 31
+        }
+      ],
+      "zero_denominator": [
+        {
+          "check_id": "lag_one",
+          "effect_threshold": 0.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "zero_denominator_batch_not_dropped",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 100
+        },
+        {
+          "check_id": "half_drift",
+          "effect_threshold": 1.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "zero_denominator_batch_not_dropped",
+          "result": "insufficient_evidence",
+          "statistic": null,
+          "support": 100
+        }
+      ]
+    }
+  },
+  "blind_spot_results": {
+    "common_fault_roots": {
+      "between_root_difference": 0,
+      "construction": "same corrupted summaries copied into both nominal roots, not two independent realizations",
+      "interpretation": "Agreement on a common injected fault is not independent proof of correctness.",
+      "other_root_warning_count": 12,
+      "seed": 59002,
+      "within_each_root_warning_count": 12
+    },
+    "within_batch": {
+      "batch_results": [
+        {
+          "check_id": "lag_one",
+          "effect_threshold": 0.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "within_declared_descriptive_threshold",
+          "result": "no_concern_detected",
+          "statistic": -0.15007506087669034,
+          "support": 100
+        },
+        {
+          "check_id": "half_drift",
+          "effect_threshold": 1.5,
+          "method_id": "batch_lag_half_drift_descriptive_v1",
+          "reason": "within_declared_descriptive_threshold",
+          "result": "no_concern_detected",
+          "statistic": 0.04308040931502307,
+          "support": 100
+        }
+      ],
+      "batch_results_identical": true,
+      "batch_totals_identical": true,
+      "batches": 100,
+      "clean_game_lag_one": -0.0033354804172638455,
+      "fault_game_lag_one": 0.9960199386055494,
+      "games_per_batch": 1000,
+      "interpretation": "Game order is hidden by unchanged batch totals; this is outside batch-monitor coverage.",
+      "seed": 59001
+    }
+  },
+  "statistical_matrix_result": "insufficient_evidence",
+  "tests": {
+    "focused": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "87",
+      "time": "115.475",
+      "timestamp": "2026-10-01T01:44:00.222151-06:00",
+      "hostname": "Isaac_Desktop",
+      "properties": {},
+      "junit_path": "data/task5c-focused.xml"
+    },
+    "full_pipeline_and_resume": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "1",
+      "time": "1061.670",
+      "timestamp": "2026-10-01T01:43:04.432636-06:00",
+      "hostname": "Isaac_Desktop",
+      "properties": {
+        "raw_simulation_to_report_runtime_seconds": "1059.62",
+        "required_preflight_runtime_seconds": "457.509",
+        "total_runtime_ceiling_seconds": "3840"
+      },
+      "junit_path": "data/task5c-full-oracle.xml"
+    }
+  },
+  "static_checks": {
+    "ruff_src_tests_scripts": "passed",
+    "mypy_all_94_source_files": "passed",
+    "pyright_four_rng_and_reporting_modules": "passed",
+    "black_touched_files": "passed",
+    "git_diff_check": "passed"
+  },
+  "limitations": [
+    "Validation-only observations; no production simulation authorized or run.",
+    "Production targets, batch counts, bootstrap counts and H2H allocations unchanged.",
+    "Timing observations overlap other tests and are not isolated throughput benchmarks.",
+    "RSS is sampled at unit completions; parent I/O excludes worker I/O.",
+    "Synthetic assessed capability does not prove independence or exhaustive coverage.",
+    "The full oracle's 3840-second ceiling explicitly adds two preflight budgets to its former 240-second baseline, including proof authentication outside the preflight function.",
+    "Working checkout remains development-dirty; snapshot validation is not production release authorization."
+  ]
+}

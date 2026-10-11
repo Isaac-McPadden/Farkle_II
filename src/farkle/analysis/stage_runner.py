@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from farkle.analysis.h2h_authorization import H2HAuthorizationRequired
 from farkle.config import AppConfig
 from farkle.utils.manifest import (
     EVENT_RUN_END,
@@ -353,6 +354,23 @@ class StageRunner:
                             "blocking_dependency": stage_done.get("blocking_dependency"),
                             "upstream_stage": stage_done.get("upstream_stage"),
                         }
+                    except H2HAuthorizationRequired as exc:
+                        status = "blocked_by_cap"
+                        failed_steps.append(item.name)
+                        first_failure = exc
+                        context.logger.warning(
+                            "Stage paused: %s/%s: %s", context.run_label, item.name, exc
+                        )
+                        stage_end_payload = {
+                            "event": context.stage_end_event,
+                            "run": context.run_label,
+                            "stage": item.name,
+                            "ok": False,
+                            "status": status,
+                            "reason": exc.reason,
+                            "resume_instruction": exc.instruction,
+                        }
+                        should_break = True
                     except Exception as exc:  # noqa: BLE001
                         status = "failed"
                         failed_steps.append(item.name)
@@ -437,7 +455,11 @@ class StageRunner:
                 "event": context.run_end_event,
                 "run": context.run_label,
                 "ok": not failed_steps and not degraded_steps,
-                "health": "healthy" if (not failed_steps and not degraded_steps) else "degraded",
+                "health": (
+                    "blocked_by_cap"
+                    if isinstance(first_failure, H2HAuthorizationRequired)
+                    else "healthy" if (not failed_steps and not degraded_steps) else "degraded"
+                ),
                 **context.run_end_metadata,
             }
             if failed_steps:
@@ -462,8 +484,13 @@ class StageRunner:
                 telemetry_cleanup_seconds=telemetry_cleanup_seconds,
             )
             if failed_steps:
-                context.logger.error(
-                    "Stage run completed with failures: %s",
+                log = (
+                    context.logger.warning
+                    if isinstance(first_failure, H2HAuthorizationRequired)
+                    else context.logger.error
+                )
+                log(
+                    "Stage run stopped: %s",
                     failed_steps,
                     extra={"run": context.run_label, "failed_steps": failed_steps},
                 )

@@ -184,6 +184,15 @@ def _capture_completion(stage_key: str, path: Path) -> SnapshotCompletion:
     )
 
 
+def excluded_graph_path(path: Path, root: Path) -> bool:
+    """Exclude scratch trees, retaining the outcome producer's owned checkpoints."""
+    parts = path.relative_to(root).parts
+    retained = {"_outcome_units", "_outcome_precision_ranges", "_seat_behavior_units"}
+    return (bool(retained.intersection(parts)) and "quarantine" in parts) or any(
+        part.startswith("_") and part not in retained for part in parts
+    )
+
+
 def _capture_graph_inventory(graph_root: Path) -> tuple[SnapshotGraphIdentity, ...]:
     collector = active_authentication_telemetry()
     if collector is not None:
@@ -191,8 +200,7 @@ def _capture_graph_inventory(graph_root: Path) -> tuple[SnapshotGraphIdentity, .
     sidecars = sorted(
         path
         for path in graph_root.rglob("*.sidecar.json")
-        if path.is_file()
-        and not any(part.startswith("_") for part in path.relative_to(graph_root).parts)
+        if path.is_file() and not excluded_graph_path(path, graph_root)
     )
     inventory: dict[CanonicalArtifactLocation, SnapshotGraphIdentity] = {}
     for adjacent in sidecars:

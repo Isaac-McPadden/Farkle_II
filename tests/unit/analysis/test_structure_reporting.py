@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from farkle.analysis.structure_reporting import (
     _claim_lines,
@@ -92,7 +93,69 @@ def _write_json(
     write_json_artifact_atomic(payload, path, sidecar=sidecar)
 
 
+def _publish_rng_inputs(cfg: AppConfig) -> None:
+    from farkle.analysis.rng_evidence import metadata, publish
+    from farkle.analysis.rng_monitor import monitor_schema
+
+    evidence = {
+        "root_seed": cfg.sim.seed,
+        "required_ks": cfg.sim.n_players_list,
+        "status": "insufficient_evidence",
+        "coverage_complete": False,
+        "statistical_warning_count": 0,
+        "check_opportunities": 0,
+        "exhaustive_status": "omitted_by_design",
+        "applicability": {"blind_spots": []},
+    }
+    publish(cfg, cfg.rng_preflight_evidence_path(), evidence, [])
+    publish(cfg, cfg.rng_monitor_coverage_path(), evidence, [])
+    path = cfg.rng_production_monitor_path()
+    table = pa.Table.from_pylist([], schema=monitor_schema())
+    write_parquet_artifact_atomic(table, path, sidecar=metadata(cfg, path, [], table.schema.names))
+
+
+def test_pair_report_resolves_evidence_from_owned_root_contexts(tmp_path):
+    from farkle.analysis.structure_reporting import _rng_evidence_summary
+    from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+    from farkle.orchestration.seed_utils import (
+        prepare_seed_config,
+        seed_pair_root,
+        seed_pair_seed_root,
+    )
+
+    base = _cfg(tmp_path)
+    pair = (11, 22)
+    contexts = tuple(
+        SeedRunContext.from_config(
+            prepare_seed_config(
+                base, seed=seed, base_results_dir=seed_pair_seed_root(base, pair, seed)
+            )
+        )
+        for seed in pair
+    )
+    for context in contexts:
+        _publish_rng_inputs(context.config)
+    pair_context = RootPairRunContext.from_root_contexts(
+        (contexts[0], contexts[1]), pair_root=seed_pair_root(base, pair)
+    )
+    summaries, sources = _rng_evidence_summary(pair_context.config, pair)
+    assert [row["root_seed"] for row in summaries] == list(pair)
+    assert sources == [
+        path
+        for context in contexts
+        for path in (
+            context.config.rng_preflight_evidence_path(),
+            context.config.rng_monitor_coverage_path(),
+            context.config.rng_production_monitor_path(),
+        )
+    ]
+
+
 def _publish_inputs(cfg: AppConfig) -> None:
+    _publish_rng_inputs(cfg)
+    from tests.helpers.task7_fixture import publish_task7_reporting_fixture
+
+    publish_task7_reporting_fixture(cfg)
     family_hash = "f" * 64
     family = {
         "family_hash": family_hash,
@@ -115,6 +178,10 @@ def _publish_inputs(cfg: AppConfig) -> None:
             "unordered_pair_count": 1,
             "n_completed_required_per_root_order_block": 50,
             "total_completed_required": 100,
+            "family_alpha": cfg.head2head.family_alpha,
+            "target_power": cfg.head2head.target_power,
+            "target_effect": cfg.head2head.practical_delta,
+            "worst_scenario_achieved_power": 0.8,
         },
         "score_test_power_plan",
     )
@@ -183,6 +250,16 @@ def _publish_inputs(cfg: AppConfig) -> None:
             "simultaneous_d_high": [0.14],
             "holm_adjusted_p": [0.001],
             "decision_class": ["practical_dominance_a"],
+            "holm_reject": [True],
+            "practical_delta": [cfg.head2head.practical_delta],
+            "delta_equivalence": [cfg.head2head.delta_equivalence],
+            "statistical_advantage_a": [True],
+            "statistical_advantage_b": [False],
+            "practical_dominance_a": [True],
+            "practical_dominance_b": [False],
+            "equivalent": [False],
+            "unresolved": [False],
+            "nonviable": [False],
         }
     )
     _write_frame(
@@ -352,7 +429,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 5
+    assert report["report_contract_version"] == 9
     assert report["profile"]["purpose"] == "integration"
     assert report["profile"]["production_eligible"] is False
     assert report["profile"]["release_eligible"] is False
@@ -367,7 +444,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert completion["outputs"]
     report_identity = load_authenticated_sidecar(cfg.structure_report_json_path())
     assert report_identity.versions.artifact_contract_version == 3
-    assert report_identity.versions.method_versions["structure_report_contract_version"] == 5
+    assert report_identity.versions.method_versions["structure_report_contract_version"] == 9
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
@@ -378,6 +455,11 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert report["h2h"]["games_safety_limit"] == 0
     assert report["h2h"]["unique_best_claim_permitted"] is True
     assert report["robustness"]["pareto_members"] == ["1"]
+    assert report["behavior_opportunity_parameters"]["overall_opportunity"][0]["weights"] == [1.0]
+    assert "within-model interaction" in markdown
+    assert "not relative lift" in markdown
+    assert "matched_support" in markdown
+    assert str(cfg.parameter_response_support_path(2)) in report["artifact_sources"]
     assert "Unique best among the frozen two-player finalists" in markdown
     assert "non-production, non-release integration evidence" in markdown
     assert cfg.structure_report_plot_path().stat().st_size > 0
@@ -418,6 +500,49 @@ def test_fixed_design_stability_report_has_no_inferential_labels() -> None:
     assert "rejection" not in serialized
 
 
+def test_report_publishes_joint_conclusions_with_configured_tolerance(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.head2head.delta_equivalence = 0.017
+    _publish_inputs(cfg)
+    inference = pq.read_table(cfg.h2h_pairwise_inference_path()).to_pandas()
+    for field, value in {
+        "d_ab": 0.01,
+        "ordinary_d_low": 0.006,
+        "ordinary_d_high": 0.014,
+        "simultaneous_d_low": 0.004,
+        "simultaneous_d_high": 0.016,
+        "practical_dominance_a": False,
+        "equivalent": True,
+        "decision_class": "statistical_only_advantage_a_and_equivalent",
+    }.items():
+        inference.loc[0, field] = value
+    _write_frame(
+        cfg,
+        cfg.h2h_pairwise_inference_path(),
+        inference,
+        scope=ArtifactScope.H2H_2P,
+        operation="seat_adjusted_score_inference",
+    )
+    dominance = json.loads(cfg.h2h_dominance_summary_path().read_text())
+    dominance.update(unique_best=None, unique_best_claim_permitted=False)
+    _write_json(cfg, cfg.h2h_dominance_summary_path(), dominance, "summarize_dominance_claims")
+    run(cfg, execution_scope="single_root")
+    report = json.loads(cfg.structure_report_json_path().read_text())
+    h2h = report["h2h"]
+    assert h2h["statistical_advantage_pair_count"] == 1
+    assert h2h["equivalent_pair_count"] == 1
+    assert h2h["statistical_advantage_and_equivalence_pair_count"] == 1
+    assert h2h["practical_dominance_pair_count"] == 0
+    assert h2h["unresolved_pair_count"] == 0
+    assert h2h["pair_intervals"][0]["equivalent"]
+    markdown = cfg.structure_report_markdown_path().read_text()
+    assert "+/-1.7 percentage points" in markdown
+    assert "conditional on completed games" in markdown
+    assert (
+        "| 1 / 2 | 100 | 1 | [0.4, 1.6] | statistical_only_advantage_a_and_equivalent |" in markdown
+    )
+
+
 def _claim_report(
     *,
     unresolved: int = 0,
@@ -446,12 +571,14 @@ def _claim_report(
         },
         "robustness": {
             "pareto_member_count": 2,
+            "pareto_members": ["A", "B"],
             "maximin_descriptive_leader": "A",
         },
         "h2h": {
             "unresolved_pair_count": unresolved,
             "cycle_group_count": cycles,
             "equivalent_pair_count": equivalent,
+            "delta_equivalence": 0.03,
             "unique_best": unique,
             "unique_best_claim_permitted": permitted,
             "operationally_nonviable_candidates": [],

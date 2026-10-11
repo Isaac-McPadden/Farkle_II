@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "recipe_id": "first_release_preflight_v1",
+  "status": "design_only_not_runtime_evidence",
+  "date": "2026-09-28",
+  "profile": {
+    "purpose": "integration",
+    "reduced_resolution": true,
+    "production_eligible": false,
+    "release_eligible": false
+  },
+  "correctness_matrix": {
+    "root_seeds": [
+      1101,
+      2202
+    ],
+    "player_counts": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      8,
+      10,
+      12
+    ],
+    "roster_size": 120,
+    "roster_source_config": "configs/farkle_mega_config.yaml",
+    "roster_selection": "sort canonical legal IDs; indices floor(i*(N-1)/119), i=0..119; require N>=120",
+    "shuffle_indices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "batch_count": 2,
+    "shuffles_per_batch": 2,
+    "target_score": 10000,
+    "max_rounds": 200,
+    "safety_override": {
+      "every_root_k": true,
+      "shuffle_index": 0,
+      "game_index": 0,
+      "max_rounds": 0
+    },
+    "variants": [
+      {
+        "id": "one_worker",
+        "workers": 1
+      },
+      {
+        "id": "two_workers",
+        "workers": 2
+      },
+      {
+        "id": "interrupted_then_resumed",
+        "workers_before": 2,
+        "workers_after": 1,
+        "authenticated_shuffles_before_interruption": [
+          0,
+          1
+        ],
+        "unpublished_shuffle": 2,
+        "maximum_injections_per_root_k": 1
+      }
+    ],
+    "games_per_root_shuffle_by_k": {
+      "2": 60,
+      "3": 40,
+      "4": 30,
+      "5": 24,
+      "6": 20,
+      "8": 15,
+      "10": 12,
+      "12": 10
+    },
+    "game_coordinates_per_variant": 1688,
+    "player_exposures_per_variant": 7680,
+    "attempts_three_variants_without_replay": 5064,
+    "maximum_extra_replayed_attempts": 422,
+    "maximum_executed_attempts": 5486,
+    "maximum_executed_player_exposures": 24960,
+    "unit": "one root/k/variant/shuffle; atomic data plus sidecar plus ownership",
+    "supplemental_fixtures_included_in_matrix_counts": false
+  },
+  "resources": {
+    "aggregate_simulation_workers": 2,
+    "native_threads_per_worker": 1,
+    "source_read_bytes": 33554432,
+    "reduction_buffer_bytes": 67108864,
+    "whole_preflight_deadline_seconds": 1800,
+    "budget_status": "initial_unbenchmarked_policy",
+    "on_exhaustion": "checkpoint_incomplete_never_shrink_checks"
+  },
+  "checks": [
+    {
+      "check_id": "C01",
+      "name": "rng_api_and_purpose_ownership",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/test_rng_contract.py::test_repository_rngs_are_coordinate_owned",
+        "tests/unit/utils/test_random_utils.py::test_purpose_registry_is_unique_and_unknown_namespaces_fail"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": false
+    },
+    {
+      "check_id": "C02",
+      "name": "coordinate_replay_and_separation",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/utils/test_random_utils.py::test_v2_separates_root_k_batch_seat_and_purpose_and_replays",
+        "tests/unit/utils/test_random_utils.py::test_coordinate_changes_are_local_and_do_not_depend_on_draw_history"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": true
+    },
+    {
+      "check_id": "C03",
+      "name": "exact_coordinate_and_roster_coverage",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/analysis/test_outcome_publication.py::test_required_support_faults_are_not_zero_filled",
+        "tests/unit/analysis/test_outcome_publication.py::test_explicit_roster_multiplicity_certifies_repeated_strategy_exposures"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": true
+    },
+    {
+      "check_id": "C04",
+      "name": "worker_equivalence",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/utils/test_random_utils.py::test_coordinate_bytes_ignore_executor_count_order_and_resume_boundary",
+        "tests/unit/simulation/test_simulation_publication_v3.py::test_real_two_worker_tournament_uses_producer_owned_publication",
+        "tests/integration/test_raw_simulation_oracle.py::test_authenticated_raw_two_root_oracle"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": true
+    },
+    {
+      "check_id": "C05",
+      "name": "interruption_and_exact_resume",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/simulation/test_simulation_publication_v3.py::test_interruption_boundaries_never_create_false_completion",
+        "tests/unit/simulation/test_run_tournament.py::test_metric_only_checkpoint_resume_commits_statistics_before_ownership",
+        "tests/unit/analysis/test_outcome_publication.py::test_interrupted_parallel_source_units_resume_without_replaying_valid_work"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": true
+    },
+    {
+      "check_id": "C06",
+      "name": "scoring_winner_ties_and_safety",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/game/test_scoring.py::test_default_score_cases",
+        "tests/unit/game/test_engine.py::test_final_round_override",
+        "tests/unit/game/test_engine.py::test_game_stops_at_default_max_rounds",
+        "tests/unit/analysis/test_outcome_distributions.py::test_all_tied_selfplay_retains_one_win_and_three_zero_margin_losses"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": false
+    },
+    {
+      "check_id": "C07",
+      "name": "count_and_denominator_conservation",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/analysis/test_outcome_distributions.py::test_exact_counts_conservation_and_slice_invariance",
+        "tests/unit/analysis/test_outcome_publication.py::test_all_safety_support_keeps_completed_summaries_undefined"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": true
+    },
+    {
+      "check_id": "C08",
+      "name": "identity_corruption_and_incomplete_units",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/simulation/test_simulation_publication_v3.py::test_stale_code_and_config_identity_are_rejected",
+        "tests/unit/simulation/test_simulation_publication_v3.py::test_routine_resume_rejects_mutated_publication",
+        "tests/unit/analysis/test_outcome_publication.py::test_authenticated_publication_resume_and_missing_unit"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": false
+    },
+    {
+      "check_id": "C09",
+      "name": "h2h_attempt_coordinates_and_replacements",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/analysis/test_h2h_schedule.py::test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordinate",
+        "tests/unit/analysis/test_h2h_schedule.py::test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": false
+    },
+    {
+      "check_id": "C10",
+      "name": "legacy_lag_arithmetic_and_coverage",
+      "kind": "correctness",
+      "required": true,
+      "existing_test_nodes": [
+        "tests/unit/analysis/test_rng_diagnostics_branches.py::test_full_canonical_key_distinguishes_an_injected_digest_collision",
+        "tests/unit/analysis/test_rng_diagnostics_branches.py::test_insufficient_observations_publish_explicit_not_estimable_summary",
+        "tests/unit/analysis/test_rng_diagnostics_branches.py::test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion",
+        "tests/unit/analysis/test_rng_diagnostics_branches.py::test_interrupted_coarsened_route_is_atomic_and_resumes_exactly_once"
+      ],
+      "execution_result": "not_run_in_this_design_recipe",
+      "needs_new_full_k_matrix": false
+    }
+  ],
+  "statistical_policy": {
+    "status": "awaiting_task5b_capability",
+    "minimum_certified_batches": 30,
+    "minimum_positive_denominator_batches": 30,
+    "correctness_matrix_statistical_result": "insufficient_evidence",
+    "new_alert_rule_id": null,
+    "allow_no_concern_or_investigate_without_compatible_capability": false,
+    "current_1_96_band_is_failure_threshold": false,
+    "permitted_results": [
+      "no_concern_detected",
+      "investigate",
+      "insufficient_evidence",
+      "omitted_by_design"
+    ],
+    "candidate_inputs": [
+      "attempted_win_rate",
+      "attempted_safety_rate",
+      "completed_win_rate",
+      "mean_deficit_completed",
+      "mean_losing_margin",
+      "mean_winning_margin"
+    ],
+    "ordering": "root/k/strategy, all-seat view, original deterministic_batch_id; no concatenation across roots or k",
+    "task5b_must_freeze": [
+      "statistics_and_lags",
+      "monitored_cells_and_selection",
+      "zero_denominator_and_degeneracy_rules",
+      "effect_thresholds",
+      "multiplicity_or_explicit_descriptive_policy",
+      "seeded_fault_strengths_and_support",
+      "clean_and_fault_fixture_counts",
+      "acceptance_criteria_before_assessment"
+    ]
+  },
+  "artifact_envelope": {
+    "source": "docs/implementation/task0_artifacts.md",
+    "owner": "rng_diagnostics",
+    "scope": "diagnostics",
+    "planned_files": [
+      "preflight_evidence.json",
+      "monitor_coverage.json",
+      "production_monitor.parquet"
+    ],
+    "supporting_subtree": "preflight",
+    "runtime_producer_implemented": false
+  },
+  "applicability_limits": [
+    "Only the declared k values and two-worker execution matrix are covered.",
+    "Current mega n_jobs=16 is outside the demonstrated topology of this proposed matrix; production applicability needs explicit additional evidence.",
+    "Two deterministic batches cannot support dependence labels.",
+    "Selected roster is not a representative random strategy sample.",
+    "Correctness and stream replay do not certify universal independence.",
+    "Batch-only monitors can miss within-batch faults preserving all batch totals.",
+    "No production capacity, release qualification, or exhaustive-lag replacement coverage."
+  ]
+}

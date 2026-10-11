@@ -71,6 +71,13 @@ def _inputs(cfg: AppConfig) -> None:
             "strategy_a": ["A", "A", "B"],
             "strategy_b": ["B", "C", "C"],
             "decision_class": ["practical_dominance_a", "unresolved", "practical_dominance_a"],
+            "statistical_advantage_a": [True, False, True],
+            "statistical_advantage_b": [False] * 3,
+            "practical_dominance_a": [True, False, True],
+            "practical_dominance_b": [False] * 3,
+            "equivalent": [False] * 3,
+            "unresolved": [False, True, False],
+            "nonviable": [False] * 3,
         }
     )
     _write(cfg, cfg.h2h_pairwise_inference_path(), inference, "seat_adjusted_score_inference")

@@ -6,14 +6,16 @@ import hashlib
 import heapq
 import math
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Final
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING
@@ -27,7 +29,13 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.parallel import ProcessTreeMemoryGuard, make_process_tree_memory_guard
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    make_process_tree_memory_guard,
+    process_map,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -38,6 +46,7 @@ from farkle.utils.partitioned_stage import (
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
 from farkle.utils.streaming_loop import run_streaming_shard
+from farkle.utils.writer import atomic_path
 
 _COUNT_SCHEMA: Final = pa.schema(
     [
@@ -115,6 +124,116 @@ _MIRROR_SHARD_SCHEMA: Final = pa.schema(
 )
 _MIRROR_METHOD_VERSION: Final = 2
 _MIRROR_SCHEMA_VERSION: Final = 1
+_COUNT_FIELDS: Final = _COUNT_SCHEMA.names[5:]
+
+
+def _seat_bytes(cfg: AppConfig) -> int:
+    return int(
+        cfg.resources.stage_batch_bytes.get(
+            "seat_analysis", cfg.resources.stage_batch_bytes["analysis"]
+        )
+    )
+
+
+def _tables(source: Path, columns: list[str], max_bytes: int) -> Iterator[pa.Table]:
+    # Bound decoded Arrow and any legacy Python conversion independently of row groups.
+    for _, _, table in iter_parquet_tables_by_bytes(
+        source,
+        columns=columns,
+        max_batch_bytes=max_bytes,
+        max_batch_rows=max(1, max_bytes // (128 * len(columns))),
+    ):
+        yield table
+
+
+def _integers(table: pa.Table, name: str) -> np.ndarray:
+    column = table[name]
+    if column.null_count or not pa.types.is_integer(column.type):
+        raise ValueError(f"seat analysis requires non-null integer {name}")
+    return np.asarray(column.to_numpy(), dtype=np.int64)
+
+
+class _SeatTotals:
+    """Compact observed strategy/seat counts, explicitly admitted by byte budget.
+
+    State grows with the strategy roster, never the number of games or batches.
+    The conservative allowance includes mapping objects, array growth/copies,
+    and typed output buffers. Oversized rosters fail before allocation rather
+    than silently exceeding the declared working allocation.
+    """
+
+    def __init__(self, k: int, max_bytes: int) -> None:
+        self.k = k
+        self.max_bytes = max_bytes
+        self.limit = max_bytes // (512 + 4 * k * 4 * 8)
+        if self.limit < 1:
+            raise MemoryError("seat_analysis byte budget cannot hold one strategy")
+        self.positions: dict[int, int] = {}
+        self.data = np.zeros((min(128, self.limit), k, 4), dtype=np.int64)
+        self.column_totals = [0, 0, 0, 0]
+
+    def add(self, strategies: np.ndarray, seats: np.ndarray, values: np.ndarray) -> None:
+        if not len(strategies):
+            return
+        if np.any(strategies < 0) or np.any(strategies > np.iinfo(np.int32).max):
+            raise ValueError("invalid canonical strategy identifier")
+        if np.any(seats < 0) or np.any(seats >= self.k) or np.any(values < 0):
+            raise ValueError("invalid seat or negative seat counts")
+        if np.any(values[:, 0] > values[:, 2]) or np.any(
+            values[:, 1] - values[:, 2] != values[:, 3]
+        ):
+            raise ValueError("seat counts violate attempted/completed/win conservation")
+        unique, inverse = np.unique(strategies, return_inverse=True)
+        new = [int(strategy) for strategy in unique if int(strategy) not in self.positions]
+        required = len(self.positions) + len(new)
+        if required > self.limit:
+            raise MemoryError(
+                f"seat_analysis roster needs {required} strategies; byte budget "
+                f"{self.max_bytes} admits {self.limit}; increase resources.stage_batch_bytes"
+            )
+        if required > len(self.data):
+            grown = np.zeros(
+                (min(self.limit, max(required, len(self.data) * 2)), self.k, 4), dtype=np.int64
+            )
+            grown[: len(self.positions)] = self.data[: len(self.positions)]
+            self.data = grown
+        for strategy in new:
+            self.positions[strategy] = len(self.positions)
+        positions = np.array([self.positions[int(s)] for s in unique], dtype=np.int64)[inverse]
+        maximum = np.iinfo(np.int64).max
+        for column in range(4):
+            v = values[:, column]
+            added = int(v.sum()) if int(v.max()) <= maximum // len(v) else sum(map(int, v))
+            if self.column_totals[column] + added > maximum:
+                raise OverflowError("seat count totals exceed int64")
+            self.column_totals[column] += added
+        np.add.at(self.data, (positions, seats), values)
+
+    def tables(self, coordinate: tuple[int, int, int]) -> Iterator[pa.Table]:
+        strategies = np.array(sorted(self.positions), dtype=np.int32)
+        chunk = max(1, self.max_bytes // (256 * self.k))
+        for start in range(0, len(strategies), chunk):
+            selected = strategies[start : start + chunk]
+            positions = [self.positions[int(s)] for s in selected]
+            values = self.data[positions].reshape(-1, 4)
+            present = values[:, 1] > 0
+            values = values[present]
+            if not len(values):
+                continue
+            columns = [
+                pa.array(np.full(len(values), value), type=field.type)
+                for value, field in zip(coordinate, list(_COUNT_SCHEMA)[:3], strict=True)
+            ]
+            columns.extend(
+                [
+                    pa.array(np.repeat(selected, self.k)[present], type=STRATEGY_ID_ARROW_TYPE),
+                    pa.array(
+                        np.tile(np.arange(1, self.k + 1), len(selected))[present], type=pa.int16()
+                    ),
+                    *(pa.array(values[:, i], type=pa.int64()) for i in range(4)),
+                ]
+            )
+            yield pa.Table.from_arrays(columns, schema=_COUNT_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -167,76 +286,84 @@ def _source_columns(k: int) -> list[str]:
     ]
 
 
-def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
-    parquet_file = pq.ParquetFile(source)
+def _iter_seat_count_tables(
+    source: Path, k: int, *, max_bytes: int = 32 * 1024 * 1024
+) -> Iterator[pa.Table]:
     columns = _source_columns(k)
-    missing = sorted(set(columns).difference(parquet_file.schema_arrow.names))
-    if missing:
-        raise ValueError(f"{source} lacks canonical seat-analysis columns: {missing}")
     coordinate: tuple[int, int, int] | None = None
-    counts: defaultdict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0, 0, 0])
-
-    def _flush() -> pa.Table | None:
-        if coordinate is None or not counts:
-            return None
-        root_seed, row_k, batch_id = coordinate
-        rows = [
-            {
-                "root_seed": root_seed,
-                "k": row_k,
-                "deterministic_batch_id": batch_id,
-                "strategy": strategy,
-                "seat": seat,
-                "raw_wins": values[0],
-                "raw_exposures": values[1],
-                "raw_completed_exposures": values[2],
-                "raw_safety_limit_exposures": values[3],
-            }
-            for (strategy, seat), values in sorted(counts.items())
-        ]
-        return pa.Table.from_pylist(rows, schema=_COUNT_SCHEMA)
-
-    for batch in parquet_file.iter_batches(columns=columns):
-        values = batch.to_pydict()
-        for index in range(batch.num_rows):
-            current = (
-                int(values["root_seed"][index]),
-                int(values["k"][index]),
-                int(values["deterministic_batch_id"][index]),
+    counts = _SeatTotals(k, max_bytes)
+    for table in _tables(source, columns, max_bytes):
+        roots = _integers(table, "root_seed")
+        sizes = _integers(table, "k")
+        batches = _integers(table, "deterministic_batch_id")
+        _integers(table, "shuffle_index")
+        _integers(table, "game_index")
+        if np.any(sizes != k) or np.any(batches < 0):
+            raise ValueError(f"{source} has invalid k/batch coordinates")
+        if table["termination_status"].null_count:
+            raise ValueError(f"{source} has missing termination status")
+        completed = np.asarray(pc.equal(table["termination_status"], pa.scalar("completed")))
+        safety = np.asarray(pc.equal(table["termination_status"], pa.scalar("safety_limit")))
+        valid_winner = np.asarray(
+            pc.is_in(table["winner_seat"], value_set=pa.array([f"P{i}" for i in range(1, k + 1)]))
+        )
+        if np.any(~(completed | safety)) or np.any(completed & ~valid_winner):
+            raise ValueError(f"{source} has invalid termination status or completed winner")
+        if np.any(safety & np.asarray(pc.is_valid(table["winner_seat"]))):
+            raise ValueError(f"{source} credits a safety-limit winner")
+        changes = (
+            np.flatnonzero(
+                (roots[1:] != roots[:-1])
+                | (sizes[1:] != sizes[:-1])
+                | (batches[1:] != batches[:-1])
             )
-            if current[1] != k:
-                raise ValueError(f"{source} contains k={current[1]} in canonical k={k} input")
+            + 1
+        )
+        boundaries = np.concatenate(([0], changes, [table.num_rows]))
+        for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
+            current = (int(roots[start]), k, int(batches[start]))
             if coordinate is not None and current < coordinate:
                 raise ValueError(f"{source} is not ordered by root, k, and deterministic batch")
             if coordinate is not None and current != coordinate:
-                table = _flush()
-                if table is not None:
-                    yield table
-                counts = defaultdict(lambda: [0, 0, 0, 0])
+                yield from counts.tables(coordinate)
+                counts = _SeatTotals(k, max_bytes)
             coordinate = current
-            try:
-                status = TerminationStatus(values["termination_status"][index])
-            except (KeyError, ValueError) as exc:
-                raise ValueError(f"{source} contains invalid termination status") from exc
-            winner = values["winner_seat"][index]
-            if status is TerminationStatus.SAFETY_LIMIT and winner is not None:
-                raise ValueError(f"{source} credits a safety-limit winner")
+            segment = table.slice(int(start), int(stop - start))
             for seat in range(1, k + 1):
-                strategy_value = values[f"P{seat}_strategy"][index]
-                if strategy_value is None:
-                    raise ValueError(f"{source} has a missing strategy exposure in seat {seat}")
-                cell = counts[(int(strategy_value), seat)]
-                cell[0] += int(winner == f"P{seat}")
-                cell[1] += 1
-                cell[2] += int(status is TerminationStatus.COMPLETED)
-                cell[3] += int(status is TerminationStatus.SAFETY_LIMIT)
-    table = _flush()
-    if table is not None:
-        yield table
+                strategies = _integers(segment, f"P{seat}_strategy")
+                wins = np.asarray(
+                    pc.fill_null(
+                        pc.equal(segment["winner_seat"], pa.scalar(f"P{seat}")), pa.scalar(False)
+                    ),
+                    dtype=np.int64,
+                )
+                values = np.column_stack(
+                    (
+                        wins,
+                        np.ones(len(wins), dtype=np.int64),
+                        completed[start:stop],
+                        safety[start:stop],
+                    )
+                )
+                counts.add(strategies, np.full(len(wins), seat - 1), values)
+    if coordinate is not None:
+        yield from counts.tables(coordinate)
 
 
-def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> None:
+def _write_batch_counts(
+    cfg: AppConfig, k: int, source: Path, output: Path, *, force: bool = False
+) -> None:
     manifest = output.with_suffix(".manifest.jsonl")
+    done = stage_done_path(output.parent, "seat_batch_counts")
+    if not force and stage_is_up_to_date(
+        done,
+        inputs=[source],
+        outputs=[output, manifest],
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=[output, manifest],
+    ):
+        return
     sidecar = make_artifact_sidecar(
         cfg,
         output,
@@ -277,16 +404,24 @@ def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> N
         out_path=str(output),
         manifest_path=str(manifest),
         schema=_COUNT_SCHEMA,
-        batch_iter=_iter_seat_count_tables(source, k),
+        batch_iter=_iter_seat_count_tables(source, k, max_bytes=_seat_bytes(cfg)),
         row_group_size=cfg.row_group_size,
         compression=cfg.parquet_codec,
         manifest_extra={"root_seed": cfg.sim.seed, "k": k},
         sidecar=sidecar,
         manifest_sidecar=manifest_sidecar,
     )
+    write_stage_done(
+        done,
+        inputs=[source],
+        outputs=[output, manifest],
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=[output, manifest],
+    )
 
 
-def _validate_source(path: Path, k: int) -> int:
+def _validate_source(path: Path, k: int, *, max_bytes: int = 32 * 1024 * 1024) -> int:
     """Validate a canonical by-k row partition and return its single root."""
 
     validate_artifact_sidecar(
@@ -307,13 +442,11 @@ def _validate_source(path: Path, k: int) -> int:
         raise ValueError(f"{path} lacks canonical seat-analysis columns: {missing}")
     observed_k_set: set[int] = set()
     roots_set: set[int] = set()
-    for batch in pq.ParquetFile(path).iter_batches(columns=["root_seed", "k"]):
-        values = batch.to_pydict()
-        for root, observed_k_value in zip(values["root_seed"], values["k"], strict=True):
-            if root is not None:
-                roots_set.add(int(root))
-            if observed_k_value is not None:
-                observed_k_set.add(int(observed_k_value))
+    for table in _tables(path, ["root_seed", "k"], max_bytes):
+        roots_set.update(map(int, np.unique(_integers(table, "root_seed"))))
+        observed_k_set.update(map(int, np.unique(_integers(table, "k"))))
+        if len(roots_set) > 1 or observed_k_set != {k}:
+            raise ValueError(f"{path} has invalid root/k support")
     observed_k = sorted(observed_k_set)
     if observed_k != [k]:
         raise ValueError(f"{path} has k support {observed_k}, expected [{k}]")
@@ -376,6 +509,28 @@ def _within_k_frames(counts: pd.DataFrame, k: int) -> tuple[pd.DataFrame, pd.Dat
     return grouped, population
 
 
+def _stream_within_k_frames(
+    source: Path, k: int, max_bytes: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    totals = _SeatTotals(k, max_bytes)
+    root: int | None = None
+    for table in _tables(source, _COUNT_SCHEMA.names, max_bytes):
+        roots = _integers(table, "root_seed")
+        sizes = _integers(table, "k")
+        if len(np.unique(roots)) != 1 or np.any(sizes != k):
+            raise ValueError("seat counts have incompatible root/k support")
+        if root is not None and root != int(roots[0]):
+            raise ValueError("seat counts mix roots")
+        root = int(roots[0])
+        values = np.column_stack([_integers(table, name) for name in _COUNT_FIELDS])
+        totals.add(_integers(table, "strategy"), _integers(table, "seat") - 1, values)
+    if root is None:
+        raise ValueError("seat counts have no observed support")
+    # Only the compact roster x seat totals enter pandas, never batch histories.
+    compact = pa.concat_tables(list(totals.tables((root, k, 0)))).to_pandas()
+    return _within_k_frames(compact, k)
+
+
 def _declared_weights(cfg: AppConfig, ks: list[int]) -> tuple[dict[int, float], str, str]:
     if cfg.k_aggregation.method == "equal-k":
         weights = {k: 1.0 / len(ks) for k in ks}
@@ -397,113 +552,59 @@ def _standardized_frames(
     ks: list[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     weights, _, _ = _declared_weights(cfg, ks)
-    common_seats = range(1, min(ks) + 1)
-    common_strategies = set.intersection(
-        *(set(frame["strategy"].astype(int)) for frame in by_k.values())
-    )
-    standardized: list[dict[str, Any]] = []
-    mixture: list[dict[str, Any]] = []
-    for strategy in sorted(common_strategies):
-        for seat in common_seats:
-            cells = [
-                by_k[k].loc[(by_k[k]["strategy"] == strategy) & (by_k[k]["seat"] == seat)]
-                for k in ks
-            ]
-            if any(cell.empty for cell in cells):
-                continue
-            effect = sum(
-                float(cell.iloc[0]["seat_effect"]) * weights[k]
-                for k, cell in zip(ks, cells, strict=True)
-            )
-            wins = sum(int(cell.iloc[0]["raw_wins"]) for cell in cells)
-            exposures = sum(int(cell.iloc[0]["raw_exposures"]) for cell in cells)
-            completed_exposures = sum(
-                int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells
-            )
-            safety_exposures = sum(
-                int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells
-            )
-            baseline_mass = sum(
-                int(cell.iloc[0]["raw_exposures"]) / k for k, cell in zip(ks, cells, strict=True)
-            )
-            standardized.append(
-                {
-                    "root_seed": int(cells[0].iloc[0]["root_seed"]),
-                    "effect_scope": "strategy",
-                    "strategy": strategy,
-                    "seat": seat,
-                    "common_k_support": ks,
-                    "standardized_seat_effect": effect,
-                }
-            )
-            mixture.append(
-                {
-                    "root_seed": int(cells[0].iloc[0]["root_seed"]),
-                    "effect_scope": "strategy",
-                    "strategy": strategy,
-                    "seat": seat,
-                    "common_k_support": ks,
-                    "raw_wins": wins,
-                    "raw_exposures": exposures,
-                    "raw_completed_exposures": completed_exposures,
-                    "raw_safety_limit_exposures": safety_exposures,
-                    "exposure_weighted_baseline": baseline_mass / exposures,
-                    "exposure_weighted_seat_effect": wins / exposures - baseline_mass / exposures,
-                }
-            )
-    for seat in common_seats:
-        cells = [population_by_k[k].loc[population_by_k[k]["seat"] == seat] for k in ks]
-        if any(cell.empty for cell in cells):
-            continue
-        standardized.append(
-            {
-                "root_seed": int(cells[0].iloc[0]["root_seed"]),
-                "effect_scope": "population",
-                "strategy": None,
-                "seat": seat,
-                "common_k_support": ks,
-                "standardized_seat_effect": sum(
-                    float(cell.iloc[0]["seat_effect"]) * weights[k]
-                    for k, cell in zip(ks, cells, strict=True)
-                ),
-            }
-        )
-        wins = sum(int(cell.iloc[0]["raw_wins"]) for cell in cells)
-        exposures = sum(int(cell.iloc[0]["raw_exposures"]) for cell in cells)
-        completed_exposures = sum(int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells)
-        safety_exposures = sum(int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells)
-        baseline_mass = sum(
-            int(cell.iloc[0]["raw_exposures"]) / k for k, cell in zip(ks, cells, strict=True)
-        )
-        mixture.append(
-            {
-                "root_seed": int(cells[0].iloc[0]["root_seed"]),
-                "effect_scope": "population",
-                "strategy": None,
-                "seat": seat,
-                "common_k_support": ks,
-                "raw_wins": wins,
-                "raw_exposures": exposures,
-                "raw_completed_exposures": completed_exposures,
-                "raw_safety_limit_exposures": safety_exposures,
-                "exposure_weighted_baseline": baseline_mass / exposures,
-                "exposure_weighted_seat_effect": wins / exposures - baseline_mass / exposures,
-            }
-        )
-    standardized_frame = pd.DataFrame(standardized, columns=_STANDARDIZED_COLUMNS)
-    mixture_frame = pd.DataFrame(mixture, columns=_MIXTURE_COLUMNS)
-    standardized_frame["strategy"] = pd.array(
-        standardized_frame["strategy"].tolist(), dtype="Int64"
-    )
-    mixture_frame["strategy"] = pd.array(mixture_frame["strategy"].tolist(), dtype="Int64")
+    standardized: list[pd.DataFrame] = []
+    mixture: list[pd.DataFrame] = []
+    for scope, frames, keys in (
+        ("strategy", by_k, ["strategy", "seat"]),
+        ("population", population_by_k, ["seat"]),
+    ):
+        indexed = {
+            k: frame.loc[frame["seat"] <= min(ks)].set_index(keys, verify_integrity=True)
+            for k, frame in frames.items()
+        }
+        support = indexed[ks[0]].index
+        for k in ks[1:]:
+            support = support.intersection(indexed[k].index)
+        support = support.sort_values()
+        cells = {k: indexed[k].loc[support] for k in ks}
+        base = support.to_frame(index=False)
+        base.insert(0, "effect_scope", scope)
+        base.insert(0, "root_seed", cells[ks[0]]["root_seed"].to_numpy())
+        if scope == "population":
+            base["strategy"] = None
+        base["common_k_support"] = [ks] * len(base)
+        effect = np.zeros(len(base), dtype=np.float64)
+        baseline = np.zeros(len(base), dtype=np.float64)
+        totals = np.zeros((len(base), 4), dtype=np.int64)
+        for k, cell in cells.items():
+            effect += cell["seat_effect"].to_numpy() * weights[k]
+            counts = cell[_COUNT_FIELDS].to_numpy(dtype=np.int64)
+            if np.any(counts > np.iinfo(np.int64).max - totals):
+                raise OverflowError("cross-k seat totals exceed int64")
+            totals += counts
+            baseline += counts[:, 1] / k
+        standardized_cell = base.copy()
+        standardized_cell["standardized_seat_effect"] = effect
+        standardized.append(standardized_cell)
+        for i, column in enumerate(_COUNT_FIELDS):
+            base[column] = totals[:, i]
+        base["exposure_weighted_baseline"] = baseline / totals[:, 1]
+        base["exposure_weighted_seat_effect"] = (totals[:, 0] - baseline) / totals[:, 1]
+        mixture.append(base)
+    standardized_frame = pd.concat(standardized, ignore_index=True)[_STANDARDIZED_COLUMNS]
+    mixture_frame = pd.concat(mixture, ignore_index=True)[_MIXTURE_COLUMNS]
+    for frame in (standardized_frame, mixture_frame):
+        frame["strategy"] = pd.array(frame["strategy"].tolist(), dtype="Int32")
     return standardized_frame, mixture_frame
 
 
-def _game_diagnostics(sources: dict[int, Path]) -> pd.DataFrame:
+def _game_diagnostics(
+    sources: dict[int, Path], *, max_bytes: int = 32 * 1024 * 1024
+) -> pd.DataFrame:
     selfplay: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0, 0])
     for k, source in sources.items():
         columns = _source_columns(k)
-        for batch in pq.ParquetFile(source).iter_batches(columns=columns):
+        for batch in _tables(source, columns, max_bytes):
             values = batch.to_pydict()
             for index in range(batch.num_rows):
                 root = int(values["root_seed"][index])
@@ -516,6 +617,10 @@ def _game_diagnostics(sources: dict[int, Path]) -> pd.DataFrame:
                     raise ValueError(f"{source} credits a safety-limit winner")
                 p1_win = int(winner == "P1")
                 if len(set(strategies)) == 1:
+                    if (root, k, strategies[0]) not in selfplay and len(
+                        selfplay
+                    ) >= max_bytes // 512:
+                        raise MemoryError("self-play roster exceeds seat_analysis byte budget")
                     cell = selfplay[(root, k, strategies[0])]
                     cell[0] += p1_win
                     cell[1] += 1
@@ -565,7 +670,7 @@ def _mirrored_batches(source: Path, *, max_batch_bytes: int) -> tuple[_MirroredB
         source,
         columns=columns,
         max_batch_bytes=max_batch_bytes,
-        max_batch_rows=max(1, max_batch_bytes // 16),
+        max_batch_rows=max(1, max_batch_bytes // (128 * len(columns))),
     ):
         values = table.to_pydict()
         for index in range(table.num_rows):
@@ -624,7 +729,7 @@ class _MirroredPartitionWriter:
             Path(self.source),
             columns=self.columns,
             max_batch_bytes=self.max_batch_bytes,
-            max_batch_rows=max(1, self.max_batch_bytes // 32),
+            max_batch_rows=max(1, self.max_batch_bytes // (128 * len(self.columns))),
         ):
             values = table.to_pydict()
             for index in range(table.num_rows):
@@ -643,6 +748,8 @@ class _MirroredPartitionWriter:
                 a, b = sorted((first_i, second_i))
                 if _mirror_partition(a, b, partitions) != partition:
                     continue
+                if len(records) >= self.max_records:
+                    raise MemoryError("mirrored partition exceeds its admitted record budget")
                 status = TerminationStatus(values["termination_status"][index])
                 winner = values["winner_seat"][index]
                 if status is TerminationStatus.SAFETY_LIMIT:
@@ -726,6 +833,76 @@ def _mirrored_identity(cfg: AppConfig, source: Path) -> PartitionedStageIdentity
     )
 
 
+_MIRROR_KEYS: Final = ["root_seed", "strategy_a", "strategy_b"]
+_MIRROR_VALUES: Final = _MIRROR_SHARD_SCHEMA.names[4:]
+_MERGE_SCHEMA: Final = pa.schema(
+    [_MIRROR_SHARD_SCHEMA.field(name) for name in [*_MIRROR_KEYS, *_MIRROR_VALUES]]
+)
+_MIRROR_FANIN: Final = 16
+
+
+def _merge_mirror_rows(
+    paths: list[Path], max_bytes: int
+) -> Iterator[tuple[tuple[int, int, int], list[int]]]:
+    """Merge at most 16 sorted readers with a shared decode budget."""
+    if len(paths) > _MIRROR_FANIN:
+        raise ValueError("mirrored merge exceeds bounded fan-in")
+    reader_bytes = max(1, max_bytes // max(1, len(paths)))
+
+    def rows(path: Path) -> Generator[tuple[tuple[int, int, int], list[int]], None, None]:
+        for table in _tables(path, _MERGE_SCHEMA.names, reader_bytes):
+            arrays = [_integers(table, name) for name in _MERGE_SCHEMA.names]
+            for i in range(table.num_rows):
+                yield (
+                    (int(arrays[0][i]), int(arrays[1][i]), int(arrays[2][i])),
+                    [int(array[i]) for array in arrays[3:]],
+                )
+
+    streams = [rows(path) for path in paths]
+    previous: tuple[int, int, int] | None = None
+    total: list[int] = []
+    try:
+        for key, values in heapq.merge(*streams, key=lambda row: row[0]):
+            if previous is not None and key != previous:
+                yield previous, total
+                total = []
+            previous = key
+            total = [a + b for a, b in zip(total, values, strict=True)] if total else values
+        if previous is not None:
+            yield previous, total
+    finally:
+        for stream in streams:
+            stream.close()
+
+
+def _reduce_mirror_fanin(paths: list[Path], scratch: Path, max_bytes: int) -> list[Path]:
+    """Spill merge levels; durable authenticated source units remain resumable."""
+    level = 0
+    row_limit = max(1, max_bytes // 2048)
+    while len(paths) > _MIRROR_FANIN:
+        reduced: list[Path] = []
+        for start in range(0, len(paths), _MIRROR_FANIN):
+            path = scratch / f"level-{level}-part-{start}.parquet"
+            with (
+                atomic_path(str(path)) as staged,
+                pq.ParquetWriter(staged, _MERGE_SCHEMA) as writer,
+            ):
+                records: list[dict[str, int]] = []
+                for key, values in _merge_mirror_rows(
+                    paths[start : start + _MIRROR_FANIN], max_bytes
+                ):
+                    records.append(dict(zip(_MERGE_SCHEMA.names, [*key, *values], strict=True)))
+                    if len(records) >= row_limit:
+                        writer.write_table(pa.Table.from_pylist(records, schema=_MERGE_SCHEMA))
+                        records.clear()
+                if records:
+                    writer.write_table(pa.Table.from_pylist(records, schema=_MERGE_SCHEMA))
+            reduced.append(path)
+        paths = reduced
+        level += 1
+    return paths
+
+
 def _write_mirrored_diagnostic(
     cfg: AppConfig,
     *,
@@ -780,87 +957,185 @@ def _write_mirrored_diagnostic(
         writer = pq.ParquetWriter(staged, output_schema, compression=cfg.parquet_codec)
         try:
 
-            def shard_rows(
-                unit: PartitionedUnit,
-            ) -> Iterator[tuple[tuple[int, int, int], list[int]]]:
-                shard = units_root / "units" / unit.relative_output
-                for batch in pq.ParquetFile(shard).iter_batches(
-                    batch_size=max(1, cfg.row_group_size)
-                ):
-                    values = batch.to_pydict()
-                    for index in range(batch.num_rows):
-                        yield (
-                            (
-                                int(values["root_seed"][index]),
-                                int(values["strategy_a"][index]),
-                                int(values["strategy_b"][index]),
-                            ),
-                            [
-                                int(values[name][index])
-                                for name in (
-                                    "paired_mirrored_games",
-                                    "p1_win_difference_sum",
-                                    "games_completed",
-                                    "games_safety_limit",
-                                    "unpaired_forward_games",
-                                    "unpaired_reverse_games",
-                                )
-                            ],
-                        )
-
-            streams = [shard_rows(unit) for unit in units]
-            heap: list[tuple[tuple[int, int, int], int, list[int]]] = []
-            for index, stream in enumerate(streams):
-                try:
-                    key, value = next(stream)
-                except StopIteration:
-                    continue
-                heapq.heappush(heap, (key, index, value))
+            paths = [units_root / "units" / unit.relative_output for unit in units]
             rows: list[dict[str, Any]] = []
-            while heap:
-                key, index, value = heapq.heappop(heap)
-                totals = value
-                try:
-                    next_key, next_value = next(streams[index])
-                    heapq.heappush(heap, (next_key, index, next_value))
-                except StopIteration:
-                    pass
-                while heap and heap[0][0] == key:
-                    _same_key, same_index, same_value = heapq.heappop(heap)
-                    totals = [left + right for left, right in zip(totals, same_value, strict=True)]
-                    try:
-                        next_key, next_value = next(streams[same_index])
-                        heapq.heappush(heap, (next_key, same_index, next_value))
-                    except StopIteration:
-                        pass
-                matched, difference, completed, safety, forward, reverse = totals
-                root, a, b = key
-                rows.append(
-                    {
-                        "root_seed": root,
-                        "k": 2,
-                        "strategy_a": a,
-                        "strategy_b": b,
-                        "paired_mirrored_games": matched,
-                        "games_attempted": completed + safety,
-                        "games_completed": completed,
-                        "games_safety_limit": safety,
-                        "unpaired_forward_games": forward,
-                        "unpaired_reverse_games": reverse,
-                        "mean_p1_win_difference": difference / matched if matched else None,
-                    }
-                )
-                if len(rows) >= max(1, cfg.row_group_size):
+            max_bytes = _seat_bytes(cfg)
+            row_limit = max(1, min(cfg.row_group_size, max_bytes // 2048))
+            scratch_parent = cfg.io.temp_dir or units_root
+            Path(scratch_parent).mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(prefix="seat-merge-", dir=scratch_parent) as scratch:
+                paths = _reduce_mirror_fanin(paths, Path(scratch), max_bytes)
+                merged = _merge_mirror_rows(paths, max_bytes)
+                for key, totals in merged:
+                    matched, difference, completed, safety, forward, reverse = totals
+                    root, a, b = key
+                    rows.append(
+                        {
+                            "root_seed": root,
+                            "k": 2,
+                            "strategy_a": a,
+                            "strategy_b": b,
+                            "paired_mirrored_games": matched,
+                            "games_attempted": completed + safety,
+                            "games_completed": completed,
+                            "games_safety_limit": safety,
+                            "unpaired_forward_games": forward,
+                            "unpaired_reverse_games": reverse,
+                            "mean_p1_win_difference": difference / matched if matched else None,
+                        }
+                    )
+                    if len(rows) >= row_limit:
+                        writer.write_table(pa.Table.from_pylist(rows, schema=output_schema))
+                        rows.clear()
+                if rows:
                     writer.write_table(pa.Table.from_pylist(rows, schema=output_schema))
-                    rows.clear()
-            if rows:
-                writer.write_table(pa.Table.from_pylist(rows, schema=output_schema))
         finally:
             writer.close()
         guard.check_before_schedule(force=True)
 
     write_artifact_with_sidecar_atomic(output, sidecar, write)
     guard.check_before_schedule(force=True)
+
+
+def _frame_schema(columns: list[str]) -> pa.Schema:
+    """One explicit schema for empty and nonempty canonical seat products."""
+    integers = {
+        "root_seed",
+        "raw_wins",
+        "raw_exposures",
+        "raw_completed_exposures",
+        "raw_safety_limit_exposures",
+        "raw_losses",
+        "p1_wins",
+        "games_attempted",
+        "games_completed",
+        "games_safety_limit",
+        "paired_mirrored_games",
+        "unpaired_forward_games",
+        "unpaired_reverse_games",
+    }
+    floats = {
+        "chance_baseline",
+        "win_rate",
+        "win_rate_per_attempt",
+        "win_rate_given_completion",
+        "safety_limit_exposure_rate",
+        "seat_effect",
+        "standardized_seat_effect",
+        "exposure_weighted_baseline",
+        "exposure_weighted_seat_effect",
+        "p1_win_rate_per_attempt",
+        "p1_win_rate_given_completion",
+        "p1_effect_vs_chance",
+        "mean_p1_win_difference",
+    }
+    fields = []
+    for name in columns:
+        dtype: pa.DataType
+        if name in integers:
+            dtype = pa.int64()
+        elif name in floats:
+            dtype = pa.float64()
+        elif name in {"strategy", "strategy_a", "strategy_b"}:
+            dtype = STRATEGY_ID_ARROW_TYPE
+        elif name in {"k", "seat"}:
+            dtype = pa.int16()
+        elif name == "common_k_support":
+            dtype = pa.list_(pa.int16())
+        elif name == "effect_scope":
+            dtype = pa.string()
+        else:
+            raise ValueError(f"unregistered seat artifact field: {name}")
+        fields.append(pa.field(name, dtype))
+    return pa.schema(fields)
+
+
+def _seat_cell_outputs(cfg: AppConfig, k: int) -> list[Path]:
+    counts = cfg.seat_batch_counts_path(k)
+    return [
+        counts,
+        counts.with_suffix(".manifest.jsonl"),
+        cfg.seat_effects_by_k_path(k),
+        cfg.seat_population_by_k_path(k),
+    ]
+
+
+def _seat_cell_valid(cfg: AppConfig, k: int) -> bool:
+    outputs = _seat_cell_outputs(cfg, k)
+    return stage_is_up_to_date(
+        stage_done_path(outputs[0].parent, "seat_analysis_cell"),
+        inputs=[cfg.combined_rows_by_k(k)],
+        outputs=outputs,
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=outputs,
+    )
+
+
+def _build_seat_cell(task: tuple[AppConfig, int, bool]) -> int:
+    cfg, k, force = task
+    if not force and _seat_cell_valid(cfg, k):
+        return k
+    source = cfg.combined_rows_by_k(k)
+    root = _validate_source(source, k, max_bytes=_seat_bytes(cfg))
+    if root != cfg.sim.seed:
+        raise ValueError(
+            f"seat analysis requires configured-root support {cfg.sim.seed}; found {root}"
+        )
+    counts, _manifest, effects_path, population_path = _seat_cell_outputs(cfg, k)
+    _write_batch_counts(cfg, k, source, counts, force=force)
+    effects, population = _stream_within_k_frames(counts, k, _seat_bytes(cfg))
+    for frame, path, operation, groups, conditioning in (
+        (
+            effects,
+            effects_path,
+            "calculate_strategy_seat_effects",
+            ["root_seed", "k", "strategy", "seat"],
+            "all attempted player-game exposures conditional on root_seed, k, strategy, and seat",
+        ),
+        (
+            population,
+            population_path,
+            "calculate_population_seat_effects",
+            ["root_seed", "k", "seat"],
+            "all attempted player-game exposures conditional on root_seed, k, and seat",
+        ),
+    ):
+        _write_frame(
+            cfg,
+            frame,
+            path,
+            scope=ArtifactScope.BY_K,
+            operation=operation,
+            sources=[counts],
+            ks=[k],
+            grouping_keys=groups,
+            conditioning=conditioning,
+        )
+    outputs = _seat_cell_outputs(cfg, k)
+    write_stage_done(
+        stage_done_path(counts.parent, "seat_analysis_cell"),
+        inputs=[source],
+        outputs=outputs,
+        cfg=cfg,
+        stage="metrics",
+        sidecar_artifacts=outputs,
+    )
+    return k
+
+
+def _compact_frame(path: Path, max_bytes: int) -> pd.DataFrame:
+    """Admit a small roster summary; never use this reader for batch histories."""
+    parquet = pq.ParquetFile(path)
+    if parquet.metadata.num_rows * 256 > max_bytes:
+        raise MemoryError(f"seat summary {path} exceeds configured compact-frame budget")
+    tables = list(_tables(path, parquet.schema_arrow.names, max_bytes))
+    table = (
+        pa.concat_tables(tables)
+        if tables
+        else pa.Table.from_batches([], schema=parquet.schema_arrow)
+    )
+    return table.to_pandas()
 
 
 def _write_frame(
@@ -902,7 +1177,9 @@ def _write_frame(
         missing_cell_policy=missing_cell_policy,
     )
     write_parquet_artifact_atomic(
-        pa.Table.from_pandas(frame, preserve_index=False),
+        pa.Table.from_pandas(
+            frame, schema=_frame_schema(frame.columns.tolist()), preserve_index=False
+        ),
         path,
         sidecar=sidecar,
         codec=cfg.parquet_codec,
@@ -913,16 +1190,12 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
     """Build within-k seat effects and clearly labeled secondary diagnostics."""
 
     ks = sorted({int(k) for k in cfg.sim.n_players_list})
+    if not ks:
+        raise ValueError("seat analysis requires at least one configured k")
     sources = {k: cfg.combined_rows_by_k(k) for k in ks}
     missing = [path for path in sources.values() if not path.exists()]
     if missing:
         raise FileNotFoundError(f"canonical per-k seat inputs are missing: {missing}")
-    roots = {_validate_source(path, k) for k, path in sources.items()}
-    if roots != {int(cfg.sim.seed)}:
-        raise ValueError(
-            "seat analysis requires identical configured-root support; "
-            f"expected [{cfg.sim.seed}], found {sorted(roots)}"
-        )
     artifacts = SeatAnalysisArtifacts(
         batch_counts=tuple(cfg.seat_batch_counts_path(k) for k in ks),
         by_k=tuple(cfg.seat_effects_by_k_path(k) for k in ks),
@@ -970,40 +1243,26 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
     ):
         return artifacts
 
+    pending = [(cfg, k, force) for k in ks if force or not _seat_cell_valid(cfg, k)]
+    if pending:
+        policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
+        workers = min(policy.process_workers, len(pending))
+        for _k in process_map(
+            _build_seat_cell,
+            pending,
+            n_jobs=workers,
+            window=workers * cfg.resources.max_in_flight_per_worker,
+            mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+            memory_guard=make_process_tree_memory_guard(cfg.resources),
+        ):
+            pass
     by_k: dict[int, pd.DataFrame] = {}
     population_by_k: dict[int, pd.DataFrame] = {}
-    for k, count_path, effect_path, population_path in zip(
-        ks, artifacts.batch_counts, artifacts.by_k, artifacts.population_by_k, strict=True
-    ):
-        _write_batch_counts(cfg, k, sources[k], count_path)
-        counts = pq.read_table(count_path).to_pandas()
-        effects, population = _within_k_frames(counts, k)
-        by_k[k] = effects
-        population_by_k[k] = population
-        _write_frame(
-            cfg,
-            effects,
-            effect_path,
-            scope=ArtifactScope.BY_K,
-            operation="calculate_strategy_seat_effects",
-            sources=[count_path],
-            ks=[k],
-            grouping_keys=["root_seed", "k", "strategy", "seat"],
-            conditioning=(
-                "all attempted player-game exposures conditional on root_seed, k, strategy, and seat"
-            ),
-        )
-        _write_frame(
-            cfg,
-            population,
-            population_path,
-            scope=ArtifactScope.BY_K,
-            operation="calculate_population_seat_effects",
-            sources=[count_path],
-            ks=[k],
-            grouping_keys=["root_seed", "k", "seat"],
-            conditioning="all attempted player-game exposures conditional on root_seed, k, and seat",
-        )
+    for k in ks:
+        effects = _compact_frame(cfg.seat_effects_by_k_path(k), _seat_bytes(cfg))
+        # Cross-k diagnostics use only seats common to every k.
+        by_k[k] = effects.loc[effects["seat"] <= min(ks)].copy()
+        population_by_k[k] = _compact_frame(cfg.seat_population_by_k_path(k), _seat_bytes(cfg))
 
     standardized, mixture = _standardized_frames(cfg, by_k, population_by_k, ks)
     weights, operation, k_method = _declared_weights(cfg, ks)
@@ -1040,7 +1299,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             "root_seed, effect_scope, strategy, and seat"
         ),
     )
-    selfplay = _game_diagnostics(sources)
+    selfplay = _game_diagnostics(sources, max_bytes=_seat_bytes(cfg))
     _write_frame(
         cfg,
         selfplay,

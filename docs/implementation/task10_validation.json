@@ -1,0 +1,771 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "10",
+  "status": "complete",
+  "date": "2026-10-07",
+  "collected_utc": "2026-10-07T21:13:35.085887+00:00",
+  "workspace": {
+    "commit": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+    "state": "development_dirty",
+    "starting_inventory": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\start_inventory.json",
+      "sha256": "2f9d6d4c05a192595f9a29de32a2c4fae4eae9d34475c099d8ffc83db769c928",
+      "bytes": 61053
+    },
+    "starting_files": 500,
+    "no_starting_files_deleted": true,
+    "no_working_repository_commit_or_reset": true,
+    "changed_existing_files": [
+      "docs/codex_context/analysis_pipeline_map.md",
+      "docs/codex_context/context_prompt.md",
+      "docs/codex_context/metadata.md",
+      "docs/codex_context/testing_and_review_map.md",
+      "docs/data_artifacts.md",
+      "scripts/benchmark_outcome_precision.py",
+      "scripts/benchmark_task1b_telemetry.py",
+      "src/farkle/analysis/ingest.py",
+      "src/farkle/analysis/outcome_publication.py",
+      "src/farkle/analysis/stage_registry.py",
+      "src/farkle/orchestration/run_contexts.py",
+      "src/farkle/utils/arrow_batches.py",
+      "src/farkle/utils/parallel.py",
+      "src/farkle/utils/release_identity.py",
+      "tests/helpers/raw_simulation_oracle.py",
+      "tests/helpers/simulation_to_report_oracle.py",
+      "tests/helpers/task7_fixture.py",
+      "tests/unit/analysis/test_all_player_metrics.py",
+      "tests/unit/analysis/test_analytics_run_all.py",
+      "tests/unit/analysis/test_h2h_authorization.py",
+      "tests/unit/analysis/test_h2h_conclusions.py",
+      "tests/unit/analysis/test_parameter_responses.py",
+      "tests/unit/analysis/test_rng_diagnostics_branches.py",
+      "tests/unit/analysis/test_root_stability.py",
+      "tests/unit/analysis/test_structure_reporting.py",
+      "tests/unit/analysis/test_trueskill_screening.py",
+      "tests/unit/orchestration/test_authenticated_lifecycle_migration.py",
+      "tests/unit/utils/test_arrow_batches.py",
+      "tests/unit/utils/test_os_memory.py"
+    ],
+    "new_implementation_files": [
+      "docs/implementation/task10_capacity.json",
+      "docs/implementation/task10_operations.md",
+      "docs/implementation/task10_report.md",
+      "docs/implementation/task10_validation.json",
+      "scripts/benchmark_task10_added_costs.py",
+      "scripts/task10_capacity_refresh.py",
+      "tests/integration/test_windows_launcher_qualification.py",
+      "tests/unit/analysis/test_ingest_coalescing.py"
+    ]
+  },
+  "snapshots": [
+    {
+      "record": {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\final_snapshot.json",
+        "sha256": "62921ad336c70fb4f4e190ec4bf494a12e4b685223c8a1735d8e53f7dde0a99b",
+        "bytes": 58537
+      },
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-release-qualification-ctcl0mel",
+      "commit": "4149d2560f14dbc199c846ca7512e5e82447b1c1",
+      "clean_after_validation": true,
+      "runtime_sources_match_final_workspace": true,
+      "test_files_differing_from_final_workspace": [
+        "tests/helpers/simulation_to_report_oracle.py",
+        "tests/integration/test_windows_launcher_qualification.py",
+        "tests/unit/analysis/test_analytics_run_all.py",
+        "tests/unit/orchestration/test_authenticated_lifecycle_migration.py"
+      ]
+    },
+    {
+      "record": {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\unit_snapshot.json",
+        "sha256": "bbbd26876c052126c36863d4281dac2ce44194bede616071e88c471bad424c55",
+        "bytes": 58784
+      },
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-unit-qualification-0oc94ljo",
+      "commit": "6e326c8adaba3657efcbf0d5734535f946acbb59",
+      "clean_after_validation": true,
+      "runtime_sources_match_final_workspace": true,
+      "test_files_differing_from_final_workspace": [
+        "tests/helpers/simulation_to_report_oracle.py",
+        "tests/integration/test_windows_launcher_qualification.py",
+        "tests/unit/orchestration/test_authenticated_lifecycle_migration.py"
+      ]
+    },
+    {
+      "record": {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\launcher_snapshot.json",
+        "sha256": "2f1e79eab4a18aa8062a7f01672b7cae99212f5d71a8ff2596aca63ee2dc15c7",
+        "bytes": 58788
+      },
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-launcher-qualification-_e3yy7cw",
+      "commit": "7b5659fc8847bddeeec8c39494f1a7bb9c53aba8",
+      "clean_after_validation": true,
+      "runtime_sources_match_final_workspace": true,
+      "test_files_differing_from_final_workspace": [
+        "tests/unit/orchestration/test_authenticated_lifecycle_migration.py"
+      ]
+    },
+    {
+      "record": {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\operations_snapshot.json",
+        "sha256": "7100147e6fb2d9768a0eea1bbb83936e7abcb31b57db1cacef3fcea7a5ab9f73",
+        "bytes": 58790
+      },
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-operations-qualification-uar5d9uu",
+      "commit": "781ce7609b4e84aaa87cfebeacb72da411643a9f",
+      "clean_after_validation": true,
+      "runtime_sources_match_final_workspace": true,
+      "test_files_differing_from_final_workspace": [
+        "tests/helpers/simulation_to_report_oracle.py",
+        "tests/integration/test_windows_launcher_qualification.py",
+        "tests/unit/orchestration/test_authenticated_lifecycle_migration.py"
+      ]
+    },
+    {
+      "record": {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\followup_snapshot.json",
+        "sha256": "3f8c340ee1fb99141baff62565e60e04295230547561b02924b8f8a1728af5c1",
+        "bytes": 58783
+      },
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-contract-followup-gzca7ebo",
+      "commit": "8fb8f4101ab82175fcbae9117ea305699a0e7254",
+      "clean_after_validation": true,
+      "runtime_sources_match_final_workspace": true,
+      "test_files_differing_from_final_workspace": []
+    }
+  ],
+  "source_equivalence": {
+    "python_source_files": 100,
+    "all_runtime_sources_match_snapshots": true,
+    "final_documentation_updated_after_execution_snapshots": true
+  },
+  "production_config": {
+    "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\configs\\farkle_mega_config.yaml",
+    "sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+    "bytes": 6366,
+    "unchanged_from_task10_start": true
+  },
+  "implementation": {
+    "ingest_physical_layout_version": 3,
+    "ingest_cache_key_version": 4,
+    "shared_identity_binds_layout": true,
+    "statistical_methods_changed": false,
+    "scientific_targets_changed": false,
+    "resource_limits_changed": false,
+    "inherited_terminology_findings_resolved": 4
+  },
+  "functional_acceptance": {
+    "unique_collected_cases": 1584,
+    "passed": 1584,
+    "skipped": 0,
+    "failed": 0,
+    "coverage_set_matches_collection": true,
+    "collection": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\collection.json",
+      "sha256": "9c6d219c47f618943c9d736575138ba86f683005ad9d5f847f7ad17010d742e4",
+      "bytes": 174212
+    },
+    "accepted_nodes": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\accepted_test_nodes.json",
+      "sha256": "3050c168dff521527fd353e50a2332d01e1dabec01f3d74945e4cb96340f1419",
+      "bytes": 186476
+    },
+    "integration_and_top_level_statistics": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\full-final.xml",
+      "sha256": "783313942c6e1e6f0861fc4302538021f952a9658081115f5b832dc63c9a5c06",
+      "bytes": 15591,
+      "accepted_cases": 55,
+      "passed": 55,
+      "skipped": 0,
+      "test_seconds": 1849.4530000000002,
+      "properties": [
+        {
+          "test": "test_raw_simulation_to_authenticated_report_via_normal_orchestration",
+          "properties": {
+            "raw_simulation_to_report_runtime_seconds": "1066.585",
+            "required_preflight_runtime_seconds": "374.588",
+            "total_runtime_ceiling_seconds": "3840"
+          }
+        }
+      ]
+    },
+    "units": {
+      "accepted_cases": 1528,
+      "partitions": [
+        {
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\unit-qualified.xml",
+          "sha256": "1308ade9d4f908cee1d6d8ce1d99af913b69ee1f1f6fc3e5b87c70ec36d0513f",
+          "bytes": 254381,
+          "accepted_cases": 1474,
+          "passed": 1474,
+          "skipped": 0,
+          "test_seconds": 1026.439,
+          "properties": [
+            {
+              "test": "test_production_high_k_ingest_footer_is_admitted_without_row_loss",
+              "properties": {
+                "synthetic_games": "1849000",
+                "row_groups": "205",
+                "footer_bytes": "3474776",
+                "largest_input_bytes": "197864"
+              }
+            },
+            {
+              "test": "test_high_k_bounded_source_workers_and_resume",
+              "properties": {
+                "source_budget_bytes": "2097152",
+                "fixture_games": "48",
+                "fixture_k": "12",
+                "source_units": "8",
+                "max_fixed_record_bytes": "16848",
+                "process_tree_peak_rss_bytes": "775114752",
+                "scratch_bytes": "442431",
+                "runtime_seconds": "4.615"
+              }
+            }
+          ]
+        },
+        {
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\environment-followup.xml",
+          "sha256": "f207b5818ac2b908ada4d19467e6bc80c19b7f4e0f94a90ad11e8d1afa82869b",
+          "bytes": 5303,
+          "accepted_cases": 33,
+          "passed": 33,
+          "skipped": 0,
+          "test_seconds": 76.158,
+          "properties": []
+        },
+        {
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\contract-followup.xml",
+          "sha256": "615ed49c86fc8cc5a87bdb66077d0a7d7802d39755aad9f424c5a52709b9e75a",
+          "bytes": 3449,
+          "accepted_cases": 21,
+          "passed": 21,
+          "skipped": 0,
+          "test_seconds": 5.812,
+          "properties": []
+        }
+      ],
+      "environment_setup": {
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "pytest",
+          "tests/unit/scripts/test_benchmark_task4a_h2h_execution.py",
+          "tests/unit/scripts/test_benchmark_task5a_production_capacity.py",
+          "tests/unit/utils/test_authenticated_contract.py",
+          "--junitxml=S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\environment-followup.xml",
+          "--basetemp=C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-isolated-unit-d6yzpruz"
+        ],
+        "exit_code": 0,
+        "seconds": 80.3647639999981,
+        "base_temp_outside_git": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-isolated-unit-d6yzpruz",
+        "historical_dependency": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\results_efficiency_updates_4D_fast_seed_pair_54_55",
+        "historical_health_hash_mtime_preserved": true,
+        "historical_health_identity": [
+          "15fd32baf6b640eada12fa3320925223f4e0b05f0dcf625c7c04c753ce3b8d20",
+          1787297976059254700
+        ]
+      },
+      "contract_fixture_followup": {
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "pytest",
+          "tests/unit/orchestration/test_authenticated_lifecycle_migration.py",
+          "tests/unit/analysis/test_analytics_run_all.py",
+          "--junitxml=S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\contract-followup.xml",
+          "--basetemp=C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-contract-tmp-w2628cut"
+        ],
+        "exit_code": 0,
+        "seconds": 10.547430500009796
+      },
+      "failed_broad_cases_replaced_by_complete_module_followups": true
+    },
+    "windows": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified.xml",
+      "sha256": "eaf252cb139f568d8ebfb8fcf647a82b1485a9e2c4403346272f532cb8869b0b",
+      "bytes": 737,
+      "accepted_cases": 1,
+      "passed": 1,
+      "skipped": 0,
+      "test_seconds": 2151.341,
+      "properties": [
+        {
+          "test": "test_windows_launcher_cross_volume_cap_stop_and_resume",
+          "properties": {
+            "qualification_evidence": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\task10_launcher_evidence.json",
+            "qualification_runtime_seconds": "2151.137"
+          }
+        }
+      ]
+    },
+    "raw_oracle": {
+      "test": "test_raw_simulation_to_authenticated_report_via_normal_orchestration",
+      "properties": {
+        "raw_simulation_to_report_runtime_seconds": "1066.585",
+        "required_preflight_runtime_seconds": "374.588",
+        "total_runtime_ceiling_seconds": "3840"
+      }
+    },
+    "partition_reason": "Combined/broad processes hit fixture 768 MiB worker thresholds, an obsolete unsealed control, an absent historical-data dependency and a temporary directory inside Git. Fresh-process module followups preserve limits, supply the declared read-only historical dependency and use a non-Git temp directory; revised mutation tests use approved authenticated producers. Failed broad commands are not claimed as passed suites."
+  },
+  "static_checks": {
+    "ruff": {
+      "command": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "src",
+        "tests",
+        "scripts"
+      ],
+      "exit_code": 0,
+      "seconds": 0.23761490001925267,
+      "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\ruff-post-fixture.log",
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "black": {
+      "command": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+        "-m",
+        "black",
+        "--check",
+        "src",
+        "tests",
+        "scripts"
+      ],
+      "exit_code": 0,
+      "seconds": 4.718687900021905,
+      "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\black-post-fixture.log",
+      "log_sha256": "9df71407f6e7045f436ae9787d2652d7271509f3271942c4370f58563152b0ce"
+    },
+    "mypy": {
+      "command": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+        "-m",
+        "mypy",
+        "src"
+      ],
+      "exit_code": 0,
+      "seconds": 55.80233710000175,
+      "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\mypy-post-fixture.log",
+      "log_sha256": "c91889240cf6847b6794f71ad5e9b20e81b7f026ae48fdd625d07cf45173df84"
+    },
+    "pyright": {
+      "command": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pyright"
+      ],
+      "exit_code": 0,
+      "seconds": 25.251094900013413,
+      "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\pyright-post-fixture.log",
+      "log_sha256": "8931c7e38c5c006680682fd939428f286d379eb642f40d75edebd947d728bf99"
+    },
+    "terminology": {
+      "command": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+        "scripts/check_terminology.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.8517714999907184,
+      "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\terminology-post-fixture.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "standalone_structural_release_check": {
+    "command": [
+      "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+      "scripts/check_structure_release.py",
+      "--artifact-root",
+      "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11\\analysis",
+      "--artifact-root",
+      "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22\\analysis",
+      "--artifact-root",
+      "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\seed_pair_analysis"
+    ],
+    "exit_code": 0,
+    "seconds": 23.48112770001171,
+    "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\structure-accepted.log",
+    "log_sha256": "493fa958820556025d6dd0a30fa27a083efddbd0539afa1a26ef31d923725018"
+  },
+  "windows_launcher": {
+    "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\task10_launcher_evidence.json",
+    "sha256": "ca8e92fb523ad4a2fa82d74d5580a3adf6d6eccb7336e76ebc85edf044f0d44b",
+    "bytes": 123198,
+    "phases": [
+      {
+        "phase": "cap_stop",
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "farkle",
+          "--config",
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\tiny_oracle.yaml",
+          "two-seed-pipeline"
+        ],
+        "exit_code": 3,
+        "seconds": 991.2653048038483,
+        "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\cap_stop.log",
+        "log_sha256": "4f0c2fb1995fd9ce12ac87e3843ba86326563e76742daa6c699514c758d10a77"
+      },
+      {
+        "phase": "authorized_resume",
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "farkle",
+          "--config",
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\tiny_oracle.yaml",
+          "--h2h-authorize",
+          "57379fd91cab57e0f1359b28b32f89a4ced4eea04557f7efb78903466e89a6ce:24",
+          "two-seed-pipeline"
+        ],
+        "exit_code": 0,
+        "seconds": 381.2903480529785,
+        "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\authorized_resume.log",
+        "log_sha256": "909e2ebc3306e5168cbbbc60c29e7bb68e3b21708acd6d8fe4df8a508598a377"
+      },
+      {
+        "phase": "no_force_replay",
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "farkle",
+          "--config",
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\tiny_oracle.yaml",
+          "two-seed-pipeline"
+        ],
+        "exit_code": 0,
+        "seconds": 365.79559206962585,
+        "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\no_force_replay.log",
+        "log_sha256": "84366a13c63da6943b3856e83a5982e1596f17ba47f9d81061a700ad9134fd62"
+      },
+      {
+        "phase": "missing_markdown_resume",
+        "command": [
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+          "-m",
+          "farkle",
+          "--config",
+          "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\tiny_oracle.yaml",
+          "two-seed-pipeline"
+        ],
+        "exit_code": 0,
+        "seconds": 379.9687180519104,
+        "log": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\missing_markdown_resume.log",
+        "log_sha256": "e7018169a15b9111b568a11221d94e3463b4bc67ba082da94dd801f6e803f23d"
+      }
+    ],
+    "runtime_seconds": 2151.1368551254272,
+    "results_root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22",
+    "scratch": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-scratch-g7jk2sng",
+    "storage_volumes": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\storage-volumes.json",
+      "sha256": "d27b0b0fc296b84f286d3fe05c302caad6796bbb4c72cb6a13c9191654cb85d3",
+      "bytes": 507
+    },
+    "preserved_root_parquets": 3252,
+    "preserved_recovery_parquets": 3288,
+    "no_force_stable_files": 8964,
+    "durable_bytes": 141674165,
+    "scratch_bytes": 0,
+    "health": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\pipeline_health.json",
+      "sha256": "2ab802f8ab7cea1c7d5d2335630e523df7930d4636c0832e17797efe50a1b6b1",
+      "bytes": 108836
+    },
+    "final_audit": {
+      "accepted_release_identity": [
+        3,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "artifact_roots": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11",
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22",
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\seed_pair_analysis"
+      ],
+      "authentication_telemetry": {
+        "active_config_opens": 12,
+        "artifact_bytes_hashed": 1399104139,
+        "artifact_opens": 30665,
+        "completion_bytes_hashed": 3103416,
+        "completion_opens": 866,
+        "directory_traversals": 6,
+        "graph_audit_invocations": 1,
+        "graph_root_traversals": 3,
+        "manifest_bytes_hashed": 23167763,
+        "manifest_opens": 1103,
+        "metadata_validations": 47167,
+        "other_bytes_hashed": 3500301,
+        "other_opens": 31,
+        "run_context_bytes_hashed": 51320,
+        "run_context_opens": 10,
+        "schema_validations": 15711,
+        "sha256_calls": 73918,
+        "sidecar_bytes_hashed": 478165052,
+        "sidecar_opens": 111641,
+        "snapshot_builds": 3,
+        "snapshot_hits": 5,
+        "snapshot_invalidations": 0,
+        "snapshot_rejected_uses": 0,
+        "stage_state_resolutions": 681,
+        "total_bytes_hashed": 1907091991,
+        "total_opens": 144328
+      },
+      "code_identity": {
+        "commit": "7b5659fc8847bddeeec8c39494f1a7bb9c53aba8",
+        "dirty_fingerprint_sha256": null,
+        "policy": "release_clean",
+        "state": "clean"
+      },
+      "failures": [],
+      "internal_roots": [
+        {
+          "artifacts": 1895,
+          "completion_lookups": 411,
+          "completions": 11,
+          "files": 4425,
+          "label": "root_11",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11",
+          "sidecars": 1895
+        },
+        {
+          "artifacts": 1895,
+          "completion_lookups": 411,
+          "completions": 11,
+          "files": 4425,
+          "label": "root_22",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22",
+          "sidecars": 1895
+        },
+        {
+          "artifacts": 48,
+          "completion_lookups": 50,
+          "completions": 9,
+          "files": 113,
+          "label": "pair",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\seed_pair_analysis",
+          "sidecars": 48
+        }
+      ],
+      "profile_release_eligible": false,
+      "release_eligible": false,
+      "run_contexts": {
+        "pair": {
+          "identity_sha256": "1baece5e26747e185f6bbab32e40e807f3d0de27cbafca26e9e5d88b8b479cd7",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\run_context.json",
+          "sha256": "e9901fa57e58f6c9854ea3f0af9b93d1e6ff534c177a47c68ec7c597ad47c7f6"
+        },
+        "root_11": {
+          "identity_sha256": "e4195ddecd68a7962207148b8bea0d85562616ce34d450cc7c3162805cf71873",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11\\run_context.json",
+          "sha256": "785b87e38613bf539ed2f9a3ccc6b5e0df242471303aa518a9186614b60ca78b"
+        },
+        "root_22": {
+          "identity_sha256": "3880c979a0e27ffb5873754aaf878c5131045f65a84aeb7e644c53a819f69bf5",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22\\run_context.json",
+          "sha256": "250f3dba53088886ab228ecec44ba1b89ac09ab75223fff10a9632ae5ea0c1dc"
+        }
+      },
+      "status": "passed",
+      "top_level_invocations": 1
+    },
+    "actual_strict_windows_boundary_verified_by_test": true,
+    "last_recovery_command_resource_telemetry": {
+      "resource_limiter_mode": "enabled",
+      "os_memory_boundary": {
+        "backend": "windows_job",
+        "boundary_path": null,
+        "contract_version": 3,
+        "detail": "aggregate JobMemoryLimit with kill-on-job-close",
+        "effective_hard_limit_mb": 12288,
+        "enclosing_hard_limit_mb": null,
+        "enclosing_job": true,
+        "enforced": true,
+        "fallback_used": false,
+        "minimum_system_available_memory_mb": 8192,
+        "parent_process_memory_mb": 512,
+        "platform": "windows",
+        "process_tree_warning_threshold_mb": 8192,
+        "requested_hard_limit_mb": 12288,
+        "scheduler_memory_budget_mb": 8192,
+        "strict_required": true
+      },
+      "peak_process_tree_rss_bytes": 718221312,
+      "peak_aggregate_memory_bytes": 527339520,
+      "aggregate_memory_hard_limit_bytes": 12884901888,
+      "windows_job_committed_memory_peak_bytes": null,
+      "rss_warning_threshold_bytes": 8589934592,
+      "warning_crossings": 0,
+      "monitoring_error": null,
+      "temp_dir": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-scratch-g7jk2sng"
+    },
+    "guide_products": [
+      {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.json",
+        "sha256": "52fa86b1ad7ce729b211dda0cfcb53bd16e1a394ae7b0758b762306d85b92ec7",
+        "bytes": 8083212
+      },
+      {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\windows-qualified\\test_windows_launcher_cross_vo0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.md",
+        "sha256": "8996aaaa617b58fc2a6711459fd9c9ce5ab60e7df865fc231bcdaeb99c4e5030",
+        "bytes": 2760594
+      }
+    ],
+    "required_preflights": 2,
+    "exhaustive_diagnostics": "omitted_by_design; required preflight and lightweight monitoring retained",
+    "normal_game_rules": true,
+    "profile": "integration; not production/release eligible"
+  },
+  "measurements": {
+    "dense-precision-final.json": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\dense-precision-final.json",
+      "sha256": "efbfc75f5831d45673c78763563664250a0f325a78c6d7da24dcd55f2bafdcb6",
+      "bytes": 988
+    },
+    "phase-costs-k2-final.json": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\phase-costs-k2-final.json",
+      "sha256": "f93f7ad6cecb042efd5f5da2fea92aba7216d966834746bc75f5a2cac2789af3",
+      "bytes": 3296
+    },
+    "phase-costs-k12-final.json": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\phase-costs-k12-final.json",
+      "sha256": "a1c66339c62b000e5830404874d9fcb7021ecb5911e5503ccb1d513bc972ff4f",
+      "bytes": 3296
+    }
+  },
+  "capacity": {
+    "record": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\docs\\implementation\\task10_capacity.json",
+      "sha256": "d65061eedc0fe080fa7ed2792cb71b4be9c78ba97d9cbb979644189ad67ec050",
+      "bytes": 21011
+    },
+    "execution_and_no_force_reuse": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\capacity-execution.json",
+      "sha256": "7aa5c9de4b1f78be5267891d25536f8a57537f0fd49d4ddb343541bdd8ff3c92",
+      "bytes": 2345
+    },
+    "scenarios": [
+      {
+        "name": "lower_cost",
+        "assumptions": {
+          "frequency_bins_per_final_cell": 30,
+          "mixed_phase_source_fraction": 0.0,
+          "merge_generation_factor": 1.0,
+          "host_io_factor": 0.75,
+          "durable_compression_support_factor": 0.75,
+          "additional_monitor_parameter_guide_audit_hours": 1.0
+        },
+        "added": {
+          "outcomes_hours": 60.64780550103578,
+          "behavior_hours": 26.490744348148773,
+          "precision_hours": 24.224609401335798,
+          "added_durable_bytes": 28862938592.29503,
+          "maximum_primary_resampled_cells": 2394240,
+          "precision_raw_replicate_value_bytes": 38307840000
+        },
+        "legacy_base_hours": 90.7667907953841,
+        "added_hours_after_factors": 84.52236943789026,
+        "total_hours": 175.28916023327434,
+        "total_days": 7.303715009719764,
+        "total_durable_bytes": 214920732264.22128
+      },
+      {
+        "name": "central_serial_coefficients",
+        "assumptions": {
+          "frequency_bins_per_final_cell": 150,
+          "mixed_phase_source_fraction": 0.5,
+          "merge_generation_factor": 1.5,
+          "host_io_factor": 1.0,
+          "durable_compression_support_factor": 1.0,
+          "additional_monitor_parameter_guide_audit_hours": 3.0
+        },
+        "added": {
+          "outcomes_hours": 73.7267089851036,
+          "behavior_hours": 31.496921079084576,
+          "precision_hours": 24.224609401335798,
+          "added_durable_bytes": 73646175508.33984,
+          "maximum_primary_resampled_cells": 2394240,
+          "precision_raw_replicate_value_bytes": 38307840000
+        },
+        "legacy_base_hours": 127.29596134216122,
+        "added_hours_after_factors": 132.44823946552398,
+        "total_hours": 259.7442008076852,
+        "total_days": 10.822675033653551,
+        "total_durable_bytes": 325975504148.33984
+      },
+      {
+        "name": "high_cost",
+        "assumptions": {
+          "frequency_bins_per_final_cell": 500,
+          "mixed_phase_source_fraction": 1.0,
+          "merge_generation_factor": 2.0,
+          "host_io_factor": 2.0,
+          "durable_compression_support_factor": 2.0,
+          "additional_monitor_parameter_guide_audit_hours": 8.0
+        },
+        "added": {
+          "outcomes_hours": 86.94959058553985,
+          "behavior_hours": 36.503097810020385,
+          "precision_hours": 24.224609401335798,
+          "added_durable_bytes": 118536742899.09558,
+          "maximum_primary_resampled_cells": 2394240,
+          "precision_raw_replicate_value_bytes": 38307840000
+        },
+        "legacy_base_hours": 240.43651549870285,
+        "added_hours_after_factors": 303.35459559379206,
+        "total_hours": 543.7911110924949,
+        "total_days": 22.657962962187288,
+        "total_durable_bytes": 612883124198.1912
+      }
+    ],
+    "limitations": [
+      "Scenarios are not confidence intervals, guaranteed bounds or observed production timings.",
+      "No unmeasured parallel speedup or ingest-coalescing improvement is credited.",
+      "Legacy base is historical OneDrive evidence; new fixtures use local C: and concurrent validation can confound timings.",
+      "Final bin cardinality, compression, merge shrinkage and active conditional support remain unknown.",
+      "Precision assumes every primary cell can resample; actual sparse/degenerate support can lower work.",
+      "Monitor/parameter/guide/audit overhead is an explicit sensitivity allowance, not a measured production coefficient.",
+      "Retained canonical checkpoints count as durable storage. Disposable scratch and cross-volume bridges need additional peak headroom.",
+      "Storage estimates do not bound uncompressible data or arbitrarily broad empirical support."
+    ],
+    "operating_admission": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\operating-admission.json",
+      "sha256": "27918692b8a61680877e684ab8f32256994bd6bb963b0f7cf596919fba691624",
+      "bytes": 4072
+    },
+    "serialized_descriptor_planning_admission": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\descriptor-admission.json",
+      "sha256": "5fafdeccb97bf1a3a83821daf65cd8c72f428b0cc4e6b27198cdb5645ae0b54d",
+      "bytes": 2050
+    }
+  },
+  "development_evidence": {
+    "credited_as_final_acceptance": false,
+    "records": [
+      "data/task10/windows.xml",
+      "data/task10/windows-acceptance.xml",
+      "data/task10/windows-completion.xml",
+      "data/task10/unit-final.xml",
+      "data/task10/static-completion.json"
+    ],
+    "explanation": "Initial fixture batching, manifest glob, append-only CLI log comparison and stale reporting inventory were corrected. Dense pre-fix benchmark failed footer admission. Superseded runs were not credited; final evidence uses unchanged authenticated runtime source and current test contracts."
+  },
+  "known_limits": [
+    "Engineering cost scenarios are not calibrated confidence intervals or guaranteed bounds.",
+    "Sparse/degenerate interval support and RNG/causal interpretation limits retain the Task 0/5/8 contract.",
+    "Full source footers, empirical frequency support and serialized descriptors remain fail-closed execution admissions.",
+    "A finalized clean release checkout and any production plan authorization are subsequent user decisions."
+  ],
+  "production_executed": false,
+  "production_authorized": false,
+  "completion_boundary": "Task 10 validation and documentation; no full run, cap increase, commit of preserved work or automatic next task."
+}

@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "8",
+  "status": "complete",
+  "date": "2026-10-06",
+  "workspace": {
+    "commit": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+    "state": "development_dirty",
+    "starting_inventory": "data/task8-starting-inventory.json",
+    "starting_inventory_sha256": "512c84620d1b29e4a9e5372cb56dad334cc060f53e4cd3e2d538853ed6729e08",
+    "starting_files": 489,
+    "no_starting_files_deleted": true,
+    "no_working_repository_commit_or_reset": true,
+    "changed_existing_files": [
+      "docs/codex_context/analysis_pipeline_map.md",
+      "docs/codex_context/context_prompt.md",
+      "docs/codex_context/metadata.md",
+      "docs/codex_context/statistical_methods_map.md",
+      "docs/codex_context/testing_and_review_map.md",
+      "src/farkle/analysis/__init__.py",
+      "src/farkle/analysis/release_audit.py",
+      "src/farkle/analysis/structure_reporting.py",
+      "src/farkle/config.py",
+      "src/farkle/utils/release_identity.py",
+      "tests/helpers/simulation_to_report_oracle.py",
+      "tests/helpers/task7_fixture.py",
+      "tests/integration/test_simulation_to_report_oracle.py",
+      "tests/integration/test_structure_toy_oracle.py",
+      "tests/unit/analysis/test_structure_reporting.py"
+    ],
+    "new_implementation_files": [
+      "src/farkle/analysis/analysis_guide.py",
+      "src/farkle/analysis/guide_questions.py",
+      "tests/helpers/task8_fixture.py",
+      "tests/helpers/task8_oracle.py",
+      "tests/unit/analysis/test_analysis_guide.py",
+      "docs/implementation/task8_report.md",
+      "docs/implementation/task8_validation.json"
+    ]
+  },
+  "implementation": {
+    "analysis_guide_schema_version": 1,
+    "analysis_guide_method_version": 1,
+    "structure_report_contract_version": 9,
+    "metrics_cache_key_version": 6,
+    "hgb_cache_key_version": 2,
+    "reporting_registry_cache_key_version": 2,
+    "reporting_method_version": 2,
+    "production_targets_changed": false,
+    "new_statistical_analyses": false
+  },
+  "isolated_validation_snapshot": {
+    "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task8-final-x5uw_lcd",
+    "commit": "6b483974d388f7e66a6a028fba94d777f186e2a3",
+    "python": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe",
+    "clean_after_validation": true,
+    "python_version": "3.12.10",
+    "root_venv_junction": true
+  },
+  "source_equivalence": {
+    "python_source_files": 100,
+    "inventory_sha256": "1870c33178e78eed438ca9fcb7507ca05def8a067c2ddad8f812c906fdfcf5fd",
+    "workspace_matches_snapshot": true,
+    "test_source_files": 136,
+    "test_inventory_sha256": "78641e7a27348f1622c3992eb1f5b07f24ff6155119d2f75489acb8e06c08190",
+    "test_sources_match_snapshot": true,
+    "final_documentation_updated_after_snapshot": true
+  },
+  "production_config": {
+    "path": "configs/farkle_mega_config.yaml",
+    "sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+    "unchanged_from_task8_start": true
+  },
+  "validation_commands": {
+    "ruff": "python -m ruff check src tests scripts",
+    "mypy": "python -m mypy src",
+    "pyright": "python -m pyright src/farkle/analysis/analysis_guide.py src/farkle/analysis/guide_questions.py src/farkle/analysis/structure_reporting.py src/farkle/analysis/__init__.py src/farkle/analysis/release_audit.py src/farkle/config.py src/farkle/utils/release_identity.py",
+    "black": "python -m black --check src/farkle/analysis/__init__.py src/farkle/analysis/analysis_guide.py src/farkle/analysis/guide_questions.py src/farkle/analysis/release_audit.py src/farkle/analysis/structure_reporting.py src/farkle/config.py src/farkle/utils/release_identity.py tests/helpers/simulation_to_report_oracle.py tests/helpers/task7_fixture.py tests/helpers/task8_fixture.py tests/helpers/task8_oracle.py tests/integration/test_simulation_to_report_oracle.py tests/integration/test_structure_toy_oracle.py tests/unit/analysis/test_analysis_guide.py tests/unit/analysis/test_structure_reporting.py",
+    "focused": "python -m pytest -q tests/integration/test_structure_toy_oracle.py tests/unit/analysis/test_h2h_authorization.py tests/unit/analysis/test_hgb_feat.py tests/unit/analysis/test_metrics_wiring.py tests/unit/analysis/test_outcome_precision.py tests/unit/analysis/test_outcome_publication.py tests/unit/analysis/test_parameter_responses.py tests/unit/analysis/test_release_audit.py tests/unit/analysis/test_seat_behavior.py tests/unit/analysis/test_seat_behavior_workers.py tests/unit/analysis/test_stage_registry.py tests/unit/analysis/test_structure_reporting.py tests/unit/test_rng_contract.py tests/unit/analysis/test_analysis_guide.py --junitxml=(workspace)/data/task8-focused-completion.xml --basetemp=(snapshot)/data/task8-focused-tmp --maxfail=1",
+    "raw_oracle": "python -m pytest -q tests/integration/test_simulation_to_report_oracle.py --junitxml=(workspace)/data/task8-full-oracle-completion.xml --basetemp=(workspace)/data/task8-oracle-completion --maxfail=1",
+    "terminology": "python scripts/check_terminology.py",
+    "diff": "git diff --check"
+  },
+  "checks": {
+    "ruff_src_tests_scripts": "passed",
+    "mypy_all_100_source_files": "passed",
+    "pyright_seven_affected_runtime_modules": "passed",
+    "black_touched_new_python_files": {
+      "status": "passed",
+      "files": 15
+    },
+    "git_diff_check": "passed",
+    "terminology_gate": {
+      "status": "failed_inherited",
+      "exit_code": 1,
+      "file": "src/farkle/analysis/outcome_publication.py",
+      "lines": [
+        995,
+        1031,
+        1080,
+        1186
+      ],
+      "findings": 4,
+      "new_findings": 0,
+      "source_unchanged": true
+    }
+  },
+  "focused_acceptance": {
+    "path": "data\\task8-focused-completion.xml",
+    "sha256": "0226dae397062b0b0a5ae91760f2e150f527242e9931c668fb7b9e6268132260",
+    "suites": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "153",
+        "time": "451.359",
+        "timestamp": "2026-10-06T12:59:24.756822-06:00",
+        "hostname": "Isaac_Desktop"
+      }
+    ],
+    "test_properties": [
+      {
+        "test": "test_high_k_bounded_source_workers_and_resume",
+        "properties": {
+          "source_budget_bytes": "2097152",
+          "fixture_games": "48",
+          "fixture_k": "12",
+          "source_units": "8",
+          "max_fixed_record_bytes": "16848",
+          "process_tree_peak_rss_bytes": "744275968",
+          "scratch_bytes": "442430",
+          "runtime_seconds": "4.056"
+        }
+      }
+    ]
+  },
+  "full_raw_workflow_acceptance": {
+    "path": "data\\task8-full-oracle-completion.xml",
+    "sha256": "3ad659d6bdea3a991bd28e7036e85ebfe22b46a92b09dadd2f861ef880c430b2",
+    "suites": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "0",
+        "tests": "1",
+        "time": "986.980",
+        "timestamp": "2026-10-06T12:59:24.753697-06:00",
+        "hostname": "Isaac_Desktop"
+      }
+    ],
+    "test_properties": [
+      {
+        "test": "test_raw_simulation_to_authenticated_report_via_normal_orchestration",
+        "properties": {
+          "raw_simulation_to_report_runtime_seconds": "984.954",
+          "required_preflight_runtime_seconds": "358.576",
+          "total_runtime_ceiling_seconds": "3840"
+        }
+      }
+    ],
+    "producer_evidence": true,
+    "required_preflights_executed": 2,
+    "final_root_root_pair_audit": "passed",
+    "no_force_unchanged_output_replay": "passed",
+    "plan_specific_authorization_persisted_and_reused": true,
+    "known_bad_tree_access_guard": "passed",
+    "pytest_warning": "Inherited record_property/xunit2 compatibility warning"
+  },
+  "guide_products": {
+    "canonical_scope": "pair_cfg.scope_dir(reporting, ArtifactScope.DIAGNOSTICS)",
+    "evidence_scope": "fresh bounded raw-simulation fixture, not a production run",
+    "products": [
+      {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.json",
+        "sha256": "d9ef2ade004ff1f80931ef4d0110db15a4002edf1d3c2ea566d5c1e9a0f6e2ea",
+        "bytes": 9268913,
+        "sidecar_path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.json.sidecar.json",
+        "sidecar_sha256": "f7f0fa876db9ce89a79b7c66a5791180538983f80e8371b4c64740dc4760d6d4"
+      },
+      {
+        "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.md",
+        "sha256": "973117690ec34dbd91c8cff77bad0a819c586cb6ade4051db6d602f76f297f4c",
+        "bytes": 2915711,
+        "sidecar_path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.md.sidecar.json",
+        "sidecar_sha256": "c646f11f2ac55690525a844605c4e0cdca6324271d6782759be3166c06e66fb7"
+      }
+    ],
+    "reporting_completion_path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\structure_reporting.done.json",
+    "reporting_completion_sha256": "64f59bcd2f21e166528116ca76d09f940797b84fdfd8fb5f505dfc6b674de8fc",
+    "json_markdown_consistent": true,
+    "markdown_link_validation": {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis\\08_reporting\\diagnostics\\analysis_guide.md",
+      "sha256": "973117690ec34dbd91c8cff77bad0a819c586cb6ade4051db6d602f76f297f4c",
+      "parsed_markdown_file_links": 1430,
+      "all_targets_exist": true,
+      "space_containing_targets": 1430,
+      "parser": "mistune AST; URL-unescaped before filesystem validation"
+    },
+    "workbook_groups": 10,
+    "workbook_targets": 62,
+    "method_note_resolution_records": 9,
+    "actual_source_products": 128,
+    "question_coverage": {
+      "available": 55,
+      "partial": 3,
+      "deferred": 3,
+      "excluded": 1
+    }
+  },
+  "final_health": {
+    "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\pipeline_health.json",
+    "sha256": "f6c30b5eef1c41144a15bc0c25348e44258da48e68da4f0e8dcd8d11d81289e0",
+    "status": "complete_success",
+    "release_audit": {
+      "accepted_release_identity": [
+        3,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "artifact_roots": [
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11",
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22",
+        "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis"
+      ],
+      "authentication_telemetry": {
+        "active_config_opens": 12,
+        "artifact_bytes_hashed": 1089929928,
+        "artifact_opens": 23847,
+        "completion_bytes_hashed": 3105354,
+        "completion_opens": 867,
+        "directory_traversals": 6,
+        "graph_audit_invocations": 1,
+        "graph_root_traversals": 3,
+        "manifest_bytes_hashed": 3936971,
+        "manifest_opens": 1035,
+        "metadata_validations": 27535,
+        "other_bytes_hashed": 484368,
+        "other_opens": 26,
+        "run_context_bytes_hashed": 51176,
+        "run_context_opens": 10,
+        "schema_validations": 9071,
+        "sha256_calls": 48077,
+        "sidecar_bytes_hashed": 218876076,
+        "sidecar_opens": 63144,
+        "snapshot_builds": 3,
+        "snapshot_hits": 5,
+        "snapshot_invalidations": 0,
+        "snapshot_rejected_uses": 0,
+        "stage_state_resolutions": 681,
+        "total_bytes_hashed": 1316383873,
+        "total_opens": 88941
+      },
+      "code_identity": {
+        "commit": "6b483974d388f7e66a6a028fba94d777f186e2a3",
+        "dirty_fingerprint_sha256": null,
+        "policy": "development_dirty",
+        "state": "clean"
+      },
+      "failures": [],
+      "internal_roots": [
+        {
+          "artifacts": 477,
+          "completion_lookups": 411,
+          "completions": 11,
+          "files": 1367,
+          "label": "root_11",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11",
+          "sidecars": 477
+        },
+        {
+          "artifacts": 477,
+          "completion_lookups": 411,
+          "completions": 11,
+          "files": 1367,
+          "label": "root_22",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22",
+          "sidecars": 477
+        },
+        {
+          "artifacts": 48,
+          "completion_lookups": 50,
+          "completions": 9,
+          "files": 113,
+          "label": "pair",
+          "root": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\seed_pair_analysis",
+          "sidecars": 48
+        }
+      ],
+      "profile_release_eligible": true,
+      "release_eligible": false,
+      "run_contexts": {
+        "pair": {
+          "identity_sha256": "da4e21c6438ab0278ca7a979dd48f7275e28ecc95d0ba76929c366783982f4e3",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\run_context.json",
+          "sha256": "f54b3884c91e9912b2db2e9824b62a6594b64999463c0f5fdea85582e1d9134d"
+        },
+        "root_11": {
+          "identity_sha256": "98d770a7b2f6719810eb17257cfd9df7e8baa30787c7489023c195a6f08c3325",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_11\\run_context.json",
+          "sha256": "857d4efe0c6e1697c077b749ccc270ff67943be176cf626911d0e90dbc296866"
+        },
+        "root_22": {
+          "identity_sha256": "cfacfa624b93687900f2a9b28c5babb4eb4a10bcab19451e2a15ef69ae6eb126",
+          "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task8-oracle-completion\\test_raw_simulation_to_authent0\\oracle_results_seed_pair_11_22\\oracle_results_seed_22\\run_context.json",
+          "sha256": "bbb97fbcaa1fd82669492ad902a66043ce757fd7883887eac6e23366eaadbc9a"
+        }
+      },
+      "status": "passed",
+      "top_level_invocations": 1
+    }
+  },
+  "synthetic_fixture_boundary": "tests/helpers/task8_fixture.py is rendering-only evidence; task8_oracle.py reconciles actual raw-workflow producer values and authentication.",
+  "development_findings_resolved": [
+    "Normalize JSON types before valid-child comparison and rendering.",
+    "Sort renderer keys/columns after persisted JSON canonicalization.",
+    "Deduplicate reporting source inventory.",
+    "Publish the structural toy replacement manifest atomically with a matching synthetic sidecar.",
+    "Resolve isolated static checks through the root venv.",
+    "Use valid angle-wrapped Markdown targets for Windows paths with spaces.",
+    "Retain full published matched-support counts/folds/importance alongside bounded parameter excerpts.",
+    "Represent published nonfinite source values with explicit signed/type tokens, preserving null/status distinctions.",
+    "Correct the guide/source oracle to compare content_sha256 to file bytes and to compare complete authenticated artifact identities separately."
+  ],
+  "nonaccepted_development_runs": [
+    "Early focused snapshot exposed the synthetic manifest stale-sidecar problem.",
+    "The pre-render-review snapshot passed 151 focused tests; its raw oracle was intentionally stopped for rendering fixes and is not accepted producer evidence.",
+    "The initial acceptance snapshot passed 152 focused tests but its raw oracle exposed a real infinite standardized discrepancy; it is retained as failed development evidence, not accepted completion evidence.",
+    "The finite-value snapshot passed 153 focused tests and completed the raw pipeline/final audit, but the added oracle mistakenly compared an identity digest with a byte digest before no-force replay. The corrected final snapshot checks content_sha256 and the complete artifact identity."
+  ],
+  "limitations": [
+    "No production simulation, production cap override, simulation-budget change, dashboard or automatic figure suite.",
+    "Bounded raw fixture validates implementation and provenance, not production capacity.",
+    "Large inventories retain explicitly bounded excerpts; full linked artifacts retain exact results.",
+    "Individual unsupported or insufficient-precision cells retain source statuses; coverage does not assert all quantities are estimable.",
+    "Broad opponent-composition sensitivity, fixed-matchup entropy, state-level decisions and prescribed strategy-performance controls remain excluded/deferred.",
+    "Exploratory parameter/predictive associations are not causal or multiplicity-controlled claims.",
+    "Diagnostic preflight, stable batches and root agreement do not establish comprehensive independence.",
+    "The inherited terminology gate still fails on four unchanged outcome-publication uses."
+  ],
+  "next_dependency": "Task 10 integrated qualification, intended launcher/storage checks and capacity refresh; not started."
+}

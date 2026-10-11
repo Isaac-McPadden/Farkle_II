@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -240,7 +240,7 @@ def test_manifest_authenticates_before_all_player_completion(
     real_write_stage_done = all_player_module.write_stage_done
     observed = False
 
-    def guarded_write_stage_done(done_path: Path, **kwargs: object) -> None:
+    def guarded_write_stage_done(done_path: Path, **kwargs: Any) -> None:
         nonlocal observed
         assert done_path == done
         assert not done.exists()

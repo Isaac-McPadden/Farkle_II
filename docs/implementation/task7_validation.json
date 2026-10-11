@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "7",
+  "status": "complete",
+  "date": "2026-10-06",
+  "workspace": {
+    "commit": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+    "state": "development_dirty",
+    "starting_inventory": "data/task7-starting-inventory.json",
+    "starting_files": 483,
+    "no_starting_files_deleted": true,
+    "no_working_repository_commit_or_reset": true,
+    "changed_existing_files": [
+      "docs/codex_context/analysis_pipeline_map.md",
+      "docs/codex_context/context_prompt.md",
+      "docs/codex_context/metadata.md",
+      "docs/codex_context/statistical_methods_map.md",
+      "docs/codex_context/testing_and_review_map.md",
+      "src/farkle/analysis/hgb_feat.py",
+      "src/farkle/analysis/metrics.py",
+      "src/farkle/analysis/release_audit.py",
+      "src/farkle/analysis/stage_registry.py",
+      "src/farkle/analysis/structure_reporting.py",
+      "src/farkle/config.py",
+      "src/farkle/utils/authenticated_graph.py",
+      "src/farkle/utils/release_identity.py",
+      "tests/helpers/simulation_to_report_oracle.py",
+      "tests/integration/test_simulation_to_report_oracle.py",
+      "tests/integration/test_structure_toy_oracle.py",
+      "tests/unit/analysis/test_hgb_feat.py",
+      "tests/unit/analysis/test_metrics_wiring.py",
+      "tests/unit/analysis/test_structure_reporting.py"
+    ]
+  },
+  "implementation": {
+    "seat_behavior_method_version": 1,
+    "turn_opportunity_method_version": 1,
+    "parameter_response_method_version": 1,
+    "metrics_cache_key_version": 6,
+    "hgb_cache_key_version": 2,
+    "structure_report_contract_version": 8,
+    "hgb_fitting_method_version": 2,
+    "production_targets_changed": false
+  },
+  "isolated_validation_snapshot": {
+    "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task7-final-vzam9zkk",
+    "commit": "2fd71c911bf6873267c2ccb9b2d813322fb2e7ae",
+    "python": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\.venv\\Scripts\\python.exe"
+  },
+  "source_equivalence": {
+    "python_source_files": 98,
+    "inventory_sha256": "94bea0a1b57c22fdbed97d8110e5c80504135c1b2d0a7a0a4818fb4b540c2398",
+    "workspace_matches_snapshot": true
+  },
+  "production_config": {
+    "path": "configs/farkle_mega_config.yaml",
+    "sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa",
+    "unchanged_from_task7_start": true
+  },
+  "checks": {
+    "ruff_src_tests_scripts": "passed",
+    "mypy_all_source_files": "passed",
+    "pyright_six_affected_runtime_modules": "passed",
+    "black_changed_python_files": {
+      "status": "passed",
+      "files": 22
+    },
+    "git_diff_check": "passed"
+  },
+  "development_findings_resolved": [
+    "Advance the reporting sidecar version with the JSON report version.",
+    "Account for prediction/fold provenance in the HGB output assertion.",
+    "Expect the authenticated-contract error for a missing k artifact.",
+    "Supply Pareto members in the rendering-only fixture.",
+    "Remove UTF-8 BOMs from new Python files so the RNG static audit can parse them.",
+    "Bind actual column inventories to every behavior checkpoint sidecar and validate them on publication/reuse.",
+    "Declare JSON plan/publication keys in their sidecars; extend the metadata regression to JSON as well as Parquet."
+  ],
+  "limitations": [
+    "No production simulation or production cap override was run.",
+    "No new behavior intervals, inferential interaction tests, state instrumentation, simulation targets, or A89-specific model fits.",
+    "Structural reporting fixtures are synthetic; full producer evidence uses the raw workflow oracle.",
+    "Worker memory and scratch measurements describe a small fixture, not production capacity.",
+    "Production capacity/launcher/storage qualification remains Task 10."
+  ],
+  "existing_repository_gate": {
+    "check": "scripts/check_terminology.py",
+    "exit_code": 1,
+    "status": "pre_existing_findings",
+    "source": "src/farkle/analysis/outcome_publication.py",
+    "sha256": "0ad3f81b04429c1b1866119a68918ca4c9866224d70ac2f6d6ad2777377b3e28",
+    "source_unchanged_by_task7": true,
+    "lines": [
+      995,
+      1031,
+      1080,
+      1186
+    ],
+    "reason": "Four existing uses of pooled, including the durable pooled_merge unit name; unrelated publication layout retained."
+  },
+  "tests": {
+    "full_pipeline": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed",
+      "seconds": 900.648,
+      "junit_path": "data/task7-full-oracle.xml",
+      "junit_sha256": "fa3cbfd0cab87224391c38fe2e9eb30c43e1ee2e0c9f1c004c7b6652f4a6ca8f",
+      "snapshot_commit": "2fd71c911bf6873267c2ccb9b2d813322fb2e7ae",
+      "properties": {
+        "raw_simulation_to_report_runtime_seconds": 898.881,
+        "required_preflight_runtime_seconds": 368.303,
+        "total_runtime_ceiling_seconds": 3840.0
+      },
+      "warning": "Existing pytest record_property/xunit2 compatibility warning; properties are retained in XML."
+    },
+    "focused_before_column_fix": {
+      "tests": 136,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 393.488,
+      "junit_path": "data/task7-focused-before-column-fix.xml",
+      "junit_sha256": "fab6bcc41f30d548fc26099a6998e8b0237a436b71098fb7fa5a0d7f972f3bf6",
+      "worker_fixture_properties": {
+        "source_budget_bytes": 2097152.0,
+        "fixture_games": 48.0,
+        "fixture_k": 12.0,
+        "source_units": 8.0,
+        "max_fixed_record_bytes": 16848.0,
+        "process_tree_peak_rss_bytes": 748552192.0,
+        "scratch_bytes": 442430.0,
+        "runtime_seconds": 6.046
+      },
+      "warning": "Existing pytest record_property/xunit2 compatibility warning; properties are retained in XML."
+    },
+    "focused": {
+      "tests": 136,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "status": "passed",
+      "seconds": 382.39,
+      "junit_path": "data/task7-focused.xml",
+      "junit_sha256": "a44408edd19215d159bd5491af613330c98cebe4d5e3d4d4bd1fa36734852b11",
+      "snapshot_commit": "2fd71c911bf6873267c2ccb9b2d813322fb2e7ae",
+      "worker_fixture_properties": {
+        "source_budget_bytes": 2097152.0,
+        "fixture_games": 48.0,
+        "fixture_k": 12.0,
+        "source_units": 8.0,
+        "max_fixed_record_bytes": 16848.0,
+        "process_tree_peak_rss_bytes": 700706816.0,
+        "scratch_bytes": 442431.0,
+        "runtime_seconds": 4.362
+      },
+      "warning": "Existing pytest record_property/xunit2 compatibility warning; properties are retained in XML."
+    }
+  },
+  "acceptance": {
+    "focused_regressions": "passed",
+    "raw_two_root_workflow": "passed",
+    "independent_task7_raw_row_arithmetic": "passed",
+    "required_rng_preflights": "passed",
+    "interactive_h2h_authorization": "passed",
+    "final_root_root_pair_audit": "passed",
+    "ordinary_no_force_resume_preserves_authenticated_outputs": "passed"
+  }
+}

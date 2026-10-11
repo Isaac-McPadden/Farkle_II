@@ -1,7 +1,142 @@
 # Codex Context Metadata
 
+Task 10 is complete at its validation/documentation boundary: all 1,584
+collected cases passed across isolated runs, the static gates are clean, and
+the protected Windows cap/resume/replay/report-recovery workflow and standalone
+structural audit passed. It adds a conditional
+runtime/storage refresh; see [qualification](../implementation/task10_report.md)
+and [operations](../implementation/task10_operations.md). Ingest coalesces small
+adjacent batches with bounded decoded buffers and bounded Arrow chunk metadata.
+Physical layout/partition method advances to 3, ingest cache to 4, and shared
+identities include `ingest_physical_layout_version`. Arrow row schemas, ordered
+coordinates, simulation/RNG identities and statistical methods are unchanged.
+This closes the fragmented-source footer-admission blocker exposed by a denser
+precision fixture. The former terminology findings are fixed; test/helper type
+annotations and three formatting failures are also repaired. Task 8 evidence
+remains historical; Task 10 records fresh snapshot identities and acceptance
+evidence separately. No production run or production authorization is added.
+
+Task 8 adds the automatic ten-group analysis guide under reporting diagnostics. Both G products and their sidecars are required by the same reporting completion and final audit. Reporting contract advances to 9 with `analysis_guide_method_version=1`; metrics/HGB identities and all scientific budgets remain unchanged. The JSON model is authoritative and Markdown renders it deterministically. See [Task 8](../implementation/task8_report.md).
+
+Task 7 adds `seat_behavior.py`, `parameter_responses.py`, and
+`behavior_reporting.py`. Metrics owns B7/Q7/O7/O/OA and retained
+`_seat_behavior_units`; HGB owns R1/R2/RI with exact matched IDs and folds.
+Metrics cache is 6, HGB cache is 2, and reporting contract is 8. Child method
+versions are 1. See [Task 7](../implementation/task7_report.md) for validation.
+
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
+
+Task 6 adds `h2h_authorization.py`, the canonical execution-owned
+`cap_authorization.json`, terminal prompting and exact-plan CLI overrides.
+Execution state retains the authorization hash and progress across refresh;
+completion and final byte-deep audit own/check the same artifact. H2H execution
+cache version is 6, with no statistical plan, RNG, or preset cap change.
+See [Task 6](../implementation/task6_report.md) and its validation evidence.
+
+Task 5C integrates required PE/MC/MR, authenticated per-shuffle preflight and
+capability units, and optional exhaustive lags. RNG cache version is 7;
+preflight/monitor method versions are 1; reporting contract is 7. The disable
+switch now controls only exhaustive lags. See
+[Task 5C](../implementation/task5c_report.md) and its validation record.
+
+## September 24 first-release design handoff
+
+[Task 0](../implementation/task0_contract.md) reconciles the updated implementation
+backlog at `7db67ccc94a143ebd16c335563513e89a84a62aa`, maps every workbook question
+and substantive method note, and freezes future outcome/behavior/interaction
+schemas, support semantics, initial pointwise uncertainty, and durable work.
+Its [artifact specification](../implementation/task0_artifacts.md) and
+[question map](../implementation/task0_question_map.md) are implementation inputs.
+The design handoff itself did not implement its new statistical methods,
+AppConfig getters, RNG purpose 402, or distribution artifact producers.
+Those remain for their responsible tasks. The explicit distinction between
+verified zero exposure and missing required support is part of that handoff.
+This entry does not upgrade the historical evidence or runtime reconciliation
+below to a fresh production audit.
+
+[Task 9](../implementation/task9_report.md) subsequently implements bounded seat
+history reduction, byte-aware seat readers, bounded mirrored merge fan-in,
+explicit empty/nonempty seat schemas, authenticated per-k/count completions,
+and valid-child reuse from stale metrics parents. Metrics cache-key version is
+3; canonical strategy IDs are int32 and common-k support is list<int16>.
+Estimands and outcome conditioning are unchanged. The production-shaped count
+fixture passes a declared incremental memory allowance; see the report for
+scope, recovery evidence, and inherited repository-wide static-check issues.
+
+[Task 1A](../implementation/task1a_report.md) adds `outcome_distributions`:
+bounded curated-slice arithmetic for exact score/rank/margin/stopped-score
+frequencies, actual-seat batch sufficient statistics, consumed coordinates,
+and overall/seat views. All are partial tables; no final producer, verified-zero
+certification, AppConfig output getter, or metrics inventory is enabled yet.
+Official engine outcomes remain intact, repeated-strategy seats count as separate
+exposures, and zero conditional support remains distinguishable from observed
+zero margins. The method version is 1.
+
+[Task 1B plus Task 2](../implementation/task1b2_report.md) now publish the five
+canonical outcome artifacts through `outcome_publication`, integrated into
+metrics. Source coordinates and per-shuffle roster multiplicities must cover
+the authenticated workload before zero-exposure cells can be certified.
+Exact frequencies, aligned batch sufficient statistics, support certificates,
+support counts, and means/inverse-CDF quantiles have AppConfig-owned paths.
+Conditional unsupported estimates are null with explicit statuses.
+Metrics cache-key version is 4; its shared method-version registry includes
+`outcome_distribution_method_version=1`. Independent source/merge/certification
+units use the existing partition executor. Their sidecars, typed unit stamps,
+and manifests govern reuse. Graph snapshots and final audits include the
+retained `_outcome_units` tree, excluding execution/quarantine scratch, and
+revalidate its unit inventory. Memory admission includes arrays, metadata,
+bounded Arrow coalescing, and conservative Parquet footer estimates.
+That work package added no intervals or production simulation.
+
+[Task 3](../implementation/task3_report.md) adds `outcome_precision` under
+`first_release_task0_v1`: completed win/loss rates, mean completed deficit,
+conditional losing margin, and conditional winning margin. Pointwise percentile
+intervals use configured confidence/replicates, shared root/k/replicate batch
+draws, ratios of sums, NumPy linear quantiles, and bootstrap SD with ddof=1.
+Purpose `OUTCOME_BOOTSTRAP=402` is new; existing streams and RNG scheme stay
+unchanged. Certified batch and contributing-batch minima, replicate minimum,
+undefined resamples, and degenerate resamples have explicit withholding statuses.
+Metrics cache-key version is 5, with shared `outcome_precision_method_version=1`.
+Its retained `_outcome_precision_ranges` vector/range/reduction units and immutable
+plan enter graph/audit ownership, excluding quarantine and execution scratch.
+No game target or H2H inference changes were made in Task 3.
+
+[Task 4](../implementation/task4_report.md) adds independent statistical
+advantage, practical dominance, equivalence, unresolved and nonviable flags.
+Strict simultaneous interval containment establishes equivalence independently
+of Holm rejection; mixed conclusions retain their directed graph edge and both
+report flags. No transitive equivalence groups are inferred. Production tolerance
+is 0.03, independently configured from the unchanged practical/planning effect.
+The actual 150-finalist plan reproduces 97,937,700 completed games and 80.059%
+worst-scenario zero-advantage rejection power; that is not power to prove practical
+dominance or equivalence. No joint 2% superiority/equivalence guarantee is asserted.
+Inference/digest/agreement/report cache versions are 6/5/2/2; method identities
+are 3/2/2/2, with structure report contract 6. Execution and RNG are unchanged.
+First-release [Task 5A](../implementation/task5a_contract.md) specifies bounded
+preflight: roots 1101/2202, all eight production k values, a fixed 120-strategy
+roster, four shuffles, and one/two-worker plus interrupted/resumed variants.
+Its [recipe](../implementation/task5a_recipe.json) bounds the primary matrix at
+5,486 executed attempts including replay; this is planned work, not measured
+preflight evidence. Current mega requests 16 workers, outside that initial
+topology's applicability. Correctness results and statistical warnings have
+separate status rules. No new numerical alert is accepted before Task 5B's
+capability demonstration; the two-batch correctness fixture is insufficient for
+dependence claims. PE/MC/MR retain Task 0's ownership and envelope, with exact
+identity/reuse requirements. No runtime/config/stage versions change in 5A.
+That design does not establish detection capability or execute the proposed workload.
+
+[Task 5B](../implementation/task5b_report.md) adds the pure batch monitor and
+standalone capability driver. The [protocol](../implementation/task5b_protocol.md)
+freezes 64 seeds, 96 series/192 checks per family, 30/100 batches, conservative
+lag/half-drift thresholds, and acceptance criteria before full assessment.
+Per-fixture atomic evidence retains clean false alerts, strong/weak detections,
+integrity failures, support withholding, and within-batch/common-root blind spots.
+It adds no production paths, stage/config changes, RNG namespaces, or game targets.
+The recorded capability has limited synthetic-model/selection applicability;
+Task 5C must bind it to authenticated actual data and implement optional lags.
+
+## Existing runtime orientation and historical evidence
 
 - Reconciled date: `2026-09-03`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
@@ -289,7 +424,8 @@ changing code or accepting a statistical conclusion.
   physical-layout Task 7B, not implementation or a broad authentication change.
   The fresh Task 6 rerun coefficient makes the current pre-remediation projection
   127.30 hours central, 90.77-200.36 hours plausible, and 240.44 hours planning
-  upper. Production readiness and Task 8 isolation remain blocked/untriggered.
+  upper. Production readiness and the older remediation Task 8 isolation remain
+  blocked/untriggered, independently of the September 24 first-release guide.
   Task 7B subsequently benchmarked an authenticated deterministic width-16 H2H
   bundle layout. Logical and downstream digests were exact, and the 760-block
   publication median improved 79.70%, but the preregistered 180-block primary

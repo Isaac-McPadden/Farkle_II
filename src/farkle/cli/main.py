@@ -12,6 +12,7 @@ from typing import Any, Sequence
 
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
+from farkle.analysis.h2h_authorization import H2HAuthorizationRequired, cap_authorization_policy
 from farkle.config import (
     RESOURCE_LIMITER_MODES,
     AppConfig,
@@ -68,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-level",
         default="INFO",
         help="Root logging level",
+    )
+    parser.add_argument(
+        "--h2h-authorize",
+        metavar="PLAN_SHA256:MAX_ATTEMPTS",
+        help="Authorize exactly this frozen H2H plan above its configured cap",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -197,7 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
-        help="Also compute RNG autocorrelation diagnostics",
+        help="Also compute exhaustive game-level RNG lags; required preflight and batch monitoring always run",
     )
     pipeline_parser.add_argument(
         "--rng-lags",
@@ -233,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     analytics_parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
-        help="Compute RNG autocorrelation diagnostics from curated rows",
+        help="Compute exhaustive RNG lags from curated rows; required preflight and batch monitoring always run",
     )
     analytics_parser.add_argument(
         "--rng-lags",
@@ -318,6 +324,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.h2h_authorize is not None and not (
+        args.command == "two-seed-pipeline"
+        or (args.command == "analyze" and args.an_cmd in {"pipeline", "analytics"})
+    ):
+        parser.error("--h2h-authorize requires two-seed-pipeline or analyze pipeline/analytics")
+    with cap_authorization_policy(interactive=True, override=args.h2h_authorize):
+        try:
+            _dispatch(args, parser)
+        except H2HAuthorizationRequired as exc:
+            LOGGER.warning("%s", exc)
+            raise SystemExit(3) from None
+
+
+def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Dispatch inside one runtime-only H2H authorization policy."""
     if (
         args.command not in {"run", "analyze", "two-seed-pipeline"}
         and args.resource_limiters != ResourceLimiterMode.ENABLED.value

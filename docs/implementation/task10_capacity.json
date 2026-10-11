@@ -1,0 +1,726 @@
+{
+  "schema_version": 1,
+  "contract_id": "first_release_task0_v1",
+  "task": "10",
+  "production_executed": false,
+  "dimensions": {
+    "strategy_count": {
+      "value": 5160,
+      "evidence": "derived",
+      "unit": "strategies"
+    },
+    "root_count": {
+      "value": 2,
+      "evidence": "configured",
+      "unit": "roots"
+    },
+    "roots": [
+      102,
+      103
+    ],
+    "player_counts": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      8,
+      10,
+      12
+    ],
+    "games_by_k_per_root": {
+      "2": {
+        "value": 11094000,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "3": {
+        "value": 7396000,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "4": {
+        "value": 5547000,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "5": {
+        "value": 4437600,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "6": {
+        "value": 3698000,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "8": {
+        "value": 2773500,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "10": {
+        "value": 2218800,
+        "evidence": "derived",
+        "unit": "games"
+      },
+      "12": {
+        "value": 1849000,
+        "evidence": "derived",
+        "unit": "games"
+      }
+    },
+    "shuffles_by_k_per_root": {
+      "2": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "3": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "4": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "5": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "6": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "8": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "10": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      },
+      "12": {
+        "value": 4300,
+        "evidence": "derived",
+        "unit": "shuffles"
+      }
+    },
+    "combine_row_groups_by_k_per_root": {
+      "2": {
+        "value": 174,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "3": {
+        "value": 116,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "4": {
+        "value": 87,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "5": {
+        "value": 70,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "6": {
+        "value": 58,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "8": {
+        "value": 44,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "10": {
+        "value": 35,
+        "evidence": "derived",
+        "unit": "row groups"
+      },
+      "12": {
+        "value": 29,
+        "evidence": "derived",
+        "unit": "row groups"
+      }
+    },
+    "source_row_group_width_by_k": {
+      "2": {
+        "value": 2580,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "3": {
+        "value": 1720,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "4": {
+        "value": 1290,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "5": {
+        "value": 1032,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "6": {
+        "value": 860,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "8": {
+        "value": 645,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "10": {
+        "value": 516,
+        "evidence": "derived",
+        "unit": "rows"
+      },
+      "12": {
+        "value": 430,
+        "evidence": "derived",
+        "unit": "rows"
+      }
+    },
+    "attempted_games_per_root": {
+      "value": 39013900,
+      "evidence": "derived",
+      "unit": "games"
+    },
+    "completed_games_per_root": {
+      "value": 39013900,
+      "evidence": "projected",
+      "unit": "games"
+    },
+    "player_exposures_per_root": {
+      "value": 177504000,
+      "evidence": "derived",
+      "unit": "player-game exposures"
+    },
+    "simulation_source_parquet_files_per_root": {
+      "value": 34400,
+      "evidence": "derived",
+      "unit": "files"
+    },
+    "source_parquet_files_per_root": {
+      "value": 8,
+      "evidence": "derived",
+      "unit": "files"
+    },
+    "source_rows_per_root": {
+      "value": 39013900,
+      "evidence": "derived",
+      "unit": "rows"
+    },
+    "source_row_groups_per_root": {
+      "value": 613,
+      "evidence": "derived",
+      "unit": "row groups"
+    },
+    "source_parquet_bytes_per_root": {
+      "central": 32212254720,
+      "lower": 26843545600,
+      "upper": 37580963840,
+      "evidence": "projected from measured Task 4D row bytes plus per-file overhead",
+      "unit": "bytes"
+    },
+    "rng_source_row_groups": {
+      "value": 613,
+      "evidence": "derived",
+      "unit": "row groups"
+    },
+    "rng_route_target_expanded_bytes": {
+      "value": 67108864,
+      "evidence": "configured",
+      "unit": "bytes"
+    },
+    "rng_route_hard_expanded_bytes": {
+      "value": 100663296,
+      "evidence": "configured",
+      "unit": "bytes"
+    },
+    "rng_route_max_expanded_bytes": {
+      "value": 78208000,
+      "evidence": "derived",
+      "unit": "bytes"
+    },
+    "rng_route_max_row_groups_per_unit": {
+      "value": 4,
+      "evidence": "derived",
+      "unit": "row groups/unit"
+    },
+    "rng_route_units_per_route_per_root": {
+      "value": 393,
+      "evidence": "derived",
+      "unit": "route units"
+    },
+    "rng_count_route_records_per_root": {
+      "value": 216517900,
+      "evidence": "derived",
+      "unit": "records"
+    },
+    "rng_routed_count_records_per_root": {
+      "upper": 41052100,
+      "evidence": "derived upper bound after complete route-unit reduction",
+      "unit": "records"
+    },
+    "rng_stats_route_records_per_root": {
+      "central": 181405390,
+      "lower": 177504000,
+      "upper": 216517900,
+      "evidence": "projected",
+      "unit": "records"
+    },
+    "rng_reducers_per_route": {
+      "value": 32,
+      "evidence": "configured",
+      "unit": "reducers"
+    },
+    "rng_reducer_opens_per_root": {
+      "value": 25152,
+      "evidence": "derived",
+      "unit": "opens"
+    },
+    "rng_initial_spills_per_root": {
+      "value": 96,
+      "evidence": "projected",
+      "unit": "spill files"
+    },
+    "rng_merge_fan_in": {
+      "value": 32,
+      "evidence": "configured",
+      "unit": "runs"
+    },
+    "rng_actual_merge_topology_per_reducer_route": {
+      "initial_runs": 2,
+      "fan_in": 32,
+      "depth": 1,
+      "merge_outputs": 1,
+      "generations": [
+        {
+          "inputs": 2,
+          "outputs": 1
+        }
+      ]
+    },
+    "rng_count_merge_topology_per_reducer": {
+      "initial_runs": 1,
+      "fan_in": 32,
+      "depth": 0,
+      "merge_outputs": 0,
+      "generations": []
+    },
+    "rng_stats_merge_topology_per_reducer": {
+      "initial_runs": 2,
+      "fan_in": 32,
+      "depth": 1,
+      "merge_outputs": 1,
+      "generations": [
+        {
+          "inputs": 2,
+          "outputs": 1
+        }
+      ]
+    },
+    "rng_four_pass_structural_fixture": {
+      "initial_runs": 32769,
+      "fan_in": 32,
+      "depth": 4,
+      "merge_outputs": 1061,
+      "generations": [
+        {
+          "inputs": 32769,
+          "outputs": 1025
+        },
+        {
+          "inputs": 1025,
+          "outputs": 33
+        },
+        {
+          "inputs": 33,
+          "outputs": 2
+        },
+        {
+          "inputs": 2,
+          "outputs": 1
+        }
+      ]
+    },
+    "rng_merge_outputs_per_root": {
+      "value": 32,
+      "evidence": "derived",
+      "unit": "temporary files"
+    },
+    "performance_bootstrap_units_per_root": {
+      "value": 40,
+      "evidence": "derived",
+      "unit": "partition units"
+    },
+    "root_stability_top_n_units": {
+      "value": 40,
+      "evidence": "derived",
+      "unit": "partition units"
+    },
+    "root_stability_joint_units": {
+      "value": 40,
+      "evidence": "derived",
+      "unit": "partition units"
+    },
+    "maximum_candidate_count": {
+      "value": 150,
+      "evidence": "derived",
+      "unit": "candidates"
+    },
+    "h2h": {
+      "candidate_count": {
+        "value": 150,
+        "evidence": "derived",
+        "unit": "candidate_count"
+      },
+      "unordered_pair_count": {
+        "value": 11175,
+        "evidence": "derived",
+        "unit": "unordered_pair_count"
+      },
+      "root_count": {
+        "value": 2,
+        "evidence": "derived",
+        "unit": "root_count"
+      },
+      "seat_orientation_count": {
+        "value": 2,
+        "evidence": "derived",
+        "unit": "seat_orientation_count"
+      },
+      "n_completed_required_per_root_order_block": {
+        "value": 2191,
+        "evidence": "derived",
+        "unit": "n_completed_required_per_root_order_block"
+      },
+      "total_block_count": {
+        "value": 44700,
+        "evidence": "derived",
+        "unit": "total_block_count"
+      },
+      "planned_completed_games": {
+        "value": 97937700,
+        "evidence": "derived",
+        "unit": "planned_completed_games"
+      },
+      "maximum_total_attempts": {
+        "value": 195875400,
+        "evidence": "derived",
+        "unit": "maximum_total_attempts"
+      }
+    },
+    "h2h_checkpoints_per_block": {
+      "value": 1,
+      "evidence": "derived",
+      "unit": "checkpoints"
+    },
+    "h2h_checkpoint_attempt_limit": {
+      "value": 5000,
+      "evidence": "configured",
+      "unit": "attempts"
+    },
+    "projected_canonical_files": {
+      "value": 231857,
+      "evidence": "projected",
+      "unit": "files"
+    },
+    "projected_root_files_each": {
+      "value": 71166,
+      "evidence": "projected",
+      "unit": "files"
+    },
+    "projected_pair_files": {
+      "value": 89525,
+      "evidence": "projected",
+      "unit": "files"
+    },
+    "projected_canonical_artifacts": {
+      "value": 114096,
+      "evidence": "projected",
+      "unit": "artifacts"
+    },
+    "projected_sidecars": {
+      "value": 114096,
+      "evidence": "projected",
+      "unit": "sidecars"
+    },
+    "projected_canonical_completions": {
+      "value": 43,
+      "evidence": "projected",
+      "unit": "completions"
+    },
+    "projected_partition_unit_stamps": {
+      "value": 1908,
+      "evidence": "projected",
+      "unit": "unit stamps"
+    },
+    "projected_manifests": {
+      "value": 70,
+      "evidence": "projected",
+      "unit": "manifests"
+    },
+    "projected_final_audit_inventory": {
+      "artifact_count": 114096,
+      "sidecar_count": 114096,
+      "completion_count": 43,
+      "top_level_byte_deep_audits": 1,
+      "evidence": "projected"
+    },
+    "profile": {
+      "profile_metadata_contract_version": 1,
+      "purpose": "production",
+      "reduced_resolution": false,
+      "production_eligible": true,
+      "release_eligible": true,
+      "claim_scope": "production_release_evidence",
+      "strategy_count": 5160,
+      "roots": [
+        102,
+        103
+      ],
+      "player_counts": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        10,
+        12
+      ],
+      "configured_resolution": 0.03,
+      "workload_by_k": {
+        "2": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 2580,
+          "required_games_per_root": 11094000
+        },
+        "3": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 1720,
+          "required_games_per_root": 7396000
+        },
+        "4": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 1290,
+          "required_games_per_root": 5547000
+        },
+        "5": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 1032,
+          "required_games_per_root": 4437600
+        },
+        "6": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 860,
+          "required_games_per_root": 3698000
+        },
+        "8": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 645,
+          "required_games_per_root": 2773500
+        },
+        "10": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 516,
+          "required_games_per_root": 2218800
+        },
+        "12": {
+          "configured_resolution": 0.03,
+          "achieved_resolution": 0.029875828561027357,
+          "required_shuffles_unrounded": 4265,
+          "required_shuffles": 4300,
+          "batch_count": 100,
+          "shuffles_per_batch": 43,
+          "games_per_shuffle": 430,
+          "required_games_per_root": 1849000
+        }
+      },
+      "bootstrap_replicates": 2000,
+      "rng_partitions": 32,
+      "candidate_contribution_size_by_method": {
+        "win_rate": 75,
+        "trueskill": 75
+      },
+      "frozen_candidate_cap": null,
+      "maximum_candidate_count": 150,
+      "maximum_pair_count": 11175,
+      "projected_h2h": {
+        "candidate_count": 150,
+        "unordered_pair_count": 11175,
+        "root_count": 2,
+        "seat_orientation_count": 2,
+        "projection_role": "configured_candidate_upper_envelope",
+        "allocation_status": "pending_frozen_candidate_count"
+      },
+      "final_h2h": null
+    }
+  },
+  "input_evidence": [
+    {
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-operations-qualification-uar5d9uu\\configs\\farkle_mega_config.yaml",
+      "sha256": "d27f04ddae2a5891a38dc3c90df899ceff0553bb3bf04d81965f73fa0d8d1aaa"
+    },
+    {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\phase-costs-k2-final.json",
+      "sha256": "f93f7ad6cecb042efd5f5da2fea92aba7216d966834746bc75f5a2cac2789af3"
+    },
+    {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\phase-costs-k12-final.json",
+      "sha256": "a1c66339c62b000e5830404874d9fcb7021ecb5911e5503ccb1d513bc972ff4f"
+    },
+    {
+      "path": "S:\\Libraries\\OneDrive\\Documents\\Code Projects Parent Folder\\Code Projects\\Farkle Mk II\\data\\task10\\dense-precision-final.json",
+      "sha256": "efbfc75f5831d45673c78763563664250a0f325a78c6d7da24dcd55f2bafdcb6"
+    },
+    {
+      "path": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task10-operations-qualification-uar5d9uu\\docs\\remediation\\task7a_production_capacity.json",
+      "sha256": "993a56d37ab2c27dc06d198e4c7da07211d18d1ee3326d9af17c60f18b56f9b1"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "lower_cost",
+      "assumptions": {
+        "frequency_bins_per_final_cell": 30,
+        "mixed_phase_source_fraction": 0.0,
+        "merge_generation_factor": 1.0,
+        "host_io_factor": 0.75,
+        "durable_compression_support_factor": 0.75,
+        "additional_monitor_parameter_guide_audit_hours": 1.0
+      },
+      "added": {
+        "outcomes_hours": 60.64780550103578,
+        "behavior_hours": 26.490744348148773,
+        "precision_hours": 24.224609401335798,
+        "added_durable_bytes": 28862938592.29503,
+        "maximum_primary_resampled_cells": 2394240,
+        "precision_raw_replicate_value_bytes": 38307840000
+      },
+      "legacy_base_hours": 90.7667907953841,
+      "added_hours_after_factors": 84.52236943789026,
+      "total_hours": 175.28916023327434,
+      "total_days": 7.303715009719764,
+      "total_durable_bytes": 214920732264.22128
+    },
+    {
+      "name": "central_serial_coefficients",
+      "assumptions": {
+        "frequency_bins_per_final_cell": 150,
+        "mixed_phase_source_fraction": 0.5,
+        "merge_generation_factor": 1.5,
+        "host_io_factor": 1.0,
+        "durable_compression_support_factor": 1.0,
+        "additional_monitor_parameter_guide_audit_hours": 3.0
+      },
+      "added": {
+        "outcomes_hours": 73.7267089851036,
+        "behavior_hours": 31.496921079084576,
+        "precision_hours": 24.224609401335798,
+        "added_durable_bytes": 73646175508.33984,
+        "maximum_primary_resampled_cells": 2394240,
+        "precision_raw_replicate_value_bytes": 38307840000
+      },
+      "legacy_base_hours": 127.29596134216122,
+      "added_hours_after_factors": 132.44823946552398,
+      "total_hours": 259.7442008076852,
+      "total_days": 10.822675033653551,
+      "total_durable_bytes": 325975504148.33984
+    },
+    {
+      "name": "high_cost",
+      "assumptions": {
+        "frequency_bins_per_final_cell": 500,
+        "mixed_phase_source_fraction": 1.0,
+        "merge_generation_factor": 2.0,
+        "host_io_factor": 2.0,
+        "durable_compression_support_factor": 2.0,
+        "additional_monitor_parameter_guide_audit_hours": 8.0
+      },
+      "added": {
+        "outcomes_hours": 86.94959058553985,
+        "behavior_hours": 36.503097810020385,
+        "precision_hours": 24.224609401335798,
+        "added_durable_bytes": 118536742899.09558,
+        "maximum_primary_resampled_cells": 2394240,
+        "precision_raw_replicate_value_bytes": 38307840000
+      },
+      "legacy_base_hours": 240.43651549870285,
+      "added_hours_after_factors": 303.35459559379206,
+      "total_hours": 543.7911110924949,
+      "total_days": 22.657962962187288,
+      "total_durable_bytes": 612883124198.1912
+    }
+  ],
+  "method": "serial measured coefficients with explicit workload-driver and engineering sensitivities",
+  "limitations": [
+    "Scenarios are not confidence intervals, guaranteed bounds or observed production timings.",
+    "No unmeasured parallel speedup or ingest-coalescing improvement is credited.",
+    "Legacy base is historical OneDrive evidence; new fixtures use local C: and concurrent validation can confound timings.",
+    "Final bin cardinality, compression, merge shrinkage and active conditional support remain unknown.",
+    "Precision assumes every primary cell can resample; actual sparse/degenerate support can lower work.",
+    "Monitor/parameter/guide/audit overhead is an explicit sensitivity allowance, not a measured production coefficient.",
+    "Retained canonical checkpoints count as durable storage. Disposable scratch and cross-volume bridges need additional peak headroom.",
+    "Storage estimates do not bound uncompressible data or arbitrarily broad empirical support."
+  ],
+  "operational_off_ramps": {
+    "h2h_configured_attempt_cap": 100000000,
+    "h2h_envelope_maximum_attempts": 195875400,
+    "authorization": "exact frozen plan consent or blocked_by_cap exit 3; no cap edit",
+    "source_metadata": "ingest physical layout 3 coalesces within existing byte budget; footer admission still fails closed",
+    "production_authorized": false
+  }
+}

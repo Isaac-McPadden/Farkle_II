@@ -1,0 +1,48 @@
+{
+  "k": 12,
+  "strategies": 12,
+  "shuffles": 1024,
+  "batches": 2,
+  "games": 1024,
+  "exposures": 12288,
+  "source_bytes": 30649611,
+  "stage_batch_bytes": 134217728,
+  "declared_incremental_rss_allowance_bytes": 536870912,
+  "source_footer_bytes": 17516843,
+  "baseline_rss_bytes": 259219456,
+  "peak_sampled_rss_bytes": 559562752,
+  "incremental_rss_bytes": 300343296,
+  "within_declared_allowance": true,
+  "sample_interval_seconds": 0.005,
+  "publication_seconds": 27.35529159998987,
+  "authenticated_resume_seconds": 0.9579571000067517,
+  "checkpoint_bytes": 467533,
+  "outputs": {
+    "outcome_frequencies.parquet": {
+      "bytes": 98266,
+      "rows": 25440
+    },
+    "outcome_batch_stats.parquet": {
+      "bytes": 7428,
+      "rows": 288
+    },
+    "outcome_batch_inventory.parquet": {
+      "bytes": 9673,
+      "rows": 2
+    },
+    "outcome_support.parquet": {
+      "bytes": 4231,
+      "rows": 156
+    },
+    "outcome_summaries.parquet": {
+      "bytes": 15678,
+      "rows": 6864
+    }
+  },
+  "exact_support_checks_passed": true,
+  "source_sha256": {
+    "src/farkle/analysis/outcome_publication.py": "0ad3f81b04429c1b1866119a68918ca4c9866224d70ac2f6d6ad2777377b3e28",
+    "src/farkle/analysis/outcome_distributions.py": "3a22087dd9cfc59c8f61f709e8eb53833464c569ee87e86ee197753f514119d9",
+    "scripts/benchmark_outcome_publication.py": "bf36480ea13051be5d46ff652a9cdb0a54db2a375f91e3ee7ae201a764a8ee3e"
+  }
+}

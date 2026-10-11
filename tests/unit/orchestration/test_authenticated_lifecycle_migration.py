@@ -9,7 +9,7 @@ from tests.helpers.artifact_sidecars import (
     clean_test_code_identity,
     make_authenticated_v3_config,
     publish_v3_parquet,
-    publish_v3_strategy_manifest,
+    publish_v3_simulation_run,
 )
 
 from farkle.analysis.stage_registry import resolve_stage_layout
@@ -89,28 +89,18 @@ def test_simulation_completion_mutation_matrix(
     mutation: str,
 ) -> None:
     cfg = _cfg(tmp_path)
-    n_dir = cfg.results_root / "2_players"
-    n_dir.mkdir(parents=True)
-    strategy_manifest = publish_v3_strategy_manifest(
+    cfg.sim.row_dir = Path("rows")
+    assign_config_sha(cfg)
+    published = publish_v3_simulation_run(
         cfg,
-        (
+        pa.table({"value": [1]}),
+        strategies=(
             ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=1),
             ThresholdStrategy(score_threshold=100, dice_threshold=5, strategy_id=2),
         ),
     )
-    workload = n_dir / "simulation_workload_plan.json"
-    workload.write_text("{}", encoding="utf-8")
-    output = n_dir / "2p_checkpoint.pkl"
-    output.write_bytes(b"output-v1")
-    runner.write_simulation_done(
-        cfg,
-        2,
-        num_shuffles=2,
-        shuffles_per_batch=1,
-        n_strategies=2,
-        outputs=[strategy_manifest, workload, output],
-        allow_unsealed_v3_outputs=True,
-    )
+    strategy_manifest = published.strategy_manifest
+    output = published.shard
     assert runner.simulation_is_complete(cfg, 2)
 
     if mutation == "grid":

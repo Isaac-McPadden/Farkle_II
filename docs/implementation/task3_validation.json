@@ -1,0 +1,58 @@
+{
+  "contract_id": "first_release_task0_v1",
+  "date": "2026-09-27",
+  "combined_focused_suite_before_json_metadata_fix": {
+    "tests": 184,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 145.648,
+    "properties": {}
+  },
+  "final_task3_suite_after_json_metadata_fix": {
+    "tests": 18,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 94.678,
+    "properties": {}
+  },
+  "final_simulation_to_report": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_suite_seconds": 239.735,
+    "properties": {
+      "raw_simulation_to_report_runtime_seconds": "235.979"
+    }
+  },
+  "distinct_focused_checks": 185,
+  "snapshot": "C:\\Users\\imcpa\\AppData\\Local\\Temp\\farkle-task3-verify-pnt4cw48",
+  "snapshot_commit": "6a5b1374a41e94128f25d266d6e4c4b1368befec",
+  "working_branch_head_unchanged": "7db67ccc94a143ebd16c335563513e89a84a62aa",
+  "source_sha256": {
+    "src/farkle/analysis/outcome_precision.py": "4cb36a6fc8957e95552f8cf32b49d9d9fc090b096be65c582c5303ed1a6493be",
+    "src/farkle/analysis/metrics.py": "13d8047d732c74450c84d71e47381821e6bb5751ce79ffd20f0279c559b7ab37",
+    "src/farkle/analysis/release_audit.py": "88dcb42bc135691bb5e23bb1a8190f45b9d3a2a870c0d3410fddef5d15f4363e",
+    "src/farkle/analysis/stage_registry.py": "d621aadcbc9f17d13faf71e72d1fd07702b2def8ae7bb97899201aa10470d68d",
+    "src/farkle/config.py": "3b6d205cd1e8f5285773605f01a47a48c0dea7f70f9dceed099e0ae01c3c0149",
+    "src/farkle/utils/authenticated_graph.py": "43d0f4e9cc97a37c249d08fc3e42cb3a7fe58a8ccadca93ade1c82c0e8f27fbf",
+    "src/farkle/utils/random.py": "186be9b7be10ca62e89eaa0df95f681054f77a82d5579b2d8854cdfc6286dfad",
+    "src/farkle/utils/release_identity.py": "e4c6f26edaa73770cdc36489b7edbf6e296cb46f096951e2f445c5405165dbed"
+  },
+  "checks": {
+    "ruff_repository": true,
+    "mypy_all_90_source_files": true,
+    "black_targeted_12_python_files": true,
+    "pyright_targeted_12_python_files": true,
+    "benchmark_final_source_hashes_match": true,
+    "production_targets_unchanged": true
+  },
+  "limitations": [
+    "Pointwise approximate fixed-design Monte Carlo precision; batch independence assumed.",
+    "No production capacity or full Task 10 qualification claim.",
+    "The successful workflow runtime was 235.979 seconds against the unchanged 240-second assertion."
+  ],
+  "initial_integration_failure": "Missing JSON consistency-column declarations; corrected and regression-tested before the passing rerun."
+}

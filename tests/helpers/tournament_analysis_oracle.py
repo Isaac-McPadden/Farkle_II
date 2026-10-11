@@ -152,15 +152,20 @@ def assert_root_pipeline_oracle(
             "02_combine",
             "03_metrics",
             "04_game_stats",
-            "05_trueskill",
-            "06_hgb",
-            "07_screening",
+            "05_rng",
+            "06_trueskill",
+            "07_hgb",
+            "08_screening",
         ]
         assert sorted(path.name for path in cfg.analysis_dir.iterdir() if path.is_dir()) == (
             expected_stage_dirs
         )
         assert cfg.analysis.disable_rng_diagnostics is True
-        assert cfg.stage_layout.folder_for("rng_diagnostics") is None
+        assert cfg.stage_layout.folder_for("rng_diagnostics") == "05_rng"
+        coverage = json.loads(cfg.rng_monitor_coverage_path().read_text(encoding="utf-8"))
+        assert coverage["exhaustive_status"] == "omitted_by_design"
+        assert cfg.rng_preflight_evidence_path().exists()
+        assert cfg.rng_production_monitor_path().exists()
 
         concat_coordinates: set[tuple[int, int, int, int]] = set()
         for k in ORACLE_PLAYER_COUNTS:
@@ -577,6 +582,7 @@ def assert_pair_h2h_oracle(
     state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
     assert state == {
         "authorized_total_game_cap": 24,
+        "cap_authorization_sha256": sha256_file(cfg.h2h_cap_authorization_path()),
         "completed_block_count": 12,
         "execution_authorization": "ready",
         "execution_state": "complete_valid",

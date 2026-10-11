@@ -55,6 +55,22 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
                 cfg.seat_batch_counts_path(k),
                 cfg.seat_effects_by_k_path(k),
                 cfg.seat_population_by_k_path(k),
+                cfg.outcome_frequencies_path(k),
+                cfg.outcome_batch_stats_path(k),
+                cfg.outcome_batch_inventory_path(k),
+                cfg.outcome_support_path(k),
+                cfg.outcome_summaries_path(k),
+                cfg.outcome_units_dir(k) / "plan.json",
+                cfg.outcome_checkpoint_inventory_path(k),
+                cfg.seat_behavior_batch_path(k),
+                cfg.seat_behavior_summaries_path(k),
+                cfg.turn_opportunity_batch_path(k),
+                cfg.turn_opportunity_path(k),
+                cfg.seat_behavior_units_dir(k) / "plan.json",
+                cfg.seat_behavior_units_dir(k) / "publication.json",
+                cfg.outcome_precision_path(k),
+                cfg.outcome_precision_ranges_dir(k) / "plan.json",
+                cfg.outcome_precision_inventory_path(k),
                 cfg.game_stats_stage_dir / "by_k" / f"{k}p" / f"game_stats.{k}p.parquet",
                 cfg.by_k_dir("game_stats", k) / "rare_events.parquet",
                 cfg.by_k_dir("game_stats", k) / "rare_events.stats.json",
@@ -64,12 +80,16 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
                 cfg.hgb_importance_path(k),
                 cfg.hgb_predictive_scores_path(k),
                 cfg.hgb_fold_metrics_path(k),
+                cfg.parameter_responses_path(k),
+                cfg.parameter_nonadditivity_path(k),
+                cfg.parameter_response_support_path(k),
             ]
         )
     paths.extend(
         [
             cfg.curated_dataset,
             cfg.combined_manifest_path(),
+            cfg.turn_opportunity_equal_k_path(),
             cfg.performance_across_k_path(),
             cfg.performance_bootstrap_path(),
             cfg.performance_control_contrasts_path(),
@@ -95,6 +115,17 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
             cfg.screening_path("descriptive_screening.json"),
         ]
     )
+    paths.extend(
+        [
+            cfg.rng_preflight_evidence_path(),
+            cfg.rng_monitor_coverage_path(),
+            cfg.rng_production_monitor_path(),
+        ]
+    )
+    proof = cfg.rng_preflight_dir() / "publication.json"
+    paths.append(proof)
+    paths.extend(proof.parent / entry["path"] for entry in json.loads(proof.read_text())["sources"])
+    paths.extend(cfg.rng_input_path(f"monitor_units/k{k}.parquet") for k in (2, 4))
     return paths
 
 
@@ -117,6 +148,7 @@ def _pair_artifacts(pair_context: RootPairRunContext) -> list[Path]:
         cfg.h2h_candidate_family_manifest_path(),
         cfg.h2h_power_plan_path(),
         cfg.h2h_block_manifest_path(),
+        cfg.h2h_cap_authorization_path(),
         cfg.h2h_execution_state_path(),
         cfg.h2h_order_counts_path(),
         cfg.h2h_combined_order_counts_path(),
@@ -132,6 +164,8 @@ def _pair_artifacts(pair_context: RootPairRunContext) -> list[Path]:
         cfg.structure_report_json_path(),
         cfg.structure_report_markdown_path(),
         cfg.structure_report_plot_path(),
+        cfg.analysis_guide_json_path(),
+        cfg.analysis_guide_markdown_path(),
         cfg.migration_report_path(),
     ]
     paths.extend(
@@ -202,6 +236,7 @@ def assert_pipeline_health_and_simulation_lifecycle(
         "combine",
         "metrics",
         "game_stats",
+        "rng_diagnostics",
         "trueskill",
         "hgb",
         "screening",
@@ -239,7 +274,7 @@ def assert_report_oracle(pair_context: RootPairRunContext) -> None:
 
     cfg = pair_context.config
     report = json.loads(cfg.structure_report_json_path().read_text(encoding="utf-8"))
-    assert report["report_contract_version"] == 5
+    assert report["report_contract_version"] == 9
     assert report["execution_scope"] == "root_pair"
     assert report["roots"] == [11, 22]
     assert report["support"]["player_counts"] == [2, 4]
@@ -285,7 +320,10 @@ def assert_report_oracle(pair_context: RootPairRunContext) -> None:
     lower_markdown = markdown.lower()
     assert "comparisons satisfy the configured equivalence rule" not in lower_markdown
     assert "statistically significant" not in lower_markdown
-    assert "reject" not in lower_markdown
+    assert "reject" not in " ".join(report["claim_language"]).lower()
+    assert report["h2h"]["statistical_advantage_pair_count"] == 0
+    assert report["h2h"]["practical_dominance_pair_count"] == 0
+    assert report["h2h"]["statistical_advantage_and_equivalence_pair_count"] == 0
     assert "safety-limit attempts were draws" not in lower_markdown
     assert "unique best among the frozen" not in lower_markdown
 
@@ -313,6 +351,7 @@ def snapshot_stable_workflow_files(
         (pair_context.pair_root / ORCHESTRATION_MANIFEST).resolve(),
         (pair_context.pair_root / "pipeline_health.json").resolve(),
         (pair_context.pair_root / "pipeline_telemetry.json").resolve(),
+        (pair_context.pair_root / "log.txt").resolve(),
         *(
             context.analysis_root.joinpath(context.config.manifest_name).resolve()
             for context in contexts

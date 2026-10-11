@@ -1,0 +1,29 @@
+{
+  "contract_id": "first_release_task0_v1",
+  "strategies": 120,
+  "k": 12,
+  "batches": 30,
+  "shuffles_per_batch": 4,
+  "games": 1200,
+  "replicates": 2000,
+  "analysis_batch_mib": 16,
+  "declared_incremental_rss_allowance_mib": 128,
+  "baseline_rss_bytes": 246026240,
+  "peak_rss_bytes": 275947520,
+  "incremental_rss_bytes": 29921280,
+  "memory_allowance_passed": true,
+  "elapsed_seconds": 90.41319260001183,
+  "resume_seconds": 4.75114389997907,
+  "precision_rows": 7800,
+  "status_counts": {
+    "ok": 480,
+    "insufficient_batches": 5880,
+    "no_conditional_support": 1440
+  },
+  "final_artifact_bytes": 166568,
+  "retained_checkpoint_bytes": 5599742,
+  "source_sha256": {
+    "src/farkle/analysis/outcome_precision.py": "4cb36a6fc8957e95552f8cf32b49d9d9fc090b096be65c582c5303ed1a6493be",
+    "scripts/benchmark_outcome_precision.py": "149be3b9bbe99028ef392f2b4e6b5073492df9e8f2450274dfab169b52d83346"
+  }
+}

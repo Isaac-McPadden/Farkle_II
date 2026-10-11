@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
-from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
+from farkle.utils.arrow_batches import coalesce_arrow_tables, iter_parquet_tables_by_bytes
 
 
 def test_projected_parquet_batches_are_byte_bounded(tmp_path: Path) -> None:
@@ -29,3 +30,35 @@ def test_projected_parquet_batches_are_byte_bounded(tmp_path: Path) -> None:
     assert all(batch.nbytes <= 4096 for _rg, _bi, batch in batches)
     assert all(batch.column_names == ["coordinate", "wanted"] for _rg, _bi, batch in batches)
     assert len(batches) > 5
+
+
+def test_coalescing_preserves_nested_nullable_values_and_bounds_chunks() -> None:
+    table = pa.table({"id": range(400), "values": [[None, i] for i in range(400)]})
+    batches = list(
+        coalesce_arrow_tables(
+            (table.slice(i, 1) for i in range(400)), max_buffer_bytes=10000, target_rows=200
+        )
+    )
+    assert pa.concat_tables(batches).equals(table)
+    assert all(b.num_rows <= 200 and b.nbytes <= 10000 for b in batches)
+    assert all(column.num_chunks == 1 for batch in batches for column in batch.columns)
+    assert len(batches) == 2
+
+
+def test_coalescing_byte_ceiling_schema_and_input_admission() -> None:
+    table = pa.table({"s": ["a" * 20] * 20})
+    batches = list(
+        coalesce_arrow_tables(
+            (table.slice(i, 1) for i in range(20)), max_buffer_bytes=100, target_rows=20
+        )
+    )
+    assert pa.concat_tables(batches).equals(table)
+    assert all(batch.nbytes <= 100 for batch in batches)
+    with pytest.raises(MemoryError, match="input exceeds"):
+        list(coalesce_arrow_tables([table], max_buffer_bytes=10, target_rows=20))
+    with pytest.raises(ValueError, match="exact Arrow schema"):
+        list(
+            coalesce_arrow_tables(
+                [table, pa.table({"other": [1]})], max_buffer_bytes=1000, target_rows=20
+            )
+        )
