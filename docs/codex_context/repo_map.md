@@ -25,21 +25,20 @@ accepting a statistical claim.
 
 - Row foundation: `ingest.py`, `curate.py`, `combine.py`, `checks.py`.
 - Tournament statistics: `all_player_metrics.py`, `performance.py`,
-  `screening.py`, `seat_analysis.py`.
-- Diagnostics: `game_stats.py`, `rng_diagnostics.py`, `roll_enumeration.py`.
+  `screening.py`, `seat_analysis.py`, `outcome_publication.py`,
+  `outcome_precision.py`, `seat_behavior.py`.
+- Diagnostics: `game_stats.py`, `rng_diagnostics.py`, `rng_preflight.py`,
+  `rng_monitor.py`, `roll_enumeration.py`.
 - Screening models: `run_trueskill.py`, `trueskill.py`,
-  `trueskill_screening.py`, `run_hgb.py`, `hgb_feat.py`.
+  `trueskill_screening.py`, `run_hgb.py`, `hgb_feat.py`, `parameter_responses.py`.
 - Root-pair work: `root_stability.py`, `candidate_family.py`,
   `h2h_schedule.py`, `h2h_inference.py`, `dominance.py`.
 - Delivery: `structure_agreement.py`, `structure_reporting.py`,
-  `migration_audit.py`, `release_audit.py`.
+  `analysis_guide.py`, `migration_audit.py`, `release_audit.py`.
 - Execution: `stage_registry.py`, `stage_runner.py`, package `__init__.py`.
 
-Task 7B's rejected width-16 H2H bundle implementation is not present in
-production source. Its reproducible driver and closed evidence are
-`scripts/benchmark_task7b_h2h_bundling.py` and
-`docs/remediation/task7b_h2h_bundling_report.md`; current `h2h_schedule.py`
-continues to own only the authenticated per-block layout.
+See [development history](../development_history.md) for rejected layouts and
+retained benchmark evidence. Current H2H storage is per block.
 
 ## Contracts to locate first
 

@@ -1,22 +1,4 @@
-# Codex Analysis Pipeline Map
-
-Task 10 advances ingest cache to 4 and its physical layout/partition method to
-3. Adjacent input shard batches coalesce under a quarter of the ingest byte
-allowance, with separate input/compaction/writer reserves and bounded chunk
-metadata. The canonical output still preserves every source row in order;
-downstream curate retains its copy boundary. No stage order, row schema or
-statistical method changes. The shared ingest identity authenticates the new
-physical layout; stale units are rebuilt rather than re-sidecarred. See
-[Task 10](../implementation/task10_report.md).
-
-Task 8 extends the existing reporting owner with authenticated `analysis_guide.json` and `analysis_guide.md` in diagnostics. The executable plan and completion require both; Markdown binds only the JSON as its source. Reporting contract is 9, guide method is 1; metrics cache 6 and HGB cache 2 remain. Missing required guide inputs fail publication. Final audit checks question/reference coverage, JSON-to-Markdown consistency and completion ownership. See [Task 8](../implementation/task8_report.md).
-
-Task 7 runs `seat_behavior` inside metrics after certified outcome support,
-then publishes equal-k opportunity within each root. `parameter_responses`
-runs inside HGB after held-out prediction/fold outputs. No new top-level stage
-or canonical scope is added. Their required artifacts and retained behavior
-units enter parent completions, the graph snapshot, and final byte-deep audit.
-Reporting consumes each root separately for these products.
+# Analysis pipeline map
 
 Treat this as orientation. Source authority is `analysis/__init__.py`,
 `stage_registry.py`, `orchestration/run_contexts.py`, and
@@ -31,12 +13,17 @@ Treat this as orientation. Source authority is `analysis/__init__.py`,
 3. `combine`
 4. `metrics`
 5. `game_stats`
-6. `rng_diagnostics` when enabled
+6. `rng_diagnostics` (required preflight/monitoring; exhaustive lags optional)
 7. `trueskill`
 8. `hgb`
 9. `screening`
 
-It then stops. In a two-root run, H2H never executes inside either root.
+Metrics owns outcome publication, completed-outcome precision and seat behavior
+as authenticated children. HGB owns matched parameter responses after held-out
+prediction/fold outputs. Reporting owns the JSON/Markdown analysis guide;
+required children/units enter parent completion and final audit.
+
+The root then stops. In a two-root run, H2H never executes inside either root.
 
 ## Root-pair workflow
 

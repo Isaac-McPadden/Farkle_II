@@ -1,7 +1,7 @@
 # src/farkle/cli/main.py
 """
 Command line interface for the :mod:`farkle` package.
-See ../../../cli_args.md for details.
+See ../../../docs/cli.md for details.
 """
 from __future__ import annotations
 

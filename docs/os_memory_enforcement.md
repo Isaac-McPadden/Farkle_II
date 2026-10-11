@@ -83,20 +83,15 @@ to `running` before work begins, so abrupt termination cannot leave a new
 successful pipeline marker. Existing authenticated units remain reusable;
 temporary and unauthenticated files remain ineligible on resume.
 
-## Bounded production-platform canary
+## Platform qualification
 
-Run the maximum-k, two-concurrent-root canary only in its dedicated directory:
-
-```powershell
-.\.venv\Scripts\python -m farkle.utils.os_memory --limit-mb 2304 -- `
-  .\.venv\Scripts\python scripts\run_step_5_5_canary.py `
-  --workspace data\step_5_5_canary_full --force
-```
-
-The canary uses two roots, `k=2` and maximum configured `k=12`, tiny authenticated
-game limits/counts, and the real simulation-to-report orchestration. Its final
-stdout and `pipeline_health.json` report the selected backend, effective limit,
-peak sampled aggregate RSS, and peak sampled native-thread count.
+The current protected Windows workflow is
+`tests/integration/test_windows_launcher_qualification.py`. It exercises normal
+rules, sequential roots, a strict Job Object, cross-volume scratch, exact-plan
+H2H consent, no-force replay and missing-report recovery. See
+[operations](operations.md) and [qualification history](development_history.md)
+for its evidence and limits. The old concurrent-root Step 5.5 canary is retired;
+it no longer describes the execution contract.
 
 The durable engineering invariants are byte-bounded streaming, atomic durable
 units, authenticated manifests, and exact resume after interruption. A fixed

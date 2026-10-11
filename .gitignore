@@ -216,6 +216,22 @@ structure.txt
 
 notebooks/figs/*.png
 
+# Disposable development exports and scratch (research notebooks remain tracked)
+/notebooks/figs/
+/notebooks/tmp_*.parquet
+/notebooks/farkle*_profile_*.html
+/audit_report.txt
+/analysis_files_no_shard.csv
+/duplicates.txt
+/leading_documentation_list.txt
+/py_files_in_src.txt
+/temp_patch.txt
+/_qc_tmp.*
+/*.bak.*
+/.pytest_tmp/
+/tmp_pair/
+/tmp0xueg1_j/
+
 checkpoint.pkl
 
 *.puml

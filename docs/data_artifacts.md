@@ -143,7 +143,7 @@ logical rows, values and nullable/list types are preserved. This prevents a
 row group per shuffle from exhausting downstream source-footer admission.
 Ingest cache version 4 and shared `ingest_physical_layout_version` identity
 reject incompatible units. Footer admission still fails closed on actual
-outputs; [Task 10](implementation/task10_report.md) records the bounded and
+outputs; [qualification history](development_history.md) records the bounded and
 production-sized physical-layout evidence without production game execution.
 
 Combine normalizes one canonical physical Parquet partition per k. The logical

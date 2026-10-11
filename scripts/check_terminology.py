@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENFORCED_TREES = ("src", "configs", "scripts")
+ENFORCED_TREES = ("src", "configs", "scripts", "docs/codex_context")
 ENFORCED_FILES = (
     "README.md",
     "pyproject.toml",
@@ -16,18 +16,24 @@ ENFORCED_FILES = (
     "docs/rng_contract.md",
     "docs/terminology.md",
     "docs/turn_and_row_contract.md",
+    "docs/cli.md",
+    "docs/rules.md",
+    "docs/statistical_methods.md",
+    "docs/operations.md",
+    "docs/os_memory_enforcement.md",
+    "docs/index.md",
+    "docs/game_count.md",
 )
 SPELLING_ENFORCED_TREES = ("src", "configs", "scripts", "tests", "docs")
 SPELLING_ENFORCED_FILES = (
     "README.md",
-    "cli_args.md",
-    "farkle_rules.md",
-    "analysis/README.md",
+    "notebooks/README.md",
     "pyproject.toml",
 )
 HISTORICAL_PREFIXES = (
     Path("docs/reviews"),
     Path("docs/remediation"),
+    Path("docs/implementation"),
 )
 SKIP_SUFFIXES = {".pyc", ".parquet", ".png", ".jpg", ".jpeg", ".gif", ".html"}
 # Hex escapes keep the checker subject to its own rule without embedding the

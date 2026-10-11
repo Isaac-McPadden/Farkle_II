@@ -1,128 +1,60 @@
 # Farkle Mk II
 
-Farkle Mk II is a deterministic Monte Carlo simulation and statistical
-analysis toolkit for comparing Farkle strategies over a finite configured
-strategy grid.
+A deterministic Monte Carlo simulation and statistical analysis toolkit for
+comparing a finite configured grid of Farkle strategies. The PC has played
+**roughly 1.7 billion games**; see the [estimate and counting basis](docs/game_count.md).
 
-## Core contracts
+## Install
 
-- NumPy `PCG64DXSM` streams are derived from stable experiment coordinates.
-- Simulation and analysis work is resumable and written atomically.
-- Paths come from `AppConfig`; consumers validate canonical scope and sidecars.
-- Large row sets are streamed or partitioned.
-- Chance baselines are `1/k` for k-player games.
-- Cross-k performance requires complete configured support.
-- Screening, H2H inference, dominance, and display ordering remain distinct.
-
-See [configuration](docs/config_reference.md),
-[artifacts](docs/data_artifacts.md), [RNG](docs/rng_contract.md), and
-[turn/row](docs/turn_and_row_contract.md) for the full contracts.
-
-## Installation
-
-Python 3.12 or newer is required.
+Use Python 3.12 or newer. Local development uses the root venv:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -e ".[dev]"
 ```
 
-## Configuration
+## Use
 
-All workflows load YAML into `farkle.config.AppConfig`. Current top-level
-sections are:
-
-`io`, `sim`, `analysis`, `ingest`, `combine`, `trueskill`, `head2head`, `hgb`,
-`orchestration`, `rng`, `screening`, `batching`, `robustness`,
-`artifact_contract`, and `k_aggregation`.
-
-Example:
-
-```yaml
-sim:
-  seed_list: [42, 43]
-  n_players_list: [2, 4]
-
-screening:
-  practical_delta_by_k: {2: 0.03, 4: 0.03}
-  delta_across_k: 0.03
-
-k_aggregation:
-  method: equal-k
-```
-
-Unknown and retired keys are rejected with migration guidance. Inline
-overrides use current dotted keys:
+All workflows load validated YAML into `farkle.config.AppConfig`.
+The fast preset is a reduced-resolution **two-root integration profile**:
 
 ```powershell
-farkle --config configs/fast_config.yaml --set sim.n_jobs=8 run
+farkle --config configs/fast_config.yaml two-seed-pipeline
 ```
 
-## CLI
+`run` and `analyze` require exactly one root in `sim.seed_list`.
+`two-seed-pipeline` runs both root workflows, then one pair workflow.
+Long operations publish atomically and resume compatible work without
+`--force`. Read [operations](docs/operations.md) before a full workload.
 
-```text
-farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
-```
+## References
 
-Commands:
+- [Documentation index](docs/index.md), [CLI](docs/cli.md) and [rules](docs/rules.md).
+- [Configuration](docs/config_reference.md), [statistical methods](docs/statistical_methods.md)
+  and [data artifacts](docs/data_artifacts.md).
+- [RNG](docs/rng_contract.md), [turn/row contract](docs/turn_and_row_contract.md)
+  and [resource controls](docs/os_memory_enforcement.md).
+- [Contributor orientation](docs/codex_context/context_prompt.md),
+  [testing/review](docs/codex_context/testing_and_review_map.md) and
+  [development history](docs/development_history.md).
 
-- `run`: simulate the configured root and player counts.
-- `time`: benchmark simulation throughput.
-- `watch`: replay one interactive deterministic game.
-- `analyze ingest|curate|combine|metrics|preprocess`: run a focused root stage.
-- `analyze pipeline`: run the complete standalone-root workflow, including its
-  explicitly labeled H2H tail.
-- `analyze analytics`: run the same canonical standalone-root analysis from
-  existing inputs.
-- `two-seed-pipeline`: run both root workflows, then execute the root-pair tail
-  exactly once at the pair analysis root.
+## Core contracts
 
-Root overrides for `two-seed-pipeline` are `--seed-a`, `--seed-b`, and
-`--seed-pair A B`; place them after the subcommand.
-Long workflows accept `--force` where recomputation is supported.
+Full-coordinate NumPy PCG64DXSM streams own randomness. Simulation and analysis
+are atomic, idempotent, resumable and byte bounded. Paths come from AppConfig;
+canonical derived artifacts require compatible adjacent sidecars.
 
-## Workflow ownership
-
-The root workflow is:
-
-1. ingest;
-2. curate;
-3. row concatenation;
-4. all-player metrics and performance;
-5. game, seat, RNG, and roll diagnostics;
-6. TrueSkill and HGB;
-7. descriptive screening;
-8. stop.
-
-The root-pair workflow is:
-
-1. raw-count root combination and stability;
-2. TrueSkill candidate contribution;
-3. candidate freeze;
-4. H2H power planning and block execution;
-5. seat-adjusted inference;
-6. dominance digestion;
-7. agreement;
-8. reporting.
-
-A standalone root appends the same H2H tail under its own `h2h_2p` scope and
-labels outputs `single_root`. A two-root run never executes H2H independently
-inside either root workflow.
-
-## Artifacts
-
-Canonical derived scopes are `by_k`, `concat_ks`, `across_k`, `cross_seed`,
-`diagnostics`, and `h2h_2p`. Every derived artifact has exactly one adjacent
-hash-bound sidecar. The only lifecycle states are `not_started`,
-`partial_resumable`, `complete_valid`, `complete_stale`, and
-`blocked_by_cap`.
-
-Old on-disk results may remain for inspection. Current consumers ignore them;
-the migration report inventories them without deleting user data.
+Primary tournament rates use all attempted player exposures; completed outcomes
+retain distinct conditioning. Complete configured support and explicit weights
+are required across player counts. Screening, prediction, H2H inference,
+dominance and display order remain separate.
 
 ## Development
 
-Use the repository virtual environment:
+Source lives under `src/farkle/`: game, simulation, analysis, orchestration,
+CLI and shared utils. Runnable presets are in `configs/`; unit/integration
+oracles are in `tests/`; maintained checks and benchmarks are in `scripts/`.
+Exploratory notebooks are historical research records.
 
 ```powershell
 .\.venv\Scripts\python -m pytest
@@ -130,30 +62,13 @@ Use the repository virtual environment:
 .\.venv\Scripts\python -m black --check .
 .\.venv\Scripts\python -m mypy src
 .\.venv\Scripts\python -m pyright
+.\.venv\Scripts\python scripts/check_rng_contract.py
 .\.venv\Scripts\python scripts/check_terminology.py
-.\.venv\Scripts\python scripts/check_structure_release.py --artifact-root data/results_seed_pair_A_B/results_seed_A/analysis
 ```
 
-The structural release check requires an explicit fresh artifact root. Repeat
-`--artifact-root` when auditing multiple independent roots.
-
-The interrupted/resumed two-root structural oracle is
-`tests/integration/test_structure_toy_oracle.py`.
-
-## Repository layout
-
-- `src/farkle/game`: rules and game engine
-- `src/farkle/simulation`: workload planning and simulation
-- `src/farkle/analysis`: canonical estimators, diagnostics, H2H, and reports
-- `src/farkle/orchestration`: root and root-pair contexts
-- `src/farkle/utils`: RNG, atomic I/O, sidecars, manifests, and shared helpers
-- `configs`: validated runnable presets
-- `tests`: unit and integration oracles
-- `docs`: contracts and Codex orientation
-
-Public simulation and analysis commands establish the aggregate OS memory
-boundary documented in `docs/os_memory_enforcement.md` before loading the real
-pipeline process.
+See the testing map for focused targets and the explicit-artifact-root release
+audit. Runtime-read recipes, frozen protocols and test-dependent historical
+datasets are retained; do not delete them as task debris.
 
 ## License
 
