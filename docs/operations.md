@@ -102,6 +102,20 @@ replay preserves stable products. Inspection of `pipeline_health.json`,
 `pipeline_telemetry.json` and the append-only pipeline manifest locates a stop
 without treating partial staging files as completion inputs.
 
+`Pipeline progress summary` records completed work for a simulation or an
+analysis partition phase. The JSON fields after ` | ` identify its `stage` and
+`scope`, completed/reused units, and worker counts. A stage can have several
+partition phases and therefore several summaries; these are operational
+measurements, not statistical findings or parent-stage completion stamps.
+The same field formatting exposes details on workload, publication, and
+finalization messages. Heartbeats describe current work, while the summaries
+record completed phase totals. Retained summaries also appear under
+`timing_summary.telemetry.completed_progress` in `pipeline_health.json`.
+Spawned Windows workers do not inherit the parent's INFO logging handlers;
+worker exceptions propagate to the parent, and the parent-owned summaries and
+heartbeats provide progress reporting. Log levels and progress intervals still
+control which messages are emitted.
+
 For an unattended above-cap stop, read the current immutable power plan's
 `schedule_hash` and `maximum_total_attempts`. Explicit approval is
 `--h2h-authorize PLAN_SHA256:MAX_ATTEMPTS`, placed before `two-seed-pipeline`.

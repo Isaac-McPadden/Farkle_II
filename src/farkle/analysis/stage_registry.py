@@ -169,7 +169,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "analysis.rng_diagnostic_lags",
             "analysis.rng_diagnostic_partitions",
         ),
-        cache_key_version=7,
+        cache_key_version=8,
     ),
     StageDefinition(
         "trueskill",

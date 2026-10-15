@@ -1011,7 +1011,7 @@ def test_rng_config_freshness_and_typed_metadata_migrate_to_method_v4() -> None:
     baseline = cfg.stage_config_sha("rng_diagnostics")
     cfg.analysis.rng_diagnostic_partitions = 64
     assert cfg.stage_config_sha("rng_diagnostics") != baseline
-    assert resolve_stage_definition("rng_diagnostics").cache_key_version == 7
+    assert resolve_stage_definition("rng_diagnostics").cache_key_version == 8
 
     capacity = rng_diagnostics.RNGDiagnosticCapacityMetadata(
         effective_matchup_group_cap=100,

@@ -174,6 +174,11 @@ def _method_versions(
             versions[key] = int(value)
     parameters = metadata.method_contract.get("parameters") or {}
     for key, value in parameters.items():
+        if stage_key == "rng_diagnostics" and key == "method_version":
+            # The parent owns preflight/monitor v1 and exhaustive-lag v4.
+            # Operation versions remain in each typed MethodContract; the
+            # shared version vector uses their separately named identities.
+            continue
         if (
             key.endswith("_version")
             and key not in _GLOBAL_VERSION_KEYS
@@ -251,7 +256,8 @@ def _method_versions(
             if key.startswith(stage_key) and key.endswith("_method_version")
         ]
         method_version = candidates[0] if candidates else 1
-    versions.setdefault(f"{stage_key}_operation_method_version", method_version)
+    if stage_key != "rng_diagnostics":
+        versions.setdefault(f"{stage_key}_operation_method_version", method_version)
     return dict(sorted(versions.items())), method_version
 
 

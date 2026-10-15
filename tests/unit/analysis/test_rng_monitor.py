@@ -123,6 +123,46 @@ def test_enabled_exhaustive_preserves_cap_state(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+def test_real_exhaustive_and_required_evidence_complete_and_resume(tmp_path, monkeypatch, workers):
+    from farkle.analysis import combine
+    from farkle.config import assign_config_sha
+    from farkle.utils.authenticated_contract import load_authenticated_sidecar
+
+    cfg = _fixture(tmp_path, workers=workers)
+    cfg.analysis.rng_diagnostic_partitions = 2
+    assign_config_sha(cfg)
+    combine.run(cfg)
+    _proof(cfg, monkeypatch)
+    monitor.run(cfg, exhaustive=True)
+    stamp = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
+    outputs = [
+        cfg.rng_preflight_evidence_path(),
+        cfg.rng_monitor_coverage_path(),
+        cfg.rng_production_monitor_path(),
+        cfg.rng_input_path("rng_diagnostics.parquet"),
+        cfg.rng_input_path("rng_diagnostics_summary.json"),
+    ]
+    before = [(sha256_file(p), p.stat().st_mtime_ns) for p in [stamp, *outputs]]
+    evidence = load_authenticated_sidecar(outputs[0])
+    exhaustive = load_authenticated_sidecar(outputs[-1])
+    assert evidence.method_contract.method_version == 1
+    assert exhaustive.method_contract.method_version == 4
+    assert evidence.versions == exhaustive.versions
+    assert (
+        resolve_stage_state(stamp, [], [], cfg=cfg, stage="rng_diagnostics")
+        == CompletionState.COMPLETE_VALID
+    )
+    monitor.run(cfg, exhaustive=True)
+    assert [(sha256_file(p), p.stat().st_mtime_ns) for p in [stamp, *outputs]] == before
+    with outputs[-1].open("ab") as handle:
+        handle.write(b"corrupt")
+    assert (
+        resolve_stage_state(stamp, [], [], cfg=cfg, stage="rng_diagnostics")
+        == CompletionState.COMPLETE_STALE
+    )
+
+
 def test_parent_completion_binds_retained_proof_units(tmp_path, monkeypatch):
     cfg = _fixture(tmp_path)
     proof = _proof(cfg, monkeypatch)
