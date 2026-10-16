@@ -114,7 +114,12 @@ record completed phase totals. Retained summaries also appear under
 Spawned Windows workers do not inherit the parent's INFO logging handlers;
 worker exceptions propagate to the parent, and the parent-owned summaries and
 heartbeats provide progress reporting. Log levels and progress intervals still
-control which messages are emitted.
+control which messages are emitted. At INFO, heartbeats keep their readable
+single-line form, completion summaries show phase totals, and cleanup/timing
+messages omit bulk histories and resource snapshots. Full telemetry remains in
+the JSON artifacts; DEBUG logging also includes the full attached fields.
+Final release-audit failures are written explicitly to the log with their
+artifact paths, as well as retained in `pipeline_health.json`.
 
 For an unattended above-cap stop, read the current immutable power plan's
 `schedule_hash` and `maximum_total_attempts`. Explicit approval is

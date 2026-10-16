@@ -1132,6 +1132,14 @@ def _run_pipeline_observed(
         )
         if release_audit["status"] != "passed":
             pair_error = "final release audit failed: " + str(release_audit["failures"][0])
+            LOGGER.error(
+                "%s",
+                pair_error,
+                extra={
+                    "failure_count": len(release_audit["failures"]),
+                    "failures": release_audit["failures"],
+                },
+            )
     try:
         _run_timed_phase(
             telemetry,

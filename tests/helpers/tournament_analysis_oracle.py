@@ -814,7 +814,10 @@ def assert_authenticated_analysis_graph(
         assert persisted["run_context_contract_version"] == 3
         assert persisted["public_config_sha256"] == context.config.config_sha
         assert persisted["lineage_extensions"] == {"game_profile_sha256": profile_sha256}
-        assert Path(persisted["resolved_paths"]["results_root"]).is_absolute()
+        assert (
+            Path(persisted["resolved_paths"]["results_root"]).resolve()
+            == context.config.results_root.resolve()
+        )
         assert len(persisted["run_context_sha256"]) == 64
         root_lineages.append(str(persisted["run_lineage_sha256"]))
         plan = analysis.build_root_stage_plan(context.config)

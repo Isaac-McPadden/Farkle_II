@@ -750,6 +750,34 @@ def test_failed_root_precondition_executes_final_audit_zero_times(
     assert audit_calls == []
 
 
+def test_failed_final_audit_logs_artifact_failures(monkeypatch, tmp_path, caplog):
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis, "run_root_pair_analysis", lambda *_args, **_kwargs: None
+    )
+    failures = [
+        "root_11: bad precision publication.json",
+        "root_22: bad precision publication.json",
+    ]
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_final_release_gate",
+        lambda *_args, **_kwargs: {"status": "failed", "failures": failures},
+    )
+    with pytest.raises(RuntimeError, match="final release audit failed"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+    records = [r for r in caplog.records if "final release audit failed" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelname == "ERROR"
+    assert records[0].failure_count == 2
+    assert records[0].failures == failures
+
+
 def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

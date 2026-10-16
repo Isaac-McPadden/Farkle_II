@@ -1,7 +1,7 @@
 import json
 import logging
 
-from farkle.utils.logging import setup_info_logging, setup_warning_logging
+from farkle.utils.logging import configure_logging, setup_info_logging, setup_warning_logging
 from farkle.utils.telemetry import SupervisorHeartbeatRecorder
 
 
@@ -82,3 +82,78 @@ def test_structured_logging_preserves_exception_and_serializes_paths(tmp_path, c
         assert json.loads(first.split(" | ", 1)[1]) == {"output_path": str(tmp_path)}
         assert "Traceback (most recent call last):" in traceback
         assert "ValueError: publication failed" in traceback
+
+
+def test_info_heartbeat_is_readable_and_debug_retains_snapshot(tmp_path, capsys):
+    log_file = tmp_path / "heartbeat.log"
+    fields = {"telemetry_kind": "heartbeat", "active_scopes": [{"progress": {"games": 42}}]}
+    message = "Heartbeat: stage=metrics phase=partition_execution rss=250MiB"
+    configure_logging(log_file=log_file)
+    logging.getLogger("farkle.pipeline").info(message, extra=fields)
+    for output in (capsys.readouterr().err, log_file.read_text(encoding="utf-8")):
+        assert message in output
+        assert "active_scopes" not in output
+        assert " | " not in output
+    configure_logging(level="DEBUG", log_file=log_file)
+    logging.getLogger("farkle.pipeline").info(message, extra=fields)
+    assert json.loads(capsys.readouterr().err.split(" | ", 1)[1]) == fields
+    assert "active_scopes" in log_file.read_text(encoding="utf-8")
+
+
+def test_info_cleanup_omits_bulk_history_but_preserves_errors(tmp_path, capsys):
+    log_file = tmp_path / "cleanup.log"
+    setup_info_logging(log_file)
+    logging.getLogger("farkle.pipeline").info(
+        "Pipeline telemetry stopped",
+        extra={
+            "telemetry_kind": "telemetry_cleanup",
+            "heartbeat_count": 46,
+            "dropped_updates": 0,
+            "telemetry_errors": ["sampler failed"],
+            "completed_progress": {"metrics": {"total_units": 999}},
+            "resource_summary": {"process_tree_rss_bytes": 123456789},
+        },
+    )
+    for output in (capsys.readouterr().err, log_file.read_text(encoding="utf-8")):
+        fields = json.loads(output.split(" | ", 1)[1])
+        assert fields["heartbeat_count"] == 46
+        assert fields["telemetry_errors"] == ["sampler failed"]
+        assert "completed_progress" not in fields
+        assert "resource_summary" not in fields
+
+
+def test_info_summaries_keep_totals_and_debug_keeps_details(tmp_path, capsys):
+    log_file = tmp_path / "summary.log"
+    progress = {
+        "completed_games": 50,
+        "planned_games": 50,
+        "per_worker_attempts_per_second": [10, 20],
+    }
+    phases = [
+        {
+            "scope": "audit",
+            "status": "success",
+            "elapsed_seconds": 2,
+            "resource_start": {"process_tree_rss_bytes": 123},
+        }
+    ]
+    for level in ("INFO", "DEBUG"):
+        configure_logging(level=level, log_file=log_file)
+        logger = logging.getLogger("farkle.pipeline")
+        logger.info(
+            "Pipeline progress summary",
+            extra={"telemetry_kind": "completion_summary", "progress": progress},
+        )
+        logger.info(
+            "Pipeline finalization timing summary",
+            extra={"telemetry_kind": "timing_summary", "finalization_phases": phases},
+        )
+        console = capsys.readouterr().err.splitlines()
+        file_lines = log_file.read_text(encoding="utf-8").splitlines()[-2:]
+        for lines in (console, file_lines):
+            summary = json.loads(lines[0].split(" | ", 1)[1])["progress"]
+            timing = json.loads(lines[1].split(" | ", 1)[1])["finalization_phases"]
+            assert summary["completed_games"] == summary["planned_games"] == 50
+            assert timing[0]["scope"] == "audit"
+            assert ("per_worker_attempts_per_second" in summary) == (level == "DEBUG")
+            assert ("resource_start" in timing[0]) == (level == "DEBUG")

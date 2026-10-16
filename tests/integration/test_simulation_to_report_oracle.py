@@ -74,7 +74,11 @@ def test_raw_simulation_to_authenticated_report_via_normal_orchestration(
 
     monkeypatch.setattr(Path, "open", guarded_open)
     config_path = write_tiny_oracle_config(tmp_path)
+    # The public fast config uses a relative prefix. Exercise the final audit
+    # resolving those producer paths to absolute paths, including on replay.
+    monkeypatch.chdir(tmp_path)
     cfg = load_app_config(config_path, seed_list_len=2)
+    cfg.io.results_dir_prefix = Path("oracle_results")
     cfg.head2head.total_game_cap = 23  # frozen oracle plans exactly 24 maximum attempts
     assign_config_sha(cfg)
     profile = oracle_game_profile()

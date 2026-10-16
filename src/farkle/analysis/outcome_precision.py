@@ -672,7 +672,7 @@ def validate_precision_checkpoints(publication: Path) -> bool:
             publication.parent / "units" / f"range-{start:08d}-{stop:08d}/tile-{t:08d}.parquet"
             for start, stop, t, _ in ranges
         ]
-        expected = [
+        expected: list[list[tuple[tuple[int | str, ...], str]]] = [
             [((t,), f"tile-{t:08d}.parquet") for t in range(tiles)],
             [
                 (
@@ -697,8 +697,32 @@ def validate_precision_checkpoints(publication: Path) -> bool:
             root = publication.parent / descriptor["name"]
             units = [_unit_from_json(u) for u in descriptor["units"]]
             identity = _identity_from_json(descriptor["identity"])
+            # Keys retain their original spelling for exact manifest/stamp
+            # authentication. Compare source paths by their resolved identity
+            # so a relative producer and absolute audit name the same files.
+            source_start = {"vectors": 1, ".": 3, "summaries": 1}[descriptor["name"]]
+            actual_keys = [
+                (
+                    (
+                        *u.key[:source_start],
+                        *(Path(cast(str, p)).resolve() for p in u.key[source_start:]),
+                    ),
+                    u.relative_output,
+                )
+                for u in units
+            ]
+            required_keys = [
+                (
+                    (
+                        *key[:source_start],
+                        *(Path(cast(str, p)).resolve() for p in key[source_start:]),
+                    ),
+                    output,
+                )
+                for key, output in required
+            ]
             if (
-                [(u.key, u.relative_output) for u in units] != required
+                actual_keys != required_keys
                 or identity.input_identities != (("plan", sha256_file(plan_path)),)
                 or identity.statistical_config_sha256 != plan["design_hash"]
                 or identity.code_identity_sha256 != plan["code_hash"]

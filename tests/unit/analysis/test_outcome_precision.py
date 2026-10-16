@@ -234,11 +234,18 @@ def test_zero_denominator_draw_is_retained_without_redrawing(tmp_path, monkeypat
     assert all(r["estimates"] == [1.0] for r in rows if r["summary_id"] == "completed_win_rate")
 
 
-def test_authenticated_publication_resume_and_corrupt_range(tmp_path):
-    cfg = _fixture(tmp_path)
+@pytest.mark.parametrize("relative_results", [False, True])
+def test_authenticated_publication_resume_and_corrupt_range(
+    tmp_path, monkeypatch, relative_results
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = _fixture(Path(".") if relative_results else tmp_path)
     sources = {p: sha256_file(p) for p in precision._inputs(cfg, 2)}
     outputs = precision.build_outcome_precision(cfg, 2)
     assert precision.precision_is_up_to_date(cfg, 2)
+    assert precision.validate_precision_checkpoints(
+        cfg.outcome_precision_inventory_path(2).resolve()
+    )
     assert audit_sidecar_completeness(cfg.results_root) == []
     rows = pq.read_table(cfg.outcome_precision_path(2)).to_pylist()
     assert len(rows) == 2 * 3 * 5
