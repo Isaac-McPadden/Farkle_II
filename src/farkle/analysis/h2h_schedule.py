@@ -1769,6 +1769,7 @@ def execute_h2h_schedule(
     sidecar_bytes = 0
     worker_attempts: dict[int, int] = {}
     worker_simulation_seconds: dict[int, float] = {}
+    scheduler_state: dict[str, object] = {}
     source_authentication_seconds = time.perf_counter() - source_auth_started
 
     def progress_payload(**scheduler: object) -> dict[str, object]:
@@ -1805,6 +1806,7 @@ def execute_h2h_schedule(
             "maximum_scheduled_attempts_per_chunk": maximum_scheduled_attempts_per_chunk,
             "games_per_second": rate,
             "eta_seconds": remaining / rate if rate > 0 else None,
+            **scheduler_state,
             **scheduler,
         }
 
@@ -1863,10 +1865,22 @@ def execute_h2h_schedule(
     )
     apply_native_thread_limits(policy)
     worker_count = policy.process_workers
-    update_progress(
+    scheduler_state.update(
         requested_workers=configured_jobs,
+        resolved_workers=worker_count,
         effective_workers=worker_count,
+        created_workers=0,
+        live_workers=0,
+        peak_live_workers=0,
+        pending_work_units=0,
+        in_flight_work_units=0,
+        executor_mode=(
+            "no_pending_work"
+            if not pending
+            else "process_pool" if worker_count > 1 else "intentional_serial"
+        ),
     )
+    update_progress()
     memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:
@@ -1877,6 +1891,30 @@ def execute_h2h_schedule(
     def scheduler_progress(event: Mapping[str, object]) -> None:
         nonlocal executor_construction_seconds, executor_shutdown_seconds
         event_name = str(event.get("event", "working"))
+        if event_name == "executor_start":
+            # Replacement generations own new pools; retain only their measured topology.
+            scheduler_state.update(
+                created_workers=0,
+                live_workers=0,
+                peak_live_workers=0,
+                cleanly_terminated_workers=0,
+            )
+        # Keep the configured request (including 0=auto), while forwarding the
+        # actual admitted pool size and process observations from process_map.
+        for field in (
+            "resolved_workers",
+            "effective_workers",
+            "created_workers",
+            "live_workers",
+            "peak_live_workers",
+            "cleanly_terminated_workers",
+            "executor_mode",
+            "nested_process_pool_suppressed",
+        ):
+            if field in event:
+                scheduler_state[field] = event[field]
+        if "worker_count" in event:
+            scheduler_state["effective_workers"] = event["worker_count"]
         if event_name == "executor_constructed":
             construction = event.get("executor_construction_seconds", 0.0)
             if isinstance(construction, (int, float)):
@@ -1887,6 +1925,10 @@ def execute_h2h_schedule(
                 executor_shutdown_seconds += float(shutdown)
         pending_value = event.get("pending", 0)
         pending_futures = pending_value if isinstance(pending_value, int) else 0
+        scheduler_state["pending_work_units"] = pending_futures
+        scheduler_state["in_flight_work_units"] = pending_futures
+        resolved = scheduler_state["resolved_workers"]
+        current_workers = resolved if isinstance(resolved, int) else worker_count
         state = {
             "schedule_check": "waiting_for_memory",
             "waiting_on_futures": "waiting_on_futures",
@@ -1898,9 +1940,8 @@ def execute_h2h_schedule(
             submitted_chunks=event.get("submitted"),
             completed_futures=event.get("completed"),
             pending_futures=pending_futures,
-            active_workers=min(worker_count, pending_futures),
-            queued_chunks=max(0, pending_futures - worker_count),
-            effective_workers=event.get("worker_count", worker_count),
+            active_workers=min(current_workers, pending_futures),
+            queued_chunks=max(0, pending_futures - current_workers),
             long_tail=(scheduler_active_count <= worker_count or scheduler_generation > 1),
         )
 

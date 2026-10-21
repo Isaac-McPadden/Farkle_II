@@ -120,6 +120,10 @@ messages omit bulk histories and resource snapshots. Full telemetry remains in
 the JSON artifacts; DEBUG logging also includes the full attached fields.
 Final release-audit failures are written explicitly to the log with their
 artifact paths, as well as retained in `pipeline_health.json`.
+Heartbeat `workers=live/created/resolved` counts refer to the current executor;
+`requested=0` means automatic worker selection. After pool shutdown, live
+workers become zero while the created count remains available. Intentional
+serial execution runs in the parent and creates no worker processes.
 
 For an unattended above-cap stop, read the current immutable power plan's
 `schedule_hash` and `maximum_total_attempts`. Explicit approval is

@@ -924,6 +924,82 @@ def test_worker_initializer_caches_immutable_strategy_manifest(
     assert all(observed is manifest for observed in observed_manifests)
 
 
+def test_real_h2h_heartbeats_report_executor_topology_and_preserve_outcomes(
+    tmp_path, monkeypatch, caplog
+):
+    from tests.helpers.artifact_sidecars import (
+        clean_test_code_identity,
+        publish_v3_strategy_manifest,
+    )
+
+    from farkle.simulation.game_profile import GameProfile
+    from farkle.simulation.strategies import ThresholdStrategy
+
+    profile = GameProfile(default_target_score=100, default_max_rounds=200)
+    outputs = []
+    for workers in (1, 2):
+        cfg = _cfg(tmp_path / f"workers_{workers}")
+        cfg._code_identity = clean_test_code_identity()
+        cfg._game_profile_sha256 = profile.sha256
+        cfg.head2head.n_jobs = 0  # Preserve the original automatic-worker request.
+        cfg.resources.logical_cpu_budget = workers
+        cfg.head2head.family_alpha = 0.5
+        cfg.head2head.target_power = 0.1
+        cfg.head2head.practical_delta = 0.2
+        _write_frozen_family(cfg, strategies=(1, 2))
+        plan_h2h_schedule(cfg)
+        publish_v3_strategy_manifest(
+            cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2))
+        )
+        logger = logging.getLogger(f"tests.h2h.topology_{workers}")
+        snapshots = []
+        recorder = SupervisorHeartbeatRecorder(
+            logger,
+            run="pair",
+            interval_seconds=45,
+            autostart=False,
+            resource_sampler=lambda: {},
+            heartbeat_sink=snapshots.append,
+        )
+        scope = recorder.begin_scope("h2h", run="pair", stage="h2h_execute", phase="action")
+        original_update = recorder.update_scope
+
+        def update_and_emit(*args, _update=original_update, _recorder=recorder, **kwargs):
+            updated = _update(*args, **kwargs)
+            _recorder.emit_if_due(force=True)
+            return updated
+
+        with monkeypatch.context() as patch, caplog.at_level(logging.INFO, logger=logger.name):
+            patch.setattr(recorder, "update_scope", update_and_emit)
+            with use_supervisor_recorder(recorder, scope):
+                artifacts = execute_h2h_schedule(cfg, oracle_game_profile=profile)
+        scope.finish(status="success")
+        recorder.close()
+        outputs.append(pq.read_table(artifacts.order_counts).to_pandas())
+        progress = [s["active_scopes"][0]["progress"] for s in snapshots]
+        busy = [p for p in progress if p.get("scheduler_event") == "waiting_on_futures"]
+        if workers == 2:
+            assert busy
+            for p in busy:
+                assert p["requested_workers"] == 0
+                assert p["resolved_workers"] == p["created_workers"] == p["live_workers"] == 2
+                assert p["executor_mode"] == "process_pool"
+                assert p["pending_work_units"] == p["in_flight_work_units"] == p["pending_futures"]
+                assert p["pending_work_units"] > 0
+            messages = [r.getMessage() for r in caplog.records if r.name == logger.name]
+            assert any("workers=2/2/2 requested=0 mode=process_pool" in m for m in messages)
+        finished = [p for p in progress if p.get("scheduler_event") == "executor_complete"]
+        assert finished
+        for p in finished:
+            assert p["resolved_workers"] == workers
+            assert p["live_workers"] == 0
+            assert p["created_workers"] == (2 if workers == 2 else 0)
+            assert p["executor_mode"] == ("process_pool" if workers == 2 else "intentional_serial")
+            assert p["pending_work_units"] == p["in_flight_work_units"] == 0
+        assert progress[-1]["live_workers"] == 0
+    pd.testing.assert_frame_equal(outputs[0], outputs[1])
+
+
 def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=tuple(range(8)))
