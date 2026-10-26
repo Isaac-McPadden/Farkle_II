@@ -241,12 +241,7 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
-        profile=ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=False,
-            release_eligible=False,
-        ),
+        profile=ProfileConfig(purpose="integration"),
         batching=BatchingConfig(target_batches=20),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
@@ -310,12 +305,7 @@ def test_root_workflow_intervals_are_strictly_sequential(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
-        profile=ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=False,
-            release_eligible=False,
-        ),
+        profile=ProfileConfig(purpose="integration"),
         batching=BatchingConfig(target_batches=20),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
@@ -360,12 +350,7 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
-        profile=ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=False,
-            release_eligible=False,
-        ),
+        profile=ProfileConfig(purpose="integration"),
         batching=BatchingConfig(target_batches=20),
         screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
@@ -388,16 +373,20 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
     assert writes[0]["status"] == "running"
     assert writes[0]["profile"]["purpose"] == "integration"
     assert writes[0]["profile"]["production_eligible"] is False
-    assert writes[0]["profile"]["release_eligible"] is False
+    assert "release_eligible" not in writes[0]["profile"]
     assert "timing_summary" not in writes[0]
     assert writes[1]["status"] == "complete_success"
     assert writes[1]["profile"]["purpose"] == "integration"
     assert "timing_summary" in writes[1]
 
 
+@pytest.mark.parametrize("root_development", [False, True])
+@pytest.mark.parametrize("audit_fails", [False, True])
 def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    audit_fails: bool,
+    root_development: bool,
 ) -> None:
     first = _context(tmp_path, 11)
     second = _context(tmp_path, 22)
@@ -405,6 +394,38 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
         (first, second),
         pair_root=tmp_path / "pair",
     )
+    if root_development:
+        first.config.profile = ProfileConfig(purpose="integration")
+    from farkle.analysis.rng_evidence import publish
+
+    for context in (first, second):
+        for path in (
+            context.config.rng_preflight_evidence_path(),
+            context.config.rng_monitor_coverage_path(),
+        ):
+            publish(
+                context.config,
+                path,
+                {
+                    "root_seed": context.seed,
+                    "required_ks": [2],
+                    "status": "complete_valid",
+                    "coverage_complete": True,
+                    "checks": [
+                        {
+                            "check_id": "fixture",
+                            "required": True,
+                            "execution_status": "complete",
+                            "result": (
+                                "pass"
+                                if path == context.config.rng_preflight_evidence_path()
+                                else "no_concern_detected"
+                            ),
+                        }
+                    ],
+                },
+                [],
+            )
     code = CodeIdentity(
         commit="a" * 40,
         policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
@@ -436,8 +457,8 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
         "audit_authenticated_release_graphs",
         lambda targets, **_kwargs: calls.append(tuple(targets))
         or {
-            "status": "passed",
-            "failures": [],
+            "status": "failed" if audit_fails else "passed",
+            "failures": ["bad artifact hash"] if audit_fails else [],
             "run_contexts": {},
             "internal_roots": [{"label": "root_11"}, {"label": "root_22"}, {"label": "pair"}],
             "top_level_invocations": 1,
@@ -471,12 +492,66 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
         authentication_telemetry=two_seed_pipeline.AuthenticationTelemetry(),
     )
 
-    assert result["status"] == "passed"
-    assert result["release_eligible"] is True
-    assert result["profile_release_eligible"] is True
+    assert result["status"] == ("failed" if audit_fails else "passed")
+    assert result["release_eligible"] is (not audit_fails and not root_development)
+    assert result["production_eligible"] is True
+    assert bool(result["release_ineligibility_reasons"]) is (audit_fails or root_development)
     assert result["top_level_invocations"] == 1
     assert len(result["internal_roots"]) == 3
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "result,complete",
+    [("no_concern_detected", True), ("insufficient_evidence", False), ("investigate", True)],
+)
+def test_release_distinguishes_diagnostic_limits_from_invalid_evidence(tmp_path, result, complete):
+    from farkle.analysis.rng_evidence import publish
+
+    cfg = _context(tmp_path, 11).config
+    publish(
+        cfg,
+        cfg.rng_preflight_evidence_path(),
+        {
+            "root_seed": 11,
+            "required_ks": [2],
+            "coverage_complete": True,
+            "status": "insufficient_evidence",  # correctness is not dependence evidence
+            "checks": [
+                {
+                    "check_id": "correctness",
+                    "required": True,
+                    "execution_status": "complete",
+                    "result": "pass",
+                }
+            ],
+        },
+        [],
+    )
+    publish(
+        cfg,
+        cfg.rng_monitor_coverage_path(),
+        {
+            "root_seed": 11,
+            "required_ks": [2],
+            "coverage_complete": complete,
+            "status": "complete_valid" if result == "no_concern_detected" else result,
+            "checks": [
+                {
+                    "check_id": "monitor",
+                    "required": True,
+                    "execution_status": "complete",
+                    "result": result,
+                }
+            ],
+        },
+        [],
+    )
+    reasons, limitations = two_seed_pipeline._rng_release_assessment(cfg)
+    assert not reasons
+    assert bool(limitations) is (result != "no_concern_detected")
+    cfg.rng_monitor_coverage_path().write_text("{}", encoding="utf-8")
+    assert two_seed_pipeline._rng_release_assessment(cfg)[0]
 
 
 def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
@@ -486,12 +561,7 @@ def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
     first = _context(tmp_path, 11)
     second = _context(tmp_path, 22)
     pair = RootPairRunContext.from_root_contexts((first, second), pair_root=tmp_path / "pair")
-    pair.config.profile = ProfileConfig(
-        purpose="integration",
-        reduced_resolution=True,
-        production_eligible=False,
-        release_eligible=False,
-    )
+    pair.config.profile = ProfileConfig(purpose="integration")
     code = CodeIdentity(
         commit="a" * 40,
         policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
@@ -547,7 +617,7 @@ def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
     )
 
     assert result["status"] == "passed"
-    assert result["profile_release_eligible"] is False
+    assert result["production_eligible"] is False
     assert result["release_eligible"] is False
 
 

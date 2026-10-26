@@ -424,7 +424,7 @@ def test_authenticated_raw_two_root_oracle(
     assert config_path.parent == tmp_path
     assert tuple(cfg.sim.seed_list or ()) == ORACLE_ROOTS
     assert tuple(cfg.sim.n_players_list) == ORACLE_PLAYER_COUNTS
-    with pytest.raises(ValueError, match="100 equal batches"):
+    with pytest.raises(ValueError, match="at least 30 shuffles per batch"):
         cfg.validate_statistical_contract(require_two_roots=True)
 
     profile = oracle_game_profile()

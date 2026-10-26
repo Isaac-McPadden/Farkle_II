@@ -153,7 +153,7 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     assert payload["cli_overrides"] == ["analysis.n_jobs=4"]
     assert payload["profile"]["purpose"] == "production"
     assert payload["profile"]["production_eligible"] is True
-    assert payload["profile"]["release_eligible"] is True
+    assert "release_eligible" not in payload["profile"]
     assert payload["profile"]["workload_by_k"]["2"]["achieved_resolution"] <= 0.03
 
 
@@ -298,12 +298,7 @@ def test_purpose_only_change_preserves_compute_identity_but_invalidates_claim_co
 ) -> None:
     context = _root_context(tmp_path, 11)
     context.config.batching = replace(context.config.batching, target_batches=20)
-    context.config.profile = ProfileConfig(
-        purpose="integration",
-        reduced_resolution=True,
-        production_eligible=False,
-        release_eligible=False,
-    )
+    context.config.profile = ProfileConfig(purpose="integration")
     write_run_context_atomic(
         context,
         code_identity=CodeIdentity(
@@ -317,15 +312,16 @@ def test_purpose_only_change_preserves_compute_identity_but_invalidates_claim_co
     statistical_identity = compute_config_sha(context.config)
 
     assert integration_payload["profile"]["purpose"] == "integration"
-    assert integration_payload["profile"]["reduced_resolution"] is True
+    assert integration_payload["profile"]["reduced_resolution"] is False
     assert integration_payload["profile"]["production_eligible"] is False
-    assert integration_payload["profile"]["release_eligible"] is False
+    assert "release_eligible" not in integration_payload["profile"]
 
     context.config.profile = replace(context.config.profile, purpose="production")
     assert compute_config_sha(context.config) == statistical_identity
     assert integration_payload["public_config_sha256"] == statistical_identity
-    assert context.config.profile.production_eligible is False
-    assert context.config.profile.release_eligible is False
+    from farkle.orchestration.profile_metadata import resolved_profile_metadata
+
+    assert resolved_profile_metadata(context.config)["production_eligible"] is False
     from farkle.orchestration.seed_utils import write_active_config
 
     write_active_config(context.config)
@@ -335,5 +331,5 @@ def test_purpose_only_change_preserves_compute_identity_but_invalidates_claim_co
             active_config_path=context.active_config_path,
         )
 
-    with pytest.raises(ValueError, match="production profiles must be full-resolution"):
-        context.config.validate_statistical_contract()
+    context.config.screening.practical_delta_by_k = {2: 0.03, 4: 0.03}
+    context.config.validate_statistical_contract()

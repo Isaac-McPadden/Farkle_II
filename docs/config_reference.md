@@ -93,26 +93,61 @@ route and reducer phase names may also appear in
 do not change RNG statistical freshness.
 
 The workload planner chooses the smallest shuffle count meeting the Wilson
-target, then rounds upward to 100 equal contiguous batches. A cap that is too
+target, then rounds upward to the configured equal contiguous batch count. A cap that is too
 small produces `blocked_by_cap` before simulation work begins.
 
 ## Run profiles
 
-`profile.purpose` is `smoke`, `integration`, or `production`. Production
-profiles are full-resolution, production-eligible, and release-eligible. Smoke
-and integration profiles must be explicitly reduced-resolution,
-non-production, and non-release. These claim labels are authenticated in the
-run context and in stages that publish them, but remain outside statistical
-compute identity; the numerical workload settings independently change that
-identity.
+The [configuration option audit](config_option_audit.md) also identifies fixed
+protocol descriptions and unused fields elsewhere in the public schema.
+
+`profile.purpose` declares `smoke`, `integration`, or `production` intent. It
+is the only profile setting. Purpose does not select batch counts or establish
+statistical adequacy. Numerical workload settings determine the work.
+
+Generated profile metadata (contract version 2) calculates `reduced_resolution`
+from configured and planned Wilson widths relative to 0.03. It lists every
+production qualification check, its actual value, requirement, and outcome.
+The versioned `first_release_production_v1` policy retains the published
+production design: resolution at most 0.03 with 95% intervals; exactly 100
+batches with at least 30 shuffles each; at least 2,000 bootstrap replicates;
+at least min(75, grid size) candidates contributed per ranking method; no
+candidate-cap contraction of the potential family; H2H family alpha at most
+0.02, target power at least 0.80, and planning effect at most 0.03. These are
+release-policy requirements, not universal statistical sufficiency thresholds.
+The finite grid, player-count selection, worker counts, and RNG partitions do
+not independently establish or invalidate qualification. Stronger resolution,
+power or bootstrap settings are accepted within this contract.
+
+`production_eligible` requires both a qualifying configuration and declared
+production intent. Development runs remain development evidence even when
+their settings satisfy the design. A production request with unmet requirements
+remains ineligible and reports the reasons. Profile metadata says
+`release_status: pending_final_audit`; it cannot assert release eligibility.
+Only the final pipeline audit publishes `release_eligible`, requiring a passed
+fresh root/root/pair audit, completed roots, clean release code provenance,
+qualifying production settings, standard game rules, authenticated correctness
+coverage, and completed required monitoring. Sparse/constant-series diagnostic
+limitations and descriptive investigation alerts remain explicit in
+`diagnostic_limitations`; they do not become new statistical pass/fail rules.
+Optional exhaustive diagnostics may remain omitted by design. Correctness
+preflight is not statistical dependence evidence, and monitor clearance is
+not an independence guarantee.
+
+Remove the retired YAML keys `profile.reduced_resolution`,
+`profile.production_eligible`, and `profile.release_eligible`; the loader rejects
+these declarations with migration guidance. Labels remain outside statistical
+compute identity, while numerical settings independently affect that identity.
+The declared purpose and calculated qualification are authenticated in run
+contexts and publishing stages. Historical artifacts are not relabeled.
 
 `fast_config.yaml` is the existing machine-targeted integration family. It
-preserves 80 strategies, roots 56/57, and k=2/4/5, with a 0.08 configured
+preserves 80 strategies and k=2/4/5 over the configured root pair, with a 0.08 configured
 resolution, 500 bootstrap replicates, eight RNG partitions, top-eight
 contributions per ranking method, and a balanced-tail frozen-candidate cap of
-12. The integration-only 20-batch granularity and locked 30-shuffle floor
+12. The configured 20-batch granularity and locked 30-shuffle floor
 resolve the unrounded 597-shuffle requirement to 600 shuffles per root/k and
-achieve a maximum Wilson width of about 0.0797603. Production profiles retain
+achieve a maximum Wilson width of about 0.0797603. Production qualification requires
 100 batches. This is development evidence only.
 
 ## H2H contract

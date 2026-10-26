@@ -121,7 +121,7 @@ the JSON artifacts; DEBUG logging also includes the full attached fields.
 Final release-audit failures are written explicitly to the log with their
 artifact paths, as well as retained in `pipeline_health.json`.
 Heartbeat `workers=live/created/resolved` counts refer to the current executor;
-`requested=0` means automatic worker selection. After pool shutdown, live
+`requested=0` means automatic worker selection. After process pool shutdown, live
 workers become zero while the created count remains available. Intentional
 serial execution runs in the parent and creates no worker processes.
 
@@ -135,8 +135,10 @@ partial, altered or mismatched approval is not permission to continue.
 Success requires the fresh final root/root/pair byte-deep audit and
 `complete_success` health. Bounded integration products remain non-production
 and non-release even when that audit passes. For a scientific release, verify
-the finalized clean code identity, production profile and actual audit
-eligibility instead of copying qualification labels.
+the finalized clean code identity, calculated production qualification, and
+`release_eligible: true` in the final audit. Pre-audit reports show
+`release_status: pending_final_audit`; unmet requirements and release
+ineligibility reasons identify the settings or evidence needing attention.
 
 ## Limits that remain
 

@@ -7,6 +7,7 @@ Start with the [README](../README.md) for installation and workflow ownership.
 | [CLI](cli.md) | Commands, overrides, ownership and H2H approval |
 | [Rules](rules.md) | Scoring, turns and official winner semantics |
 | [Configuration](config_reference.md) | Public fields and paths |
+| [Configuration option audit](config_option_audit.md) | Fixed protocol fields, unused options, and real controls |
 | [Statistical methods](statistical_methods.md) | Conditioning, uncertainty and permitted claims |
 | [Artifacts](data_artifacts.md) | Scopes, authenticated publication and recovery |
 | [RNG](rng_contract.md) | Coordinate ownership and diagnostic interpretation |

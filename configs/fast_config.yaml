@@ -99,9 +99,6 @@ rng:
 
 profile:
   purpose: "integration"
-  reduced_resolution: true
-  production_eligible: false
-  release_eligible: false
 
 screening:
   resolution_delta: 0.08

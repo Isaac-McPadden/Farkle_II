@@ -10,7 +10,103 @@ from typing import Any
 from farkle.config import AppConfig
 from farkle.simulation import runner
 
-PROFILE_METADATA_CONTRACT_VERSION = 1
+PROFILE_METADATA_CONTRACT_VERSION = 2
+PRODUCTION_QUALIFICATION_CONTRACT = "first_release_production_v1"
+
+
+def production_configuration_qualification(
+    cfg: AppConfig, *, strategy_count: int
+) -> dict[str, Any]:
+    """Assess the published first-release design, without asserting result validity.
+
+    Requirements come from the production design in config_reference.md. They
+    are a versioned release policy, not universal statistical adequacy claims.
+    Worker counts, RNG partitioning and the finite grid size are not quality gates.
+    """
+
+    contribution = min(75, strategy_count)
+    family_bound = min(
+        strategy_count,
+        2 * cfg.screening.candidate_contribution_size
+        + len(set(cfg.screening.controls) | set(cfg.screening.mandatory_diagnostics)),
+    )
+    requirements = [
+        (
+            "screening.resolution_delta",
+            cfg.screening.resolution_delta,
+            "<= 0.03",
+            0 < cfg.screening.resolution_delta <= 0.03,
+        ),
+        (
+            "screening.interval_confidence",
+            cfg.screening.interval_confidence,
+            "== 0.95",
+            cfg.screening.interval_confidence == 0.95,
+        ),
+        (
+            "batching.target_batches",
+            cfg.batching.target_batches,
+            "== 100",
+            cfg.batching.target_batches == 100,
+        ),
+        (
+            "batching.min_shuffles_per_batch",
+            cfg.batching.min_shuffles_per_batch,
+            ">= 30",
+            cfg.batching.min_shuffles_per_batch >= 30,
+        ),
+        (
+            "screening.bootstrap_replicates",
+            cfg.screening.bootstrap_replicates,
+            ">= 2000",
+            cfg.screening.bootstrap_replicates >= 2_000,
+        ),
+        (
+            "screening.candidate_contribution_size",
+            cfg.screening.candidate_contribution_size,
+            f">= {contribution} (min(75, strategy_count))",
+            cfg.screening.candidate_contribution_size >= contribution,
+        ),
+        (
+            "head2head.candidate_cap",
+            cfg.head2head.candidate_cap,
+            f"unset or >= {family_bound} (no candidate contraction)",
+            cfg.head2head.candidate_cap is None or cfg.head2head.candidate_cap >= family_bound,
+        ),
+        (
+            "head2head.family_alpha",
+            cfg.head2head.family_alpha,
+            "<= 0.02",
+            0 < cfg.head2head.family_alpha <= 0.02,
+        ),
+        (
+            "head2head.target_power",
+            cfg.head2head.target_power,
+            ">= 0.80",
+            0.80 <= cfg.head2head.target_power < 1,
+        ),
+        (
+            "head2head.practical_delta",
+            cfg.head2head.practical_delta,
+            "<= 0.03",
+            0 < cfg.head2head.practical_delta <= 0.03,
+        ),
+    ]
+    checks = [
+        {"setting": name, "actual": actual, "requirement": required, "passed": passed}
+        for name, actual, required, passed in requirements
+    ]
+    reasons = [
+        f"{check['setting']}={check['actual']!r} requires {check['requirement']}"
+        for check in checks
+        if not check["passed"]
+    ]
+    return {
+        "contract": PRODUCTION_QUALIFICATION_CONTRACT,
+        "configuration_qualified": not reasons,
+        "checks": checks,
+        "unmet_requirements": reasons,
+    }
 
 
 @lru_cache(maxsize=64)
@@ -126,15 +222,27 @@ def resolved_profile_metadata(
                 h2h_games_per_root_order_block
             )
 
-    claim_scope = (
-        "production_release_evidence"
-        if cfg.profile.production_eligible and cfg.profile.release_eligible
-        else "non_production_non_release_development_evidence"
-    )
+    qualification = production_configuration_qualification(cfg, strategy_count=strategy_count)
+    reasons = list(qualification["unmet_requirements"])
+    if cfg.profile.purpose != "production":
+        reasons.insert(0, f"profile.purpose={cfg.profile.purpose!r} declares development use")
+    production_eligible = not reasons
     return {
         "profile_metadata_contract_version": PROFILE_METADATA_CONTRACT_VERSION,
         **asdict(cfg.profile),
-        "claim_scope": claim_scope,
+        "reduced_resolution": any(
+            cell["configured_resolution"] > 0.03 or cell["achieved_resolution"] > 0.03
+            for cell in workload_by_k.values()
+        ),
+        "production_eligible": production_eligible,
+        "production_qualification": qualification,
+        "production_ineligibility_reasons": reasons,
+        "release_status": "pending_final_audit",
+        "claim_scope": (
+            "production_configuration_pending_release_audit"
+            if production_eligible
+            else "non_production_non_release_development_evidence"
+        ),
         "strategy_count": strategy_count,
         "roots": list(roots),
         "player_counts": player_counts,

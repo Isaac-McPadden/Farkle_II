@@ -21,9 +21,9 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     assert metadata["purpose"] == "integration"
     assert metadata["reduced_resolution"] is True
     assert metadata["production_eligible"] is False
-    assert metadata["release_eligible"] is False
+    assert "release_eligible" not in metadata
     assert metadata["strategy_count"] == 80
-    assert metadata["roots"] == [56, 57]
+    assert metadata["roots"] == cfg.sim.seed_list
     assert metadata["player_counts"] == [2, 4, 5]
     assert metadata["configured_resolution"] == pytest.approx(0.08)
     assert metadata["bootstrap_replicates"] == 500
@@ -76,9 +76,7 @@ def test_fast_config_resolves_exact_reduced_integration_workload() -> None:
     assert cfg.resources.native_threads_per_worker == 1
     assert cfg.batching.target_batches == 20
     assert cfg.batching.min_shuffles_per_batch == 30
-    assert compute_config_sha(cfg) == (
-        "8e921f10d002a8b09e13736f16590cdd4b7a911a7ee54913c744d213c9033855"
-    )
+    assert compute_config_sha(replace(cfg, profile=ProfileConfig())) == compute_config_sha(cfg)
     with_old_host_reserve = replace(
         cfg,
         resources=replace(cfg.resources, minimum_system_available_memory_mb=2_048),
@@ -166,12 +164,7 @@ def test_profile_labels_are_outside_statistical_compute_identity_but_bound_to_pu
     baseline = AppConfig()
     integration = replace(
         baseline,
-        profile=ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=False,
-            release_eligible=False,
-        ),
+        profile=ProfileConfig(purpose="integration"),
     )
 
     assert compute_config_sha(baseline) == compute_config_sha(integration)
@@ -180,21 +173,91 @@ def test_profile_labels_are_outside_statistical_compute_identity_but_bound_to_pu
     assert baseline.stage_config_sha("reporting") != integration.stage_config_sha("reporting")
 
 
+def test_unknown_purpose_is_rejected() -> None:
+    cfg = replace(AppConfig(), profile=ProfileConfig(purpose="unknown"))
+    with pytest.raises(ValueError, match="profile.purpose"):
+        cfg.validate_statistical_contract()
+
+
+@pytest.mark.parametrize("key", ["reduced_resolution", "production_eligible", "release_eligible"])
+def test_claim_flags_cannot_be_supplied_in_config(tmp_path: Path, key: str) -> None:
+    path = tmp_path / "claims.yaml"
+    path.write_text(f"profile:\n  {key}: true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=f"Retired config key 'profile.{key}'"):
+        load_app_config(path)
+
+
+def test_relabeling_fast_settings_cannot_qualify_them_for_production() -> None:
+    cfg = load_app_config(CONFIG_DIR / "fast_config.yaml", seed_list_len=2)
+    cfg.profile = ProfileConfig(purpose="production")
+    cfg.batching = replace(cfg.batching, target_batches=100)
+    cfg.validate_statistical_contract(require_two_roots=True)
+    metadata = resolved_profile_metadata(cfg)
+    assert metadata["production_eligible"] is False
+    assert metadata["reduced_resolution"] is True
+    reasons = metadata["production_ineligibility_reasons"]
+    assert any("resolution_delta" in r for r in reasons)
+    assert any("bootstrap_replicates" in r for r in reasons)
+    assert any("candidate_contribution_size" in r for r in reasons)
+    assert any("candidate_cap" in r for r in reasons)
+
+
+def test_development_purpose_does_not_reduce_full_resolution_settings() -> None:
+    cfg = replace(AppConfig(), profile=ProfileConfig(purpose="integration"))
+    cfg.validate_statistical_contract()
+    metadata = resolved_profile_metadata(cfg)
+    assert metadata["reduced_resolution"] is False
+    assert metadata["production_qualification"]["configuration_qualified"] is True
+    assert metadata["production_eligible"] is False
+    assert len(metadata["production_ineligibility_reasons"]) == 1
+    assert "development use" in metadata["production_ineligibility_reasons"][0]
+    assert metadata["release_status"] == "pending_final_audit"
+    assert "release_eligible" not in metadata
+
+
 @pytest.mark.parametrize(
-    "profile",
+    "setting,value",
     [
-        ProfileConfig(purpose="unknown"),
-        ProfileConfig(purpose="production", reduced_resolution=True),
-        ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=True,
-            release_eligible=False,
-        ),
+        ("resolution_delta", 0.04),
+        ("bootstrap_replicates", 1999),
+        ("candidate_contribution_size", 74),
     ],
 )
-def test_profile_semantics_reject_contradictory_claim_labels(profile: ProfileConfig) -> None:
-    cfg = replace(AppConfig(), profile=profile)
+def test_production_qualification_checks_actual_settings(setting: str, value: float) -> None:
+    cfg = AppConfig()
+    setattr(cfg.screening, setting, value)
+    metadata = resolved_profile_metadata(cfg)
+    assert metadata["production_eligible"] is False
+    assert any(setting in r for r in metadata["production_ineligibility_reasons"])
 
-    with pytest.raises((TypeError, ValueError), match="profile|production|integration"):
-        cfg.validate_statistical_contract()
+
+def test_fully_screened_small_grid_is_not_disqualified_by_its_size() -> None:
+    cfg = AppConfig()
+    cfg.sim.score_thresholds = [250]
+    cfg.sim.dice_thresholds = [0]
+    cfg.sim.smart_five_opts = [True]
+    cfg.sim.smart_one_opts = [True]
+    cfg.sim.consider_score_opts = [True]
+    cfg.sim.consider_dice_opts = [True]
+    cfg.sim.auto_hot_dice_opts = [True]
+    cfg.sim.run_up_score_opts = [True]
+    cfg.sim.include_stop_at = False
+    cfg.sim.include_stop_at_heuristic = False
+    cfg.sim.n_players_list = [2]
+    cfg.screening.candidate_contribution_size = 4
+    cfg.head2head.candidate_cap = 4
+    metadata = resolved_profile_metadata(cfg)
+    assert metadata["strategy_count"] == 4
+    assert metadata["production_eligible"] is True
+
+
+def test_metadata_publishers_bind_design_settings_but_not_worker_counts() -> None:
+    cfg = AppConfig()
+    original = {stage: cfg.stage_config_sha(stage) for stage in ("h2h_power", "reporting")}
+    cfg.sim.n_jobs = 15
+    cfg.head2head.n_jobs = 15
+    cfg.sim.ckpt_every_sec = 300
+    cfg.head2head.total_game_cap = 1
+    assert {stage: cfg.stage_config_sha(stage) for stage in original} == original
+    cfg.screening.bootstrap_replicates = 500
+    assert all(cfg.stage_config_sha(stage) != previous for stage, previous in original.items())

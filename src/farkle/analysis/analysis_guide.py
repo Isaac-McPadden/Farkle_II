@@ -1046,10 +1046,13 @@ def guide_product_reusable(
             or authenticated.manifest_roots != captured.manifests
         ):
             return False
-        if authenticated.stage_identity.stage_config != stage_config_identity(
-            cfg,
-            stage_key="reporting",
-            field_paths=authenticated.stage_identity.stage_config.field_paths,
+        if (
+            authenticated.stage_identity.stage_config.sha256
+            != stage_config_identity(
+                cfg,
+                stage_key="reporting",
+                field_paths=authenticated.stage_identity.stage_config.field_paths,
+            ).sha256
         ):
             return False
         current_code = cfg._code_identity or resolve_code_identity(
@@ -1059,7 +1062,7 @@ def guide_product_reusable(
         if (
             authenticated.stage_identity.code != current_code
             or authenticated.versions.method_versions.get("analysis_guide_method_version") != 1
-            or authenticated.versions.method_versions.get("structure_report_contract_version") != 9
+            or authenticated.versions.method_versions.get("structure_report_contract_version") != 10
         ):
             return False
         actual = (

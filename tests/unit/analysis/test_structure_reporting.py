@@ -23,16 +23,14 @@ from farkle.utils.stage_completion import stage_done_path
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
+    from tests.helpers.artifact_sidecars import clean_test_code_identity
+
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11], n_players_list=[2]),
-        profile=ProfileConfig(
-            purpose="integration",
-            reduced_resolution=True,
-            production_eligible=False,
-            release_eligible=False,
-        ),
+        profile=ProfileConfig(purpose="integration"),
     )
+    cfg._code_identity = clean_test_code_identity()
     cfg.screening.controls = [1]
     return cfg
 
@@ -429,10 +427,10 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 9
+    assert report["report_contract_version"] == 10
     assert report["profile"]["purpose"] == "integration"
     assert report["profile"]["production_eligible"] is False
-    assert report["profile"]["release_eligible"] is False
+    assert "release_eligible" not in report["profile"]
     assert report["conditioning"]["trueskill"] == TRUESKILL_CONDITIONING
     completion = json.loads(
         stage_done_path(cfg.stage_dir("reporting"), "structure_reporting").read_text(
@@ -444,7 +442,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert completion["outputs"]
     report_identity = load_authenticated_sidecar(cfg.structure_report_json_path())
     assert report_identity.versions.artifact_contract_version == 3
-    assert report_identity.versions.method_versions["structure_report_contract_version"] == 9
+    assert report_identity.versions.method_versions["structure_report_contract_version"] == 10
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
@@ -461,7 +459,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert "matched_support" in markdown
     assert str(cfg.parameter_response_support_path(2)) in report["artifact_sources"]
     assert "Unique best among the frozen two-player finalists" in markdown
-    assert "non-production, non-release integration evidence" in markdown
+    assert "does not qualify for production use" in markdown
     assert cfg.structure_report_plot_path().stat().st_size > 0
     for path in (
         cfg.structure_report_json_path(),
@@ -556,7 +554,9 @@ def _claim_report(
             "purpose": "integration",
             "reduced_resolution": True,
             "production_eligible": False,
-            "release_eligible": False,
+            "production_qualification": {"configuration_qualified": False},
+            "production_ineligibility_reasons": ["fixture: reduced resolution"],
+            "release_status": "pending_final_audit",
             "configured_resolution": 0.08,
             "workload_by_k": {"2": {"achieved_resolution": 0.04}},
             "bootstrap_replicates": 500,
@@ -635,4 +635,4 @@ def test_markdown_uses_external_diagnostic_label_for_multi_k_claims() -> None:
 
     assert "external_two_player_finalist_diagnostic" in markdown
     assert "not a unique-best claim for the configured multi-k" in markdown
-    assert "non-production, non-release integration evidence" in markdown
+    assert "does not qualify for production use" in markdown

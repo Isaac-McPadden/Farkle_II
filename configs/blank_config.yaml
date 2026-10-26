@@ -114,9 +114,6 @@ rng:
 
 profile:
   purpose:  # smoke|integration|production
-  reduced_resolution:  # bool: reduced-resolution evidence only
-  production_eligible:  # bool: may support production claims
-  release_eligible:  # bool: may pass the release eligibility gate
 
 screening:
   resolution_delta:  # float: maximum full Wilson interval width

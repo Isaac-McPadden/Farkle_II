@@ -95,6 +95,41 @@ class StageLayout:
 
 
 # Ordered root workflow. It deliberately ends at descriptive screening.
+# Values actually published by resolved_profile_metadata. Operational controls
+# must not enter immutable planning or reporting identity through whole sections.
+_PROFILE_METADATA_SCOPE = (
+    "profile",
+    "sim.seed",
+    "sim.seed_list",
+    "sim.n_players_list",
+    "sim.score_thresholds",
+    "sim.dice_thresholds",
+    "sim.smart_five_opts",
+    "sim.smart_one_opts",
+    "sim.consider_score_opts",
+    "sim.consider_dice_opts",
+    "sim.auto_hot_dice_opts",
+    "sim.run_up_score_opts",
+    "sim.include_stop_at",
+    "sim.include_stop_at_heuristic",
+    "screening.resolution_delta",
+    "screening.interval_confidence",
+    "screening.bootstrap_replicates",
+    "screening.candidate_contribution_size",
+    "screening.controls",
+    "screening.mandatory_diagnostics",
+    "batching.target_batches",
+    "batching.min_shuffles_per_batch",
+    "analysis.rng_diagnostic_partitions",
+    "head2head.candidate_cap",
+    "head2head.family_alpha",
+    "head2head.target_power",
+    "head2head.practical_delta",
+    "head2head.seat1_advantage_scenarios",
+    "head2head.max_attempt_multiplier",
+)
+
+
 _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "ingest",
@@ -216,7 +251,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="single_root_tail",
         depends_on=("candidate_freeze",),
         cache_scope=(
-            "profile",
+            *_PROFILE_METADATA_SCOPE,
             "head2head.family_alpha",
             "head2head.target_power",
             "head2head.practical_delta",
@@ -226,7 +261,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "head2head.max_attempt_multiplier",
             "head2head.allow_single_root",
         ),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_execute",
@@ -260,8 +295,8 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "reporting",
         group="single_root_tail",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract", "profile"),
-        cache_key_version=2,
+        cache_scope=("artifact_contract", *_PROFILE_METADATA_SCOPE),
+        cache_key_version=3,
     ),
 )
 
@@ -289,7 +324,7 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         group="root_pair",
         depends_on=("candidate_freeze",),
         cache_scope=(
-            "profile",
+            *_PROFILE_METADATA_SCOPE,
             "head2head.family_alpha",
             "head2head.target_power",
             "head2head.practical_delta",
@@ -299,7 +334,7 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
             "head2head.max_attempt_multiplier",
             "head2head.allow_single_root",
         ),
-        cache_key_version=5,
+        cache_key_version=6,
     ),
     StageDefinition(
         "h2h_execute",
@@ -333,8 +368,8 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         "reporting",
         group="root_pair",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract", "profile"),
-        cache_key_version=2,
+        cache_scope=("artifact_contract", *_PROFILE_METADATA_SCOPE),
+        cache_key_version=3,
     ),
 )
 

@@ -103,9 +103,6 @@ rng:
 
 profile:
   purpose: "production"
-  reduced_resolution: false
-  production_eligible: true
-  release_eligible: true
 
 screening:
   resolution_delta: 0.03

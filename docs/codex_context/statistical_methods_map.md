@@ -15,3 +15,8 @@ Before editing identify:
 
 Use the [testing map](testing_and_review_map.md) for check selection and
 [development history](../development_history.md) for acceptance evidence.
+
+Run purpose is declared; `orchestration/profile_metadata.py` computes versioned
+production configuration qualification and planned resolution. Only the final
+`orchestration/two_seed_pipeline.py` gate determines release eligibility from
+the fresh audit, completed roots, code provenance and authenticated RNG coverage.

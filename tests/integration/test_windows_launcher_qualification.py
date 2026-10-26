@@ -51,9 +51,6 @@ def test_windows_launcher_cross_volume_cap_stop_and_resume(
     payload["batching"] = {"target_batches": 20, "min_shuffles_per_batch": 30}
     payload["profile"] = {
         "purpose": "integration",
-        "reduced_resolution": True,
-        "production_eligible": False,
-        "release_eligible": False,
     }
     # No oracle rule/coordinate overrides: the public launcher plays normal games.
     with atomic_path(str(config_path)) as staged:
@@ -168,7 +165,7 @@ def test_windows_launcher_cross_volume_cap_stop_and_resume(
         assert audit["top_level_invocations"] == 1
         assert len(audit["internal_roots"]) == 3
         assert audit["release_eligible"] is False
-        assert audit["profile_release_eligible"] is False
+        assert audit["production_eligible"] is False
         assert audit["code_identity"]["state"] == "clean"
         return health
 

@@ -71,6 +71,9 @@ RESOURCE_LIMITER_MODES: tuple[str, ...] = tuple(mode.value for mode in ResourceL
 
 
 RETIRED_CONFIG_KEYS: dict[str, str] = {
+    "profile.reduced_resolution": "derived profile metadata (remove this key)",
+    "profile.production_eligible": "calculated production qualification (remove this key)",
+    "profile.release_eligible": "the final release audit (remove this key)",
     "resources.target_memory_mb": (
         "resources.scheduler_memory_budget_mb and resources.process_tree_warning_threshold_mb"
     ),
@@ -172,12 +175,9 @@ class RNGConfig:
 
 @dataclass
 class ProfileConfig:
-    """Declared run purpose and the claims its outputs may support."""
+    """Declared intent; qualification is calculated from settings and evidence."""
 
     purpose: str = "production"
-    reduced_resolution: bool = False
-    production_eligible: bool = True
-    release_eligible: bool = True
 
 
 @dataclass
@@ -2062,24 +2062,6 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
     profile = cfg.profile
     if profile.purpose not in {"smoke", "integration", "production"}:
         raise ValueError("profile.purpose must be 'smoke', 'integration', or 'production'")
-    for name in ("reduced_resolution", "production_eligible", "release_eligible"):
-        if not isinstance(getattr(profile, name), bool):
-            raise TypeError(f"profile.{name} must be a boolean")
-    if profile.purpose == "production":
-        if (
-            profile.reduced_resolution
-            or not profile.production_eligible
-            or not profile.release_eligible
-        ):
-            raise ValueError(
-                "production profiles must be full-resolution, production-eligible, and "
-                "release-eligible"
-            )
-    elif not profile.reduced_resolution or profile.production_eligible or profile.release_eligible:
-        raise ValueError(
-            "smoke and integration profiles must be reduced-resolution, non-production, "
-            "and non-release"
-        )
     if cfg.rng.scheme_version != 2 or cfg.rng.bit_generator != "PCG64DXSM":
         raise ValueError("rng must use scheme_version=2 and bit_generator='PCG64DXSM'")
     rng_cap = cfg.analysis.rng_max_matchup_groups
@@ -2158,14 +2140,15 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         or cfg.screening.projected_games_per_second <= 0.0
     ):
         raise ValueError("screening.projected_games_per_second must be positive when configured")
-    required_batch_count = 20 if cfg.profile.purpose == "integration" else 100
     if (
-        cfg.batching.target_batches != required_batch_count
+        isinstance(cfg.batching.target_batches, bool)
+        or not isinstance(cfg.batching.target_batches, int)
+        or cfg.batching.target_batches < 1
         or cfg.batching.min_shuffles_per_batch < 30
     ):
         raise ValueError(
-            f"{cfg.profile.purpose} batching requires exactly {required_batch_count} equal "
-            "batches with at least 30 shuffles per batch"
+            "batching requires a positive integer target_batches and at least "
+            "30 shuffles per batch"
         )
 
     practical = cfg.screening.practical_delta_by_k

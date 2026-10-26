@@ -148,7 +148,7 @@ def test_authenticated_output_completion_and_unchanged_no_force_reuse(rendered):
         validate_artifact_sidecar(path, expected={"operation": "render_analysis_guide_v1"})
         sidecar = load_authenticated_sidecar(path)
         assert sidecar.versions.method_versions["analysis_guide_method_version"] == 1
-        assert sidecar.versions.method_versions["structure_report_contract_version"] == 9
+        assert sidecar.versions.method_versions["structure_report_contract_version"] == 10
     md_identity = load_authenticated_sidecar(outputs[1])
     assert [s.artifact.location.relative_path for s in md_identity.source_artifacts] == [
         "analysis_guide.json"

@@ -24,7 +24,7 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
-STRUCTURE_REPORT_CONTRACT_VERSION: Final = 9
+STRUCTURE_REPORT_CONTRACT_VERSION: Final = 10
 
 
 def _rng_evidence_summary(
@@ -343,8 +343,7 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
     if not report["profile"]["production_eligible"]:
         lines.insert(
             0,
-            "Reduced-resolution integration evidence is non-production and cannot support "
-            "release or production inferential claims.",
+            "This run does not qualify for production use. Its results remain development evidence.",
         )
     if h2h["unresolved_pair_count"]:
         lines.append(f"{h2h['unresolved_pair_count']} finalist comparisons remain unresolved.")
@@ -424,11 +423,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "This report is conditional on the simulated finite strategy grid.",
         (
-            "This is reduced-resolution, non-production, non-release integration evidence."
-            if report["profile"]["reduced_resolution"]
+            "This run does not qualify for production use; results remain development evidence."
+            if not profile["production_eligible"]
             else (
-                "This profile is configured for production/release eligibility; final "
-                "eligibility remains subject to the release audit."
+                "The configuration meets the production design requirements. Release "
+                "eligibility is determined separately by the final authenticated audit."
             )
         ),
         "",
@@ -436,8 +435,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Run purpose: `{profile['purpose']}`",
         f"- Reduced resolution: `{profile['reduced_resolution']}`",
-        f"- Production eligible: `{profile['production_eligible']}`",
-        f"- Release eligible: `{profile['release_eligible']}`",
+        f"- Production configuration eligible: `{profile['production_eligible']}`",
+        f"- Production qualification: `{profile['production_qualification']}`",
+        f"- Production ineligibility reasons: `{profile['production_ineligibility_reasons']}`",
+        f"- Release status: `{profile['release_status']}` (see final pipeline audit)",
         f"- Configured resolution: `{profile['configured_resolution']}`",
         f"- Resolved workload by k: `{profile['workload_by_k']}`",
         f"- Bootstrap replicates: `{profile['bootstrap_replicates']}`",

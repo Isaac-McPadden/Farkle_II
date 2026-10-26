@@ -33,9 +33,14 @@ from farkle.orchestration.seed_utils import (
 )
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
-from farkle.utils.artifact_contract import read_json_file_with_retry, sha256_file
+from farkle.utils.artifact_contract import (
+    ArtifactContractError,
+    read_json_file_with_retry,
+    sha256_file,
+)
 from farkle.utils.artifacts import read_json_artifact
 from farkle.utils.authenticated_contract import (
+    AuthenticatedContractError,
     CodeIdentity,
     CodeIdentityPolicy,
     resolve_code_identity,
@@ -722,6 +727,61 @@ def _require_existing_resume_identity(
         )
 
 
+def _rng_release_assessment(cfg: AppConfig) -> tuple[list[str], list[str]]:
+    """Check required execution; retain descriptive limitations without a new statistical gate."""
+
+    reasons: list[str] = []
+    limitations: list[str] = []
+    for path in (cfg.rng_preflight_evidence_path(), cfg.rng_monitor_coverage_path()):
+        try:
+            evidence = read_json_artifact(
+                path, expected_sidecar={"operation": "first_release_rng_evidence"}
+            )
+            if not isinstance(evidence, dict):
+                raise ValueError("evidence must be an object")
+            if evidence.get("root_seed") != cfg.sim.seed or evidence.get("required_ks") != sorted(
+                set(cfg.sim.n_players_list)
+            ):
+                raise ValueError("root/k coverage does not match the run")
+            if evidence.get("coverage_complete") is not True:
+                message = f"root_{cfg.sim.seed}: {path.name} has incomplete diagnostic coverage"
+                if path == cfg.rng_preflight_evidence_path():
+                    reasons.append(message)
+                else:
+                    limitations.append(message)
+            checks = evidence.get("checks")
+            if not isinstance(checks, list) or not any(
+                isinstance(check, dict) and check.get("required") is True for check in checks
+            ):
+                raise ValueError("required checks are missing")
+            for check in checks:
+                if not isinstance(check, dict):
+                    raise ValueError("malformed check")
+                if check.get("required") is True:
+                    message = f"root_{cfg.sim.seed}: {check.get('check_id', 'unnamed check')} result={check.get('result')!r} reason={check.get('reason')!r}"
+                    allowed = (
+                        {"pass"}
+                        if path == cfg.rng_preflight_evidence_path()
+                        else {"no_concern_detected", "insufficient_evidence", "investigate"}
+                    )
+                    if (
+                        check.get("execution_status") != "complete"
+                        or check.get("result") not in allowed
+                    ):
+                        reasons.append(message)
+                    elif check.get("result") in {"insufficient_evidence", "investigate"}:
+                        limitations.append(message)
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            ArtifactContractError,
+            AuthenticatedContractError,
+        ) as exc:
+            reasons.append(f"root_{cfg.sim.seed}: {path.name} unavailable or invalid: {exc}")
+    return reasons, limitations
+
+
 def _final_release_gate(
     root_results: dict[int, _SeedRunStatus],
     pair_context: RootPairRunContext,
@@ -735,6 +795,8 @@ def _final_release_gate(
     """Execute the single byte-deep release gate before success publication."""
 
     failures: list[str] = []
+    if len(root_results) != 2 or set(root_results) != set(pair_context.config.sim.seed_list or []):
+        failures.append("release audit requires the two configured root results")
     targets: list[AuthenticatedReleaseAuditTarget] = []
     for seed in sorted(root_results):
         result = root_results[seed]
@@ -767,6 +829,8 @@ def _final_release_gate(
                 current_code_identity=current_code_identity,
             )
         failures.extend(audit_result["failures"])
+        if audit_result.get("status") != "passed" and not audit_result["failures"]:
+            failures.append("authenticated release audit did not report success")
     except BaseException:
         raise
     code_release_eligible = (
@@ -775,12 +839,36 @@ def _final_release_gate(
     )
     if not code_release_eligible and not allow_oracle_code_identity:
         failures.append("release approval requires release-clean code identity")
-    profile_release_eligible = pair_context.config.profile.release_eligible
-    release_eligible = code_release_eligible and profile_release_eligible
+    profile = resolved_profile_metadata(pair_context.config)
+    release_reasons = list(profile["production_ineligibility_reasons"])
+    diagnostic_limitations: list[str] = []
+    if not code_release_eligible:
+        release_reasons.append("release requires release-clean code identity")
+    if failures or audit_result.get("status") != "passed":
+        release_reasons.append("final authenticated release audit did not pass")
+    for result in root_results.values():
+        root_profile = resolved_profile_metadata(result.context.config)
+        release_reasons.extend(
+            f"root_{result.seed}: {reason}"
+            for reason in root_profile["production_ineligibility_reasons"]
+        )
+        if not result.simulation_ok or not result.analysis_ok:
+            release_reasons.append(f"root_{result.seed}: simulation or analysis did not complete")
+        if result.context.config._game_profile_sha256 is not None:
+            release_reasons.append(
+                f"root_{result.seed}: custom game profile is development evidence"
+            )
+        rng_reasons, rng_limitations = _rng_release_assessment(result.context.config)
+        release_reasons.extend(rng_reasons)
+        diagnostic_limitations.extend(rng_limitations)
+    release_eligible = not release_reasons
     return {
         "status": "passed" if not failures else "failed",
         "release_eligible": release_eligible,
-        "profile_release_eligible": profile_release_eligible,
+        "production_eligible": profile["production_eligible"],
+        "production_qualification": profile["production_qualification"],
+        "release_ineligibility_reasons": sorted(set(release_reasons)),
+        "diagnostic_limitations": sorted(set(diagnostic_limitations)),
         "accepted_release_identity": [3, 2, 2, 2, 2, 2],
         "artifact_roots": [str(target.snapshot.graph_root) for target in targets],
         "run_contexts": audit_result["run_contexts"],

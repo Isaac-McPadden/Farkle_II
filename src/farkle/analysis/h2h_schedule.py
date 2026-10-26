@@ -1892,7 +1892,7 @@ def execute_h2h_schedule(
         nonlocal executor_construction_seconds, executor_shutdown_seconds
         event_name = str(event.get("event", "working"))
         if event_name == "executor_start":
-            # Replacement generations own new pools; retain only their measured topology.
+            # Replacement generations own new process pools; retain their measured topology.
             scheduler_state.update(
                 created_workers=0,
                 live_workers=0,
@@ -1900,7 +1900,7 @@ def execute_h2h_schedule(
                 cleanly_terminated_workers=0,
             )
         # Keep the configured request (including 0=auto), while forwarding the
-        # actual admitted pool size and process observations from process_map.
+        # actual admitted process pool size and process observations from process_map.
         for field in (
             "resolved_workers",
             "effective_workers",
