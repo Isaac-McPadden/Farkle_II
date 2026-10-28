@@ -36,6 +36,12 @@ from farkle.config import (
     SimConfig,
     assign_config_sha,
 )
+from farkle.protocols import (
+    ARTIFACT_CONTRACT_VERSION,
+    CONDITIONING_VERSION,
+    DERIVED_SCHEMA_VERSION,
+    ESTIMAND_VERSION,
+)
 from farkle.simulation import runner
 from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
 from farkle.simulation.workload_planner import TournamentWorkloadPlan
@@ -99,11 +105,11 @@ def make_authenticated_v3_config(
     cfg._code_identity = clean_test_code_identity()
     cfg._run_lineage_sha256 = "1" * 64
     assign_config_sha(cfg)
-    assert cfg.artifact_contract.artifact_contract_version == 3
-    assert cfg.rng.scheme_version == 2
-    assert cfg.artifact_contract.schema_version == 2
-    assert cfg.artifact_contract.estimand_version == 2
-    assert cfg.artifact_contract.conditioning_version == 2
+    assert ARTIFACT_CONTRACT_VERSION == 3
+    assert RNG_SCHEME_VERSION == 2
+    assert DERIVED_SCHEMA_VERSION == 2
+    assert ESTIMAND_VERSION == 2
+    assert CONDITIONING_VERSION == 2
     return cfg
 
 

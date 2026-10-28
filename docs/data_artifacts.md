@@ -19,6 +19,12 @@ source identity is incompatible.
 Paths are resolved through `AppConfig`. A file from one scope cannot satisfy a
 consumer for another scope.
 
+Protocol values come from `farkle.protocols`. Public configuration schema 2
+contains user controls only; run-context contract 4 authenticates the complete
+implementation-contract metadata alongside the public configuration hash.
+Removing version selectors does not remove version validation or permit old
+sidecars to satisfy current stages.
+
 ## Sidecar contract
 
 For data file `x.parquet`, metadata is written to

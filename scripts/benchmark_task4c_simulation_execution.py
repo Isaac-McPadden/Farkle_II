@@ -142,7 +142,6 @@ def _fixture_config(
     cfg.resources.minimum_system_available_memory_mb = 1024
     cfg.resources.parent_process_memory_mb = 256
     cfg.resources.estimated_worker_memory_mb["simulation"] = 128
-    cfg.orchestration.parallel_seeds = False
     cfg.validate_statistical_contract(require_two_roots=False)
     assign_config_sha(cfg)
     return cfg

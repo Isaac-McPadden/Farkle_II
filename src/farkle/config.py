@@ -31,6 +31,13 @@ from typing import (
 
 import yaml  # type: ignore[import-untyped]
 
+from farkle.protocols import (
+    PUBLIC_CONFIG_SCHEMA_VERSION,
+    RNG_BIT_GENERATOR,
+    RNG_SCHEME_VERSION,
+    artifact_versions,
+    implementation_contract,
+)
 from farkle.utils.progress import ProgressLogConfig
 from farkle.utils.types import Compression, normalize_compression
 from farkle.utils.yaml_helpers import expand_dotted_keys
@@ -71,6 +78,13 @@ RESOURCE_LIMITER_MODES: tuple[str, ...] = tuple(mode.value for mode in ResourceL
 
 
 RETIRED_CONFIG_KEYS: dict[str, str] = {
+    "analysis.results_glob": "canonical configured root/k input paths (remove this unused key)",
+    "screening.interval_confidence": "the fixed 95% implementation contract (remove this key)",
+    "head2head.seat1_advantage_scenarios": "the implemented H2H planning contract (remove this key)",
+    "head2head.candidate_cap_policy": "the implemented balanced-tail policy (remove this key)",
+    "robustness.report_pareto": "the required Pareto report (remove this unsupported toggle)",
+    "robustness.report_maximin": "the required maximin report (remove this unsupported toggle)",
+    "orchestration.parallel_seeds": "sequential root orchestration (remove this unsupported toggle)",
     "profile.reduced_resolution": "derived profile metadata (remove this key)",
     "profile.production_eligible": "calculated production qualification (remove this key)",
     "profile.release_eligible": "the final release audit (remove this key)",
@@ -113,6 +127,23 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "sim.n_players": "sim.n_players_list",
     "sim.collect_metrics": "sim.expanded_metrics",
     "sim.seed_pair": "sim.seed_list",
+}
+RETIRED_CONFIG_KEYS.update(
+    {
+        f"rng.{key}": "implementation-owned RNG identity (remove this key)"
+        for key in ("scheme_version", "bit_generator")
+    }
+)
+RETIRED_CONFIG_KEYS.update(
+    {
+        f"artifact_contract.{key}": "implementation-owned artifact identity (remove this key)"
+        for key in artifact_versions()
+    }
+)
+RETIRED_CONFIG_SECTIONS = {
+    "rng": "RNG identity is owned by farkle.protocols and recorded in authenticated metadata",
+    "artifact_contract": "artifact versions are owned by farkle.protocols and recorded in authenticated metadata",
+    "orchestration": "root execution is sequential; no supported user choices remain in this section",
 }
 RETIRED_CONFIG_KEYS.update(
     {
@@ -166,14 +197,6 @@ class IOConfig:
 
 
 @dataclass
-class RNGConfig:
-    """Versioned deterministic random-stream contract."""
-
-    scheme_version: int = 2
-    bit_generator: str = "PCG64DXSM"
-
-
-@dataclass
 class ProfileConfig:
     """Declared intent; qualification is calculated from settings and evidence."""
 
@@ -185,7 +208,6 @@ class ScreeningConfig:
     """Broad tournament resolution and candidate-screening settings."""
 
     resolution_delta: float = 0.03
-    interval_confidence: float = 0.95
     practical_delta_by_k: dict[int, float] | None = field(default_factory=lambda: {5: 0.03})
     delta_across_k: float | None = 0.03
     bootstrap_replicates: int = 2_000
@@ -208,26 +230,9 @@ class BatchingConfig:
 class RobustnessConfig:
     """Finite-grid robustness summaries to emit."""
 
-    report_pareto: bool = True
-    report_maximin: bool = True
     delta_seed_stability: float = 0.03
     joint_discrepancy_alpha: float = 0.05
     matched_count_fractions: tuple[float, ...] = (0.25, 0.50, 0.75, 1.0)
-
-
-@dataclass
-class ArtifactContractConfig:
-    """Versions participating in artifact validation and cache freshness."""
-
-    artifact_contract_version: int = 3
-    estimand_version: int = 2
-    schema_version: int = 2
-    baseline_version: int = 1
-    k_support_version: int = 1
-    weighting_version: int = 1
-    conditioning_version: int = 2
-    multiplicity_version: int = 1
-    candidate_family_version: int = 1
 
 
 @dataclass
@@ -327,7 +332,6 @@ class AnalysisConfig:
     """Multiprocessing start method for analysis executors."""
     progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     log_level: str = "INFO"
-    results_glob: str = "*_players"
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"
@@ -389,10 +393,8 @@ class Head2HeadConfig:
     target_power: float = 0.80
     practical_delta: float = 0.03
     sensitivity_deltas: tuple[float, ...] = (0.03, 0.04)
-    seat1_advantage_scenarios: tuple[float, ...] = (0.0, 0.03, 0.06)
     delta_equivalence: float | None = None
     candidate_cap: int | None = None
-    candidate_cap_policy: str = "balanced-tail"
     min_candidate_completion_rate: float = 0.99
     max_attempt_multiplier: float = 2.0
     total_game_cap: int | None = 100_000_000
@@ -408,13 +410,6 @@ class HGBConfig:
     heldout_folds: int = 5
     permutation_repeats: int = 10
     future_proposal_limit: int = 100
-
-
-@dataclass
-class OrchestrationConfig:
-    """Controls top-level orchestration behavior."""
-
-    parallel_seeds: bool = False
 
 
 @dataclass
@@ -485,14 +480,11 @@ class AppConfig:
     trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
-    orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
-    rng: RNGConfig = field(default_factory=RNGConfig)
     profile: ProfileConfig = field(default_factory=ProfileConfig)
     screening: ScreeningConfig = field(default_factory=ScreeningConfig)
     batching: BatchingConfig = field(default_factory=BatchingConfig)
     robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
-    artifact_contract: ArtifactContractConfig = field(default_factory=ArtifactContractConfig)
     k_aggregation: KAggregationConfig = field(default_factory=KAggregationConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
@@ -560,7 +552,6 @@ class AppConfig:
             TOURNAMENT_METHOD_VERSION,
         )
 
-        contract = self.artifact_contract
         weights = self.k_aggregation.k_weights
         normalized_counts: set[int | str] = set()
         for value in self.sim.n_players_list:
@@ -573,18 +564,12 @@ class AppConfig:
             key=lambda value: (isinstance(value, str), str(value)),
         )
         freshness: dict[str, Any] = {
-            "artifact_contract_version": contract.artifact_contract_version,
-            "estimand_version": contract.estimand_version,
-            "schema_version": contract.schema_version,
-            "rng_scheme_version": self.rng.scheme_version,
+            **artifact_versions(),
+            "configuration_schema_version": PUBLIC_CONFIG_SCHEMA_VERSION,
+            "rng_scheme_version": RNG_SCHEME_VERSION,
+            "rng_bit_generator": RNG_BIT_GENERATOR,
             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
-            "baseline_version": contract.baseline_version,
-            "k_support_version": contract.k_support_version,
-            "weighting_version": contract.weighting_version,
-            "conditioning_version": contract.conditioning_version,
-            "multiplicity_version": contract.multiplicity_version,
-            "candidate_family_version": contract.candidate_family_version,
             "baseline": "chance_rate_by_k",
             "required_player_counts": ordered_counts,
             "k_aggregation_method": self.k_aggregation.method,
@@ -1547,14 +1532,11 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "trueskill": TrueSkillConfig,
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
-        "orchestration": OrchestrationConfig,
         "resources": ResourcesConfig,
-        "rng": RNGConfig,
         "profile": ProfileConfig,
         "screening": ScreeningConfig,
         "batching": BatchingConfig,
         "robustness": RobustnessConfig,
-        "artifact_contract": ArtifactContractConfig,
         "k_aggregation": KAggregationConfig,
     }
     unknown_sections = set(data) - set(top_level_sections)
@@ -1651,6 +1633,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 f"Retired config key {dotted_key!r}; use {replacement!r}. "
                 "Legacy statistical settings are not reinterpreted."
             )
+
+    for section_name, reason in RETIRED_CONFIG_SECTIONS.items():
+        if section_name in data:
+            raise ValueError(f"Retired config section {section_name!r}; remove it. {reason}")
 
     seed_provided = False
     seed_list_provided = False
@@ -1764,14 +1750,11 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         trueskill=build(TrueSkillConfig, data.get("trueskill", {})),
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
-        orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
         resources=build(ResourcesConfig, data.get("resources", {})),
-        rng=build(RNGConfig, data.get("rng", {})),
         profile=build(ProfileConfig, data.get("profile", {})),
         screening=build(ScreeningConfig, data.get("screening", {})),
         batching=build(BatchingConfig, data.get("batching", {})),
         robustness=build(RobustnessConfig, data.get("robustness", {})),
-        artifact_contract=build(ArtifactContractConfig, data.get("artifact_contract", {})),
         k_aggregation=build(KAggregationConfig, data.get("k_aggregation", {})),
     )
     _normalize_seed_list(cfg.sim)
@@ -1845,6 +1828,10 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if retired_key in RETIRED_CONFIG_KEYS:
             replacement = RETIRED_CONFIG_KEYS[retired_key]
             raise ValueError(f"Retired config key {retired_key!r}; use {replacement!r} instead")
+        if section_name in RETIRED_CONFIG_SECTIONS:
+            raise ValueError(
+                f"Retired config section {section_name!r}; remove it. {RETIRED_CONFIG_SECTIONS[section_name]}"
+            )
         section = getattr(cfg, section_name)
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
@@ -1914,6 +1901,7 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
     """Return the config payload used for deterministic cache hashing."""
 
     resolved = effective_config_dict(cfg)
+    resolved["implementation_contract"] = implementation_contract()
     for path in (
         "io.temp_dir",
         "sim.progress_logging",
@@ -2062,8 +2050,6 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
     profile = cfg.profile
     if profile.purpose not in {"smoke", "integration", "production"}:
         raise ValueError("profile.purpose must be 'smoke', 'integration', or 'production'")
-    if cfg.rng.scheme_version != 2 or cfg.rng.bit_generator != "PCG64DXSM":
-        raise ValueError("rng must use scheme_version=2 and bit_generator='PCG64DXSM'")
     rng_cap = cfg.analysis.rng_max_matchup_groups
     if rng_cap is not None and (
         isinstance(rng_cap, bool) or not isinstance(rng_cap, int) or rng_cap < 1
@@ -2084,36 +2070,12 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         or rng_partitions > 256
     ):
         raise ValueError("analysis.rng_diagnostic_partitions must be in [1, 256]")
-    contract_versions = dataclasses.asdict(cfg.artifact_contract)
-    if any(int(value) < 1 for value in contract_versions.values()):
-        raise ValueError("artifact_contract versions must all be positive integers")
-    artifact_version = cfg.artifact_contract.artifact_contract_version
-    if artifact_version != 3:
-        raise ValueError(
-            "artifact_contract.artifact_contract_version must be exactly 3 "
-            "for the public release path"
-        )
-    accepted_v3 = {
-        "estimand_version": 2,
-        "schema_version": 2,
-        "conditioning_version": 2,
-    }
-    actual_v3 = {name: int(getattr(cfg.artifact_contract, name)) for name in accepted_v3}
-    if actual_v3 != accepted_v3:
-        raise ValueError(
-            "authenticated artifact contract 3 requires "
-            "estimand_version=2, schema_version=2, and conditioning_version=2"
-        )
     if not 0.0 < cfg.screening.resolution_delta < 1.0:
         raise ValueError("screening.resolution_delta must be between 0 and 1")
-    if cfg.screening.interval_confidence != 0.95:
-        raise ValueError("screening.interval_confidence is locked at 0.95")
     if cfg.screening.bootstrap_replicates < 1:
         raise ValueError("screening.bootstrap_replicates must be positive")
     if cfg.screening.candidate_contribution_size < 1:
         raise ValueError("screening.candidate_contribution_size must be positive")
-    if not cfg.robustness.report_pareto or not cfg.robustness.report_maximin:
-        raise ValueError("robustness must report both Pareto membership and maximin leadership")
     if cfg.robustness.delta_seed_stability <= 0.0:
         raise ValueError("robustness.delta_seed_stability must be positive")
     if not 0.0 < cfg.robustness.joint_discrepancy_alpha < 1.0:
@@ -2204,16 +2166,8 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
             "head2head.sensitivity_deltas must be unique positive values containing "
             "the practical delta and 0.04"
         )
-    if tuple(float(value) for value in h2h.seat1_advantage_scenarios) != (
-        0.0,
-        0.03,
-        0.06,
-    ):
-        raise ValueError("head2head.seat1_advantage_scenarios is locked to 0, 0.03, 0.06")
     if h2h.candidate_cap is not None and h2h.candidate_cap < 2:
         raise ValueError("head2head.candidate_cap must be at least 2")
-    if h2h.candidate_cap_policy != "balanced-tail":
-        raise ValueError("head2head.candidate_cap_policy must be 'balanced-tail'")
     if not 0.0 <= h2h.min_candidate_completion_rate <= 1.0:
         raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
     if not math.isfinite(h2h.max_attempt_multiplier) or h2h.max_attempt_multiplier < 1.0:
@@ -2289,14 +2243,11 @@ __all__ = [
     "TrueSkillConfig",
     "Head2HeadConfig",
     "HGBConfig",
-    "OrchestrationConfig",
     "ResourcesConfig",
-    "RNGConfig",
     "ProfileConfig",
     "ScreeningConfig",
     "BatchingConfig",
     "RobustnessConfig",
-    "ArtifactContractConfig",
     "KAggregationConfig",
     "AppConfig",
     "expected_seed_list_length",

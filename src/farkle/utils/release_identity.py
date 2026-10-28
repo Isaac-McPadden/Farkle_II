@@ -19,6 +19,14 @@ from typing import Any
 import numpy as np
 
 from farkle.config import AppConfig, ArtifactScope, effective_config_dict
+from farkle.protocols import (
+    ARTIFACT_CONTRACT_VERSION,
+    CANDIDATE_FAMILY_VERSION,
+    CONDITIONING_VERSION,
+    DERIVED_SCHEMA_VERSION,
+    ESTIMAND_VERSION,
+    RNG_SCHEME_VERSION,
+)
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
@@ -28,7 +36,6 @@ from farkle.utils.artifact_contract import (
     sidecar_path,
 )
 from farkle.utils.authenticated_contract import (
-    ARTIFACT_CONTRACT_VERSION,
     LIFECYCLE_CONTRACT_VERSION,
     ArtifactFormatIdentity,
     AuthenticatedCompletion,
@@ -86,12 +93,9 @@ class CapturedV3Inputs:
 
 
 def is_v3_config(cfg: AppConfig | None) -> bool:
-    """Return whether *cfg* explicitly requests authenticated contract v3."""
+    """Return whether a current application config owns this publication."""
 
-    return (
-        cfg is not None
-        and cfg.artifact_contract.artifact_contract_version == ARTIFACT_CONTRACT_VERSION
-    )
+    return cfg is not None
 
 
 def _flatten_field_paths(value: Mapping[str, Any], prefix: str = "") -> tuple[str, ...]:
@@ -227,9 +231,7 @@ def _method_versions(
         },
         "hgb": hgb_versions,
         "root_stability": {"root_stability_method_version": 3},
-        "candidate_freeze": {
-            "candidate_family_version": cfg.artifact_contract.candidate_family_version
-        },
+        "candidate_freeze": {"candidate_family_version": CANDIDATE_FAMILY_VERSION},
         "h2h_power": {"h2h_method_version": 2, "h2h_power_method_version": 2},
         "h2h_execute": {"h2h_method_version": 2, "h2h_execution_method_version": 2},
         "h2h_inference": {
@@ -267,27 +269,6 @@ def _versions(
     stage_key: str,
     metadata: ArtifactSidecar,
 ) -> tuple[VersionIdentity, int]:
-    contract = cfg.artifact_contract
-    accepted = {
-        "artifact contract": contract.artifact_contract_version,
-        "RNG scheme": cfg.rng.scheme_version,
-        "outcome schema": OUTCOME_SCHEMA_VERSION,
-        "derived schema": contract.schema_version,
-        "estimand": contract.estimand_version,
-        "conditioning": contract.conditioning_version,
-    }
-    expected = {
-        "artifact contract": 3,
-        "RNG scheme": 2,
-        "outcome schema": 2,
-        "derived schema": 2,
-        "estimand": 2,
-        "conditioning": 2,
-    }
-    if accepted != expected:
-        raise ArtifactContractError(
-            f"incomplete authenticated-v3 version identity: {accepted}; expected {expected}"
-        )
     method_versions, method_version = _method_versions(
         cfg,
         stage_key=stage_key,
@@ -295,13 +276,13 @@ def _versions(
     )
     return (
         VersionIdentity(
-            artifact_contract_version=3,
+            artifact_contract_version=ARTIFACT_CONTRACT_VERSION,
             lifecycle_contract_version=LIFECYCLE_CONTRACT_VERSION,
-            rng_scheme_version=2,
-            outcome_schema_version=2,
-            schema_version=2,
-            estimand_version=2,
-            conditioning_version=2,
+            rng_scheme_version=RNG_SCHEME_VERSION,
+            outcome_schema_version=OUTCOME_SCHEMA_VERSION,
+            schema_version=DERIVED_SCHEMA_VERSION,
+            estimand_version=ESTIMAND_VERSION,
+            conditioning_version=CONDITIONING_VERSION,
             method_versions=method_versions,
         ),
         method_version,
@@ -756,8 +737,8 @@ def publish_native_manifest_v3(
 
     synthetic = ArtifactSidecar(
         artifact_contract_version=3,
-        estimand_version=2,
-        schema_version=2,
+        estimand_version=ESTIMAND_VERSION,
+        schema_version=DERIVED_SCHEMA_VERSION,
         artifact_name=path.name,
         producer=stage_key,
         scope=(
@@ -783,7 +764,7 @@ def publish_native_manifest_v3(
         required_player_counts=player_counts,
         missing_cell_policy="fail",
         seed_scope="single_root",
-        rng_scheme_version=2,
+        rng_scheme_version=RNG_SCHEME_VERSION,
         config_hash=cfg.config_sha or "",
         input_manifest_hashes=[],
         code_revision="authenticated_v3",
@@ -1024,6 +1005,45 @@ def _find_root_owned_manifest(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _require_current_output_versions(
+    versions: VersionIdentity,
+    *,
+    cfg: AppConfig,
+    stage_key: str,
+    metadata: ArtifactSidecar | None = None,
+) -> None:
+    """Keep version rejection independent of the retired public selectors."""
+
+    current = {
+        "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "schema_version": DERIVED_SCHEMA_VERSION,
+        "estimand_version": ESTIMAND_VERSION,
+        "conditioning_version": CONDITIONING_VERSION,
+    }
+    if any(getattr(versions, key) != value for key, value in current.items()):
+        raise ArtifactContractError(f"artifact version identity is stale for {stage_key}")
+    if (
+        versions.method_versions.get("configuration_schema_version")
+        != cfg.freshness_key()["configuration_schema_version"]
+    ):
+        raise ArtifactContractError(f"artifact configuration schema is stale for {stage_key}")
+    if metadata is not None:
+        expected, _method_version = _method_versions(cfg, stage_key=stage_key, metadata=metadata)
+        # The compatibility view retains an operation's typed method version,
+        # which need not equal the enclosing stage's operation-version marker.
+        # Validate implementation-owned named methods and protocol versions.
+        if any(
+            versions.method_versions.get(key) != value
+            for key, value in expected.items()
+            if key != "method_version" and not key.endswith("_operation_method_version")
+        ):
+            raise ArtifactContractError(
+                f"artifact method/version identity is stale for {stage_key}"
+            )
+
+
 def _completion_contract(
     cfg: AppConfig,
     *,
@@ -1038,18 +1058,6 @@ def _completion_contract(
     dict[str, Path],
     dict[str, tuple[Path, Path]],
 ]:
-    current_global = (
-        cfg.artifact_contract.artifact_contract_version,
-        cfg.rng.scheme_version,
-        OUTCOME_SCHEMA_VERSION,
-        cfg.artifact_contract.schema_version,
-        cfg.artifact_contract.estimand_version,
-        cfg.artifact_contract.conditioning_version,
-    )
-    if current_global != (3, 2, 2, 2, 2, 2):
-        raise ArtifactContractError(
-            f"completion requires accepted release identity; found {current_global}"
-        )
     output_files = _expanded_files(outputs)
     if not output_files:
         raise ArtifactContractError("authenticated completion requires stage outputs")
@@ -1079,6 +1087,9 @@ def _completion_contract(
             )
         if "manifest_contract_version" in payload:
             manifest = load_immutable_manifest_sidecar(path)
+            _require_current_output_versions(
+                manifest.stage_identity.versions, cfg=cfg, stage_key=stage_key
+            )
             location = derive_canonical_location(cfg, path, stage_key=stage_key)
             if manifest.location != location:
                 raise ArtifactContractError(f"manifest scope/path identity mismatch: {path}")
@@ -1105,25 +1116,12 @@ def _completion_contract(
             if deep_verify_outputs
             else validate_authenticated_artifact_metadata(path)
         )
-        if stage_key == "hgb":
-            expected_hgb_versions, _method_version = _method_versions(
-                cfg,
-                stage_key=stage_key,
-                metadata=_compatibility_view(path),
-            )
-            governed = {
-                key: expected_hgb_versions[key]
-                for key in (
-                    "hgb_method_version",
-                    "hgb_rng_method_version",
-                    "hgb_fold_construction_version",
-                )
-            }
-            recorded = sidecar.versions.method_versions
-            if any(recorded.get(key) != value for key, value in governed.items()):
-                raise ArtifactContractError(
-                    f"artifact method/version identity is stale for {stage_key}: {path}"
-                )
+        _require_current_output_versions(
+            sidecar.versions,
+            cfg=cfg,
+            stage_key=stage_key,
+            metadata=_compatibility_view(path, authenticated=sidecar),
+        )
         location = derive_canonical_location(cfg, path, stage_key=stage_key)
         if sidecar.artifact.location != location:
             raise ArtifactContractError(f"artifact scope/path identity mismatch: {path}")

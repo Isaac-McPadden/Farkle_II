@@ -42,7 +42,6 @@ analysis:
     info_phase_sec: 180.0
     ongoing_interval_sec: 600.0
   log_level: "INFO"
-  results_glob: "*_players"
   outputs: {}
   game_stats_margin_thresholds: [500, 1000]
   rare_event_target_score: 10000
@@ -73,10 +72,8 @@ head2head:
   target_power: 0.80
   practical_delta: 0.03
   sensitivity_deltas: [0.03, 0.04]
-  seat1_advantage_scenarios: [0.0, 0.03, 0.06]
   delta_equivalence: null
   candidate_cap: null
-  candidate_cap_policy: "balanced-tail"
   min_candidate_completion_rate: 0.99
   max_attempt_multiplier: 2.0
   total_game_cap: 100000000
@@ -88,9 +85,6 @@ hgb:
   heldout_folds: 5
   permutation_repeats: 10
   future_proposal_limit: 100
-
-orchestration:
-  parallel_seeds: false
 
 resources:
   scheduler_memory_budget_mb: 768
@@ -133,16 +127,11 @@ resources:
     rng_diagnostics_reduce_run: 268435456
     partitioned_stage: 16777216
 
-rng:
-  scheme_version: 2
-  bit_generator: "PCG64DXSM"
-
 profile:
   purpose: "production"
 
 screening:
   resolution_delta: 0.03
-  interval_confidence: 0.95
   practical_delta_by_k: {5: 0.03}
   delta_across_k: 0.03
   bootstrap_replicates: 2000
@@ -157,22 +146,9 @@ batching:
   min_shuffles_per_batch: 30
 
 robustness:
-  report_pareto: true
-  report_maximin: true
   delta_seed_stability: 0.03
   joint_discrepancy_alpha: 0.05
   matched_count_fractions: [0.25, 0.50, 0.75, 1.0]
-
-artifact_contract:
-  artifact_contract_version: 3
-  estimand_version: 2
-  schema_version: 2
-  baseline_version: 1
-  k_support_version: 1
-  weighting_version: 1
-  conditioning_version: 2
-  multiplicity_version: 1
-  candidate_family_version: 1
 
 k_aggregation:
   method: "equal-k"

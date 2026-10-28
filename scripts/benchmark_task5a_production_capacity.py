@@ -29,6 +29,7 @@ from farkle.orchestration.profile_metadata import (
     _project_h2h_at_candidate_count,
     resolved_profile_metadata,
 )
+from farkle.protocols import H2H_SEAT1_ADVANTAGE_SCENARIOS
 from farkle.utils.writer import atomic_path
 
 SCHEMA_VERSION: Final = 2
@@ -128,7 +129,7 @@ def derive_dimensions(cfg: AppConfig) -> dict[str, Any]:
         family_alpha=float(cfg.head2head.family_alpha),
         target_power=float(cfg.head2head.target_power),
         practical_delta=float(cfg.head2head.practical_delta),
-        scenarios=tuple(float(x) for x in cfg.head2head.seat1_advantage_scenarios),
+        scenarios=tuple(float(x) for x in H2H_SEAT1_ADVANTAGE_SCENARIOS),
         max_attempt_multiplier=float(cfg.head2head.max_attempt_multiplier),
     )
     count_records = games + exposures

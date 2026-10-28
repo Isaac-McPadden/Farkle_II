@@ -130,18 +130,18 @@ def test_fast_config_keeps_pipeline_execution_mechanisms_and_principal_stages() 
     [
         (
             "default_config.yaml",
-            "2d00a21645ee90abe6c15505d984b5545aa555125835d6ff920a39730949ab80",
+            "7215649f1ae519c61f3e9a5f798518c76e1488ab4ccb95647a0295564a61d639",
             [5],
         ),
         (
             "farkle_mega_config.yaml",
             # Task 4 explicitly set the mega equivalence tolerance to 0.03.
-            "eb4a90baa6401faa33dbb62448ffff2517883ed3451250a3c575632bdb016bcd",
+            "6201028d0793ed956b9564b4a3cf6c0a0c99f6a11d47e13aec53b20414aebcc0",
             [2, 3, 4, 5, 6, 8, 10, 12],
         ),
     ],
 )
-def test_production_configs_retain_statistical_settings_and_identity(
+def test_production_configs_retain_settings_under_schema_2_identity(
     filename: str,
     expected_hash: str,
     expected_player_counts: list[int],

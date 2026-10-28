@@ -31,6 +31,13 @@ from typing import (
 )
 
 from farkle.config import ArtifactScope, compute_config_sha
+from farkle.protocols import (
+    ARTIFACT_CONTRACT_VERSION as CURRENT_ARTIFACT_CONTRACT_VERSION,
+)
+from farkle.protocols import (
+    DERIVED_SCHEMA_VERSION,
+    ESTIMAND_VERSION,
+)
 from farkle.utils.random import RNG_SCHEME_VERSION
 
 if TYPE_CHECKING:
@@ -365,7 +372,6 @@ def make_artifact_sidecar(
 ) -> ArtifactSidecar:
     """Build minimum contract metadata from the active application config."""
 
-    contract = cfg.artifact_contract
     normalized_scope = scope.value if isinstance(scope, ArtifactScope) else str(scope)
     normalized_source_scope = (
         source_scope.value if isinstance(source_scope, ArtifactScope) else str(source_scope)
@@ -376,9 +382,9 @@ def make_artifact_sidecar(
         conditioning=conditioning,
     )
     return ArtifactSidecar(
-        artifact_contract_version=contract.artifact_contract_version,
-        estimand_version=contract.estimand_version,
-        schema_version=contract.schema_version,
+        artifact_contract_version=CURRENT_ARTIFACT_CONTRACT_VERSION,
+        estimand_version=ESTIMAND_VERSION,
+        schema_version=DERIVED_SCHEMA_VERSION,
         artifact_name=Path(artifact_path).name,
         producer=producer,
         scope=normalized_scope,
@@ -402,7 +408,7 @@ def make_artifact_sidecar(
         required_player_counts=sorted({int(k) for k in required_player_counts}),
         missing_cell_policy=missing_cell_policy,
         seed_scope=seed_scope,
-        rng_scheme_version=cfg.rng.scheme_version,
+        rng_scheme_version=RNG_SCHEME_VERSION,
         config_hash=cfg.config_sha or compute_config_sha(cfg),
         input_manifest_hashes=manifest_hashes(input_manifests),
         code_revision=code_revision,

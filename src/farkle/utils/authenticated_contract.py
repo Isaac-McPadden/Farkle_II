@@ -25,6 +25,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope, effective_config_dict
+from farkle.protocols import ARTIFACT_CONTRACT_VERSION as ARTIFACT_CONTRACT_VERSION
+from farkle.protocols import DERIVED_SCHEMA_VERSION
 from farkle.utils.artifact_contract import (
     make_staged_path,
     read_json_file_with_retry,
@@ -41,7 +43,7 @@ from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
-ARTIFACT_CONTRACT_VERSION: Final = 3
+
 LIFECYCLE_CONTRACT_VERSION: Final = 1
 MANIFEST_CONTRACT_VERSION: Final = 1
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -1330,7 +1332,7 @@ def validate_authenticated_artifact(
                     source_path,
                     location=source.artifact.location,
                     schema_version=(
-                        source_cfg.artifact_contract.schema_version
+                        DERIVED_SCHEMA_VERSION
                         if source.artifact.arrow_schema is None
                         else source.artifact.arrow_schema.schema_version
                     ),

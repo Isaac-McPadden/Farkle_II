@@ -30,6 +30,7 @@ import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig, ArtifactScope
+from farkle.protocols import SCREENING_INTERVAL_CONFIDENCE
 from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import (
@@ -228,7 +229,7 @@ def _plan_workload_from_config(
         k=n_players,
         strategy_count=n_strategies,
         resolution_delta=cfg.screening.resolution_delta,
-        confidence=cfg.screening.interval_confidence,
+        confidence=SCREENING_INTERVAL_CONFIDENCE,
         batch_count=cfg.batching.target_batches,
         min_shuffles_per_batch=cfg.batching.min_shuffles_per_batch,
         shuffle_cap=cfg.screening.max_shuffles_per_root_k,

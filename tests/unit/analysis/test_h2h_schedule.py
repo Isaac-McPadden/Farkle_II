@@ -499,7 +499,6 @@ def test_single_root_plan_respects_explicit_disable(tmp_path: Path) -> None:
     [
         ("sensitivity_deltas", (0.03,), "sensitivity_deltas"),
         ("sensitivity_deltas", (0.03, 0.04, 0.04), "sensitivity_deltas"),
-        ("seat1_advantage_scenarios", (0.0, 0.03), "seat1_advantage_scenarios"),
     ],
 )
 def test_statistical_contract_locks_h2h_planning_scenarios(

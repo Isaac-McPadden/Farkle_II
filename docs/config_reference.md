@@ -10,20 +10,17 @@ an actionable replacement message and are never reinterpreted.
 | --- | --- |
 | `io` | Results-root prefix, analysis subdirectory, and optional scratch staging path |
 | `sim` | Roots, player counts, strategy grid, simulation workers, and checkpoints |
-| `rng` | RNG scheme and bit generator |
-| `profile` | Run purpose and production/release claim eligibility |
+| `profile` | Declared run purpose |
 | `screening` | Wilson-width target, practical thresholds, bootstrap size, and candidate inputs |
 | `batching` | Deterministic batch construction |
 | `robustness` | Pareto, maximin, and two-root stability diagnostics |
 | `k_aggregation` | Equal-k or explicitly declared player-count weights |
-| `artifact_contract` | Versions used by sidecars and freshness keys |
 | `analysis` | Root-local diagnostics, workers, output names, and rare-event settings |
 | `ingest` | Streaming parquet settings |
 | `combine` | Maximum normalized schema width for the partitioned concat dataset |
 | `trueskill` | Root/k TrueSkill screening parameters |
 | `head2head` | Candidate cap, power, allocation, and inference settings |
 | `hgb` | Held-out predictive-association settings |
-| `orchestration` | Root execution concurrency |
 | `resources` | Process-tree memory, CPU/native-thread, and byte-batch execution budgets |
 
 ## Roots and player counts
@@ -35,10 +32,29 @@ an actionable replacement message and are never reinterpreted.
 - `sim.n_players_list` is the complete configured player-count support.
 - Missing root/k cells are errors. They cannot silently change an estimand.
 
-## Locked statistical settings
+## Implementation-owned protocols
 
-- `rng.scheme_version = 2`
-- `rng.bit_generator = PCG64DXSM`
+`farkle.protocols` owns RNG scheme 2 / `PCG64DXSM`, artifact contract 3,
+derived schema/estimand/conditioning 2, the 95% confidence level, H2H seat
+scenarios `[0, 0.03, 0.06]`, and the balanced-tail cap policy. Pareto and maximin
+reports are required; root execution is sequential. These facts are recorded in
+authenticated metadata and cannot be selected through YAML or `--set`.
+
+Public configuration schema 2 removes the former `rng`, `artifact_contract`,
+and `orchestration` sections and the keys listed in the
+[cleanup audit](config_option_audit.md). Even declarations matching the former
+defaults are rejected with instructions to remove them. `analysis.results_glob`
+is retired because input ownership follows explicit configured root/k paths.
+
+Run-context contract 4 records `implementation_contract` in its canonical hash;
+sidecars retain the actual artifact/RNG/version vector and configuration-schema
+method identity. `active_config.yaml` contains user settings only. Compute and
+stage hashes bind both the settings and the implemented protocol. This is an
+explicit identity migration: use fresh output roots, preserve historical
+contexts/sidecars, and never relabel old artifacts as current outputs.
+
+## Statistical settings
+
 - production `screening.resolution_delta = 0.03`, the maximum full 95% Wilson width
 - `screening.practical_delta_by_k` must contain every configured k
 - `screening.delta_across_k` must be positive
@@ -46,10 +62,10 @@ an actionable replacement message and are never reinterpreted.
 - `batching.min_shuffles_per_batch >= 30`
 - `k_aggregation.method` is `equal-k` or `declared-mapping`
 - authenticated release identity:
-  `artifact_contract.artifact_contract_version = 3`,
+  artifact contract 3,
   `schema_version = 2`, `estimand_version = 2`, and
   `conditioning_version = 2`
-- `rng.scheme_version = 2` and outcome schema 2 are required by that identity
+- RNG scheme 2 and outcome schema 2 remain required by that identity
 
 For `declared-mapping`, `k_aggregation.k_weights` must be positive, sum to
 one, and cover the complete configured k support. Equal-k is the canonical
@@ -60,7 +76,7 @@ operation and artifact.
 
 `screening` fields:
 
-- `resolution_delta`, `interval_confidence`
+- `resolution_delta` (interval confidence is fixed at 95%)
 - `practical_delta_by_k`, `delta_across_k`
 - `bootstrap_replicates`
 - `candidate_contribution_size` (default `75`)
@@ -69,7 +85,7 @@ operation and artifact.
 
 `robustness` fields:
 
-- `report_pareto`, `report_maximin`
+Pareto and maximin reports are always produced. Configurable fields:
 - `delta_seed_stability`
 - `joint_discrepancy_alpha` (upper-tail fraction for a descriptive joint
   reference quantile, not an inferential test level)
@@ -156,9 +172,9 @@ achieve a maximum Wilson width of about 0.0797603. Production qualification requ
 - `target_power = 0.80`
 - `practical_delta = 0.03`
 - `sensitivity_deltas` includes `0.03` and `0.04`
-- `seat1_advantage_scenarios = [0, 0.03, 0.06]`
+- implemented seat scenarios: `[0, 0.03, 0.06]` (metadata, not a setting)
 - `delta_equivalence = null` disables equivalence
-- `candidate_cap_policy = balanced-tail`
+- implemented candidate-cap policy: `balanced-tail` (metadata, not a setting)
 - `total_game_cap` is operational and does not alter the schedule hash
 - `allow_single_root` controls explicitly labeled single-root execution
 
@@ -190,10 +206,8 @@ simulation workers, `analysis.n_jobs` controls root-analysis workers, and
 auto mode and resolves to the detected logical CPU count; positive values are
 explicit. `sim.n_jobs: null` retains its compatibility default of one worker.
 YAML is loaded first and a matching `--set` value wins.
-When `orchestration.parallel_seeds` is false (the default), roots remain
-sequential and each root receives the resolved section budget. When it is true,
-each section's own resolved budget is divided across concurrent roots. The
-authenticated run context records requested, resolved, and effective counts.
+Roots execute sequentially and each root receives its section's resolved budget.
+The authenticated run context records requested, resolved, and effective counts.
 All four section-owned `n_jobs` values are execution-only: they are excluded
 from the global compute-config hash and every statistical stage-config hash,
 but remain authenticated in the run context.
@@ -219,7 +233,7 @@ both the logical-CPU and schedulable-memory envelopes deterministically. Native
 BLAS/OpenMP/Arrow thread settings are capped in executor children, nested
 process pools collapse to one process, and `stage_batch_bytes` bounds projected
 Arrow batches. Resource controls and resolved policies are authenticated in
-run-context contract v3 but are excluded from statistical freshness; focused
+run-context contract v4 but are excluded from statistical freshness; focused
 worker-count, ordering, and batch-boundary invariance tests protect that split.
 RNG route units are planned greedily in canonical source-row-group order using
 the expanded fixed-width observation size. The production defaults target 64
@@ -308,15 +322,9 @@ screening:
 
 k_aggregation:
   method: equal-k
-
-artifact_contract:
-  artifact_contract_version: 3
-  schema_version: 2
-  estimand_version: 2
-  conditioning_version: 2
 ```
 
-The public v3 switch intentionally invalidates all contract-v2 artifacts,
+The implementation-owned v3 release path rejects contract-v2 artifacts,
 sidecars, completion stamps, and mixed v2/v3 descendant graphs. Release
 workflows must use a new output prefix; old bytes cannot be promoted by adding
 or replacing sidecars.

@@ -125,7 +125,9 @@ def test_simulation_completion_mutation_matrix(
     "mutation",
     ("input", "output", "sidecar", "stage_config", "code", "method"),
 )
-def test_root_stage_completion_mutation_matrix(tmp_path: Path, mutation: str) -> None:
+def test_root_stage_completion_mutation_matrix(
+    tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _cfg(tmp_path)
     source = cfg.combined_rows_by_k(2)
     output = cfg.metrics_all_player_batch_path(2)
@@ -150,7 +152,13 @@ def test_root_stage_completion_mutation_matrix(tmp_path: Path, mutation: str) ->
     elif mutation == "code":
         cfg._code_identity = _code("b" * 40)
     else:
-        cfg.artifact_contract.estimand_version += 1
+        from farkle.analysis import outcome_distributions
+
+        monkeypatch.setattr(
+            outcome_distributions,
+            "OUTCOME_METHOD_VERSION",
+            outcome_distributions.OUTCOME_METHOD_VERSION + 1,
+        )
 
     assert (
         resolve_stage_state(done, [source], [output], cfg=cfg, stage="metrics")

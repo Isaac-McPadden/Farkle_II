@@ -35,6 +35,7 @@ from farkle.analysis.outcome_publication import (
     outcome_is_up_to_date,
 )
 from farkle.config import AppConfig, ArtifactScope
+from farkle.protocols import SCREENING_INTERVAL_CONFIDENCE
 from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
@@ -131,7 +132,7 @@ def _specification(cfg: AppConfig) -> dict[str, Any]:
         "method_id": METHOD_ID,
         "outcome_precision_method_version": OUTCOME_PRECISION_METHOD_VERSION,
         "summary_ids": [*SUMMARY_IDS, "completed_loss_rate"],
-        "confidence": cfg.screening.interval_confidence,
+        "confidence": SCREENING_INTERVAL_CONFIDENCE,
         "replicates": cfg.screening.bootstrap_replicates,
         "minimum_batches": 30,
         "minimum_contributing_batches": 30,
@@ -606,7 +607,7 @@ class _SummaryWriter:
                                 values,
                                 m,
                                 samples,
-                                confidence=self.cfg.screening.interval_confidence,
+                                confidence=SCREENING_INTERVAL_CONFIDENCE,
                                 replicates=r,
                             ),
                         }
@@ -770,8 +771,8 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
     d = _resolve_design(cfg, k)
     budget = int(cfg.resources.stage_batch_bytes["analysis"])
     r = cfg.screening.bootstrap_replicates
-    if r < 1 or r > np.iinfo(np.int32).max or not 0 < cfg.screening.interval_confidence < 1:
-        raise ValueError("invalid configured precision confidence/replicates")
+    if r < 1 or r > np.iinfo(np.int32).max:
+        raise ValueError("invalid configured precision replicates")
     # Reserve separate quarters for projected rows, vectors/typed copies,
     # replicate working arrays, and buffered output. Quantiles hold one cell.
     bytes_per_strategy = (k + 1) * max(d.batches * 256, _RANGE_WIDTH * 4 * 32)

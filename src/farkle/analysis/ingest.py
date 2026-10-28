@@ -192,7 +192,7 @@ def _canonical_row_shards(
         completion = {
             "root_seed": cfg.sim.seed,
             "n_players": n_players,
-            "rng_scheme_version": cfg.rng.scheme_version,
+            "rng_scheme_version": RNG_SCHEME_VERSION,
             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
             "shuffle_index_start": 0,
@@ -210,7 +210,7 @@ def _canonical_row_shards(
     if (
         int(completion.get("root_seed", -1)) != int(cfg.sim.seed)
         or int(completion.get("n_players", -1)) != n_players
-        or int(completion.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+        or int(completion.get("rng_scheme_version", -1)) != int(RNG_SCHEME_VERSION)
         or int(completion.get("outcome_schema_version", -1)) != OUTCOME_SCHEMA_VERSION
         or int(completion.get("tournament_method_version", -1)) != TOURNAMENT_METHOD_VERSION
         or start < 0
@@ -256,7 +256,7 @@ def _canonical_row_shards(
             or expected_rows < 1
             or int(record.get("root_seed", -1)) != int(cfg.sim.seed)
             or int(record.get("n_players", -1)) != n_players
-            or int(record.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+            or int(record.get("rng_scheme_version", -1)) != int(RNG_SCHEME_VERSION)
             or int(record.get("outcome_schema_version", -1)) != OUTCOME_SCHEMA_VERSION
             or int(record.get("tournament_method_version", -1)) != TOURNAMENT_METHOD_VERSION
             or batch_id != shuffle_index // shuffles_per_batch

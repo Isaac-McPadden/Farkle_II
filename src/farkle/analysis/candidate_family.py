@@ -18,6 +18,7 @@ from farkle.analysis.trueskill_screening import (
     trueskill_method_contract,
 )
 from farkle.config import AppConfig, ArtifactScope
+from farkle.protocols import CANDIDATE_CAP_POLICY, CANDIDATE_FAMILY_VERSION
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
@@ -518,12 +519,12 @@ def freeze_h2h_candidate_family(
         },
     }
     identity = {
-        "candidate_family_version": cfg.artifact_contract.candidate_family_version,
+        "candidate_family_version": CANDIDATE_FAMILY_VERSION,
         "candidates": candidates,
         "source_identity": source_identity,
         "contribution_size": cfg.screening.candidate_contribution_size,
         "candidate_cap": cfg.head2head.candidate_cap,
-        "candidate_cap_policy": cfg.head2head.candidate_cap_policy,
+        "candidate_cap_policy": CANDIDATE_CAP_POLICY,
         "initial_cutoffs": initial_cutoffs,
         "final_cutoffs": final_cutoffs,
         "controls": sorted(controls),

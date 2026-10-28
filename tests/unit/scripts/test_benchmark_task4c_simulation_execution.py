@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from scripts import benchmark_task4c_simulation_execution as benchmark
 
+from farkle.config import effective_config_dict
 from farkle.simulation import runner
 
 
@@ -21,7 +22,7 @@ def test_fixture_worker_count_is_execution_only(tmp_path: Path) -> None:
     assert one.config_sha == twelve.config_sha
     assert one.sim.n_players_list == twelve.sim.n_players_list == [2]
     assert one.sim.mp_start_method == twelve.sim.mp_start_method == "spawn"
-    assert one.orchestration.parallel_seeds is False
+    assert "orchestration" not in effective_config_dict(one)
 
 
 def test_cpu_fixture_uses_the_unchanged_fast_configuration_grid(tmp_path: Path) -> None:

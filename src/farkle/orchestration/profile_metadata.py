@@ -8,9 +8,13 @@ from functools import lru_cache
 from typing import Any
 
 from farkle.config import AppConfig
+from farkle.protocols import (
+    H2H_SEAT1_ADVANTAGE_SCENARIOS,
+    implementation_contract,
+)
 from farkle.simulation import runner
 
-PROFILE_METADATA_CONTRACT_VERSION = 2
+PROFILE_METADATA_CONTRACT_VERSION = 3
 PRODUCTION_QUALIFICATION_CONTRACT = "first_release_production_v1"
 
 
@@ -36,12 +40,6 @@ def production_configuration_qualification(
             cfg.screening.resolution_delta,
             "<= 0.03",
             0 < cfg.screening.resolution_delta <= 0.03,
-        ),
-        (
-            "screening.interval_confidence",
-            cfg.screening.interval_confidence,
-            "== 0.95",
-            cfg.screening.interval_confidence == 0.95,
         ),
         (
             "batching.target_batches",
@@ -195,7 +193,7 @@ def resolved_profile_metadata(
                 family_alpha=float(cfg.head2head.family_alpha),
                 target_power=float(cfg.head2head.target_power),
                 practical_delta=float(cfg.head2head.practical_delta),
-                scenarios=tuple(float(value) for value in cfg.head2head.seat1_advantage_scenarios),
+                scenarios=tuple(float(value) for value in H2H_SEAT1_ADVANTAGE_SCENARIOS),
                 max_attempt_multiplier=float(cfg.head2head.max_attempt_multiplier),
             )
         )
@@ -230,6 +228,7 @@ def resolved_profile_metadata(
     return {
         "profile_metadata_contract_version": PROFILE_METADATA_CONTRACT_VERSION,
         **asdict(cfg.profile),
+        "implementation_contract": implementation_contract(),
         "reduced_resolution": any(
             cell["configured_resolution"] > 0.03 or cell["achieved_resolution"] > 0.03
             for cell in workload_by_k.values()

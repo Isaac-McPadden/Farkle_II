@@ -9,7 +9,6 @@ import yaml
 from farkle.config import (
     AnalysisConfig,
     AppConfig,
-    ArtifactContractConfig,
     ArtifactScope,
     BatchingConfig,
     CombineConfig,
@@ -18,10 +17,8 @@ from farkle.config import (
     IngestConfig,
     IOConfig,
     KAggregationConfig,
-    OrchestrationConfig,
     ProfileConfig,
     ResourcesConfig,
-    RNGConfig,
     RobustnessConfig,
     ScreeningConfig,
     SimConfig,
@@ -30,6 +27,7 @@ from farkle.config import (
     effective_config_dict,
     load_app_config,
 )
+from farkle.protocols import RNG_SCHEME_VERSION, artifact_versions
 from farkle.utils.progress import ProgressLogConfig
 
 CONFIG_SECTION_TYPES = {
@@ -41,14 +39,11 @@ CONFIG_SECTION_TYPES = {
     "trueskill": TrueSkillConfig,
     "head2head": Head2HeadConfig,
     "hgb": HGBConfig,
-    "orchestration": OrchestrationConfig,
     "resources": ResourcesConfig,
-    "rng": RNGConfig,
     "profile": ProfileConfig,
     "screening": ScreeningConfig,
     "batching": BatchingConfig,
     "robustness": RobustnessConfig,
-    "artifact_contract": ArtifactContractConfig,
     "k_aggregation": KAggregationConfig,
 }
 
@@ -66,12 +61,12 @@ def test_active_configuration_examples_use_the_current_contract(filename: str) -
         require_two_roots=filename in {"farkle_mega_config.yaml", "fast_config.yaml"}
     )
     assert (
-        cfg.artifact_contract.artifact_contract_version,
-        cfg.rng.scheme_version,
+        artifact_versions()["artifact_contract_version"],
+        RNG_SCHEME_VERSION,
         2,
-        cfg.artifact_contract.schema_version,
-        cfg.artifact_contract.estimand_version,
-        cfg.artifact_contract.conditioning_version,
+        artifact_versions()["schema_version"],
+        artifact_versions()["estimand_version"],
+        artifact_versions()["conditioning_version"],
     ) == (3, 2, 2, 2, 2, 2)
 
 
@@ -116,16 +111,15 @@ def test_runnable_configs_round_trip_under_public_schema(tmp_path: Path, filenam
 
 
 def test_public_artifact_contract_defaults_and_freshness_use_exact_release_identity() -> None:
-    contract = ArtifactContractConfig()
     cfg = AppConfig()
 
     assert (
-        contract.artifact_contract_version,
-        cfg.rng.scheme_version,
+        artifact_versions()["artifact_contract_version"],
+        RNG_SCHEME_VERSION,
         cfg.freshness_key()["outcome_schema_version"],
-        contract.schema_version,
-        contract.estimand_version,
-        contract.conditioning_version,
+        artifact_versions()["schema_version"],
+        artifact_versions()["estimand_version"],
+        artifact_versions()["conditioning_version"],
     ) == (3, 2, 2, 2, 2, 2)
     assert {
         key: cfg.freshness_key()[key]
@@ -147,18 +141,12 @@ def test_public_artifact_contract_defaults_and_freshness_use_exact_release_ident
     }
 
 
-def test_public_validation_lock_rejects_v2_and_mixed_release_identities() -> None:
+def test_protocol_identity_is_not_part_of_public_config() -> None:
     cfg = AppConfig()
-    cfg.artifact_contract.artifact_contract_version = 2
-    with pytest.raises(ValueError, match="must be exactly 3"):
-        cfg.validate_statistical_contract()
-
-    cfg.artifact_contract.artifact_contract_version = 3
-    for field in ("schema_version", "estimand_version", "conditioning_version"):
-        setattr(cfg.artifact_contract, field, 1)
-        with pytest.raises(ValueError, match="requires estimand_version=2"):
-            cfg.validate_statistical_contract()
-        setattr(cfg.artifact_contract, field, 2)
+    assert not hasattr(cfg, "artifact_contract")
+    assert not hasattr(cfg, "rng")
+    assert not hasattr(cfg, "orchestration")
+    cfg.validate_statistical_contract()
 
 
 @pytest.mark.parametrize(

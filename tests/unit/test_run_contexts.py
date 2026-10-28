@@ -128,7 +128,7 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
 
     payload = load_run_context(context.run_context_path)
 
-    assert payload["run_context_contract_version"] == 3
+    assert payload["run_context_contract_version"] == 4
     assert payload["execution_controls"]["resource_limiter_mode"] == "enabled"
     assert payload["execution_controls"]["worker_counts"] == worker_counts
     assert payload["execution_controls"]["resources"]["scheduler_memory_budget_mb"] == 768

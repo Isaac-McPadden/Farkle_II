@@ -45,7 +45,8 @@ retained benchmark evidence. Current H2H storage is per block.
 - Scopes/path APIs: `ArtifactScope` and `AppConfig` in `config.py`.
 - Artifact compatibility: `utils/artifact_contract.py`.
 - Lifecycle/freshness: `utils/stage_completion.py`.
-- RNG identity: `utils/random.py` and `docs/rng_contract.md`.
+- Fixed protocol ownership: `protocols.py`; public schema/retired-key migration: `config.py`.
+- RNG implementation: `utils/random.py` and `docs/rng_contract.md`.
 - Row coordinates: `docs/turn_and_row_contract.md`.
 - Root/pair order: `analysis/__init__.py` and `analysis/stage_registry.py`.
 

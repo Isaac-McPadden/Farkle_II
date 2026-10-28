@@ -42,7 +42,6 @@ analysis:
     info_phase_sec:  # float: duration of INFO-level frequent logs
     ongoing_interval_sec:  # float: continuing progress-log interval in seconds
   log_level:  # str: root-analysis logging level
-  results_glob:  # str: glob selecting per-player-count result folders
   outputs: {}  # dict[str, Any]: optional curated_rows_name, metrics_name, manifest_name
   game_stats_margin_thresholds:  # sequence[int]: victory-margin report thresholds
   rare_event_target_score:  # int: multi-target rare-event score threshold
@@ -73,10 +72,8 @@ head2head:
   target_power:  # float: target completed-game power
   practical_delta:  # float: primary practical win-rate effect
   sensitivity_deltas:  # sequence[float]: effects for H2H power sensitivity
-  seat1_advantage_scenarios:  # sequence[float]: seat-one advantage scenarios
   delta_equivalence:  # float|None: equivalence margin; null disables it
   candidate_cap:  # int|None: cap on frozen H2H candidates
-  candidate_cap_policy:  # str: candidate-cap selection policy
   min_candidate_completion_rate:  # float: minimum attempted-game completion rate
   max_attempt_multiplier:  # float: cap on attempts relative to completed target
   total_game_cap:  # int|None: operational H2H total-game authorization cap
@@ -88,9 +85,6 @@ hgb:
   heldout_folds:  # int: deterministic held-out strategy folds
   permutation_repeats:  # int: held-out permutation repeats per fold
   future_proposal_limit:  # int: candidates reserved for future simulation
-
-orchestration:
-  parallel_seeds:  # bool: run two root workflows concurrently
 
 resources:
   scheduler_memory_budget_mb:  # int: worker-admission memory budget
@@ -108,16 +102,11 @@ resources:
   estimated_worker_memory_mb: {}  # mapping[str, int]: per-stage worker estimates
   stage_batch_bytes: {}  # mapping[str, int]: per-stage streaming byte budgets
 
-rng:
-  scheme_version:  # int: deterministic RNG contract version
-  bit_generator:  # str: NumPy bit-generator name
-
 profile:
   purpose:  # smoke|integration|production
 
 screening:
   resolution_delta:  # float: maximum full Wilson interval width
-  interval_confidence:  # float: locked screening interval confidence
   practical_delta_by_k:  # mapping[int, float]|None: practical threshold by k
   delta_across_k:  # float|None: cross-k practical threshold
   bootstrap_replicates:  # int: screening bootstrap replicate count
@@ -132,22 +121,9 @@ batching:
   min_shuffles_per_batch:  # int: minimum shuffles in each batch
 
 robustness:
-  report_pareto:  # bool: emit Pareto membership summary
-  report_maximin:  # bool: emit maximin-leadership summary
   delta_seed_stability:  # float: practical two-root stability threshold
   joint_discrepancy_alpha:  # float: joint discrepancy reference upper-tail fraction
   matched_count_fractions:  # sequence[float]: matched-count stability fractions
-
-artifact_contract:
-  artifact_contract_version:  # int: authenticated artifact-contract version
-  estimand_version:  # int: estimand definition version
-  schema_version:  # int: derived artifact schema version
-  baseline_version:  # int: chance-baseline definition version
-  k_support_version:  # int: player-count support definition version
-  weighting_version:  # int: cross-k weighting definition version
-  conditioning_version:  # int: outcome-conditioning definition version
-  multiplicity_version:  # int: multiplicity procedure version
-  candidate_family_version:  # int: frozen candidate-family definition version
 
 k_aggregation:
   method:  # str: equal-k or declared-mapping aggregation method

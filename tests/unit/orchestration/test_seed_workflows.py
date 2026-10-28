@@ -916,44 +916,12 @@ def test_pipeline_health_rejects_explicitly_invalidated_root_snapshot(
     assert "explicitly invalidated" in health["root_workflows"]["22"]["error"]
 
 
-def test_parallel_roots_are_rejected_before_budget_publication(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    cfg.sim.n_jobs = 8
-    cfg.analysis.n_jobs = 6
-    cfg.orchestration.parallel_seeds = True
-
-    with pytest.raises(ValueError, match="parallel_seeds=true"):
-        two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
-
-
-def test_parallel_roots_are_rejected_before_run_start_or_health_publication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
-        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
-    )
-    cfg.orchestration.parallel_seeds = True
-    health_publications: list[object] = []
-    root_starts: list[int] = []
-    monkeypatch.setattr(
-        two_seed_pipeline,
-        "_write_pipeline_health",
-        lambda *_args: health_publications.append(object()),
-    )
-    monkeypatch.setattr(
-        two_seed_pipeline,
-        "_run_one_seed",
-        lambda *_args, seed, **_kwargs: root_starts.append(seed),
-    )
-
-    with pytest.raises(ValueError, match="parallel_seeds=true"):
-        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
-
-    assert root_starts == []
-    assert health_publications == []
+@pytest.mark.parametrize("enabled", [False, True])
+def test_parallel_root_toggle_is_rejected_by_loader(tmp_path: Path, enabled: bool) -> None:
+    path = tmp_path / "retired.yaml"
+    path.write_text(f"orchestration:\n  parallel_seeds: {str(enabled).lower()}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Retired config key 'orchestration.parallel_seeds'"):
+        load_app_config(path)
 
 
 def test_worker_sections_own_independent_explicit_budgets() -> None:

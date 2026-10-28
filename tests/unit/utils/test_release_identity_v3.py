@@ -44,10 +44,6 @@ def v3_cfg(tmp_path: Path) -> AppConfig:
     cfg.sim.seed = 17
     cfg.sim.seed_list = [17]
     cfg.sim.n_players_list = [2]
-    cfg.artifact_contract.artifact_contract_version = 3
-    cfg.artifact_contract.schema_version = 2
-    cfg.artifact_contract.estimand_version = 2
-    cfg.artifact_contract.conditioning_version = 2
     cfg._code_identity = CodeIdentity(
         commit="a" * 40,
         policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
@@ -194,13 +190,12 @@ def test_v2_h2h_block_cannot_satisfy_v3_plan(
     tmp_path: Path,
 ) -> None:
     v2_cfg = AppConfig()
-    v2_cfg.artifact_contract.artifact_contract_version = 2
-    v2_cfg.artifact_contract.schema_version = 1
-    v2_cfg.artifact_contract.estimand_version = 1
-    v2_cfg.artifact_contract.conditioning_version = 1
     v2_cfg.io.results_dir_prefix = tmp_path / "legacy"
     v2_cfg.sim.n_players_list = [2]
-    legacy = _publish(v2_cfg, "h2h_block_v2.parquet")
+    from tests.helpers.artifact_sidecars import write_parquet_test_artifact
+
+    legacy = v2_cfg.scope_path("metrics", ArtifactScope.BY_K, "h2h_block_v2.parquet", k=2)
+    write_parquet_test_artifact(pa.table({"wins": [1]}), legacy, scope="by_k")
 
     with pytest.raises(ArtifactContractError, match="contract-v2 source"):
         _publish(v3_cfg, "h2h_plan_v3.parquet", sources=[legacy])

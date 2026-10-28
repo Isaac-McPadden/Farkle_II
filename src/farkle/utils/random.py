@@ -10,7 +10,8 @@ from typing import Final, Protocol
 
 import numpy as np
 
-RNG_SCHEME_VERSION: Final = 2
+from farkle.protocols import RNG_SCHEME_VERSION as RNG_SCHEME_VERSION
+
 MAX_UINT32: Final = 2**32 - 1
 MAX_UINT64: Final = 2**64 - 1
 

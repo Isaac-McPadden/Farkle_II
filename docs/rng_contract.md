@@ -1,6 +1,7 @@
 # RNG contract
 
-RNG scheme version 2 initializes NumPy `PCG64DXSM` directly from a
+`farkle.protocols` owns the scheme version and generator identity; they are
+authenticated metadata, not configuration choices. RNG scheme version 2 initializes NumPy `PCG64DXSM` directly from a
 `SeedSequence` containing the scheme version, a permanent purpose namespace,
 and every full-width semantic coordinate. Generated scalar fingerprints never
 become RNG roots or recovery identities. Worker assignment, chunking,

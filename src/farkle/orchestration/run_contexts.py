@@ -12,6 +12,7 @@ from typing import Any, cast
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
+from farkle.protocols import RUN_CONTEXT_CONTRACT_VERSION, implementation_contract
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
 from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import (
@@ -304,7 +305,7 @@ def write_run_context_atomic(
             "analysis_n_jobs": cfg.analysis.n_jobs,
             "analysis_mp_start_method": cfg.analysis.mp_start_method,
             "head2head_n_jobs": cfg.head2head.n_jobs,
-            "parallel_seeds": cfg.orchestration.parallel_seeds,
+            "parallel_seeds": False,
             "resources": asdict(cfg.resources),
             "resource_limiter_mode": cfg.resource_limiter_mode.value,
             "worker_counts": worker_counts_payload,
@@ -368,7 +369,7 @@ def write_run_context_atomic(
         "analysis_n_jobs": cfg.analysis.n_jobs,
         "analysis_mp_start_method": cfg.analysis.mp_start_method,
         "head2head_n_jobs": cfg.head2head.n_jobs,
-        "parallel_seeds": cfg.orchestration.parallel_seeds,
+        "parallel_seeds": False,
         "resources": asdict(cfg.resources),
         "resource_limiter_mode": cfg.resource_limiter_mode.value,
         "resource_policy": resolved_resources.as_metadata(
@@ -387,7 +388,8 @@ def write_run_context_atomic(
         ),
     }
     payload = {
-        "run_context_contract_version": 3,
+        "run_context_contract_version": RUN_CONTEXT_CONTRACT_VERSION,
+        "implementation_contract": implementation_contract(),
         "run_lineage_sha256": lineage_sha,
         "public_config_sha256": cfg.config_sha,
         "resource_config_sha256": identity_sha256(asdict(cfg.resources)),
@@ -422,9 +424,18 @@ def load_run_context(path: Path, *, active_config_path: Path | None = None) -> d
     if recorded != identity_sha256(payload):
         raise ValueError("run context hash does not match its canonical payload")
     payload["run_context_sha256"] = recorded
+    if (
+        payload.get("run_context_contract_version") == RUN_CONTEXT_CONTRACT_VERSION
+        and payload.get("implementation_contract") != implementation_contract()
+    ):
+        raise ValueError("run context does not bind the current implementation contract")
     if active_config_path is not None:
         from farkle.config import load_app_config
 
+        if payload.get("run_context_contract_version") != RUN_CONTEXT_CONTRACT_VERSION:
+            raise ValueError(
+                "retired run-context schema cannot authenticate a current configuration"
+            )
         roots = payload.get("parent_lifecycle_roots")
         expected_roots = 2 if isinstance(roots, list) and len(roots) == 2 else None
         config = load_app_config(active_config_path, seed_list_len=expected_roots)

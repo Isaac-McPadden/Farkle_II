@@ -1,6 +1,6 @@
 # Configuration option audit
 
-Reviewed October 22, 2026 against configuration validation and current source
+Implemented October 26, 2026 against configuration validation and current source
 consumers. This audit distinguishes actual controls from protocol descriptions;
 it does not change simulation rules, streams, numerical settings, or historical
 artifacts.
@@ -9,9 +9,9 @@ The redundant profile flags have been removed. `profile.purpose` declares intent
 resolution and production qualification are calculated, and release eligibility
 is published only by the final audit. See [Run profiles](config_reference.md#run-profiles).
 
-## Fixed protocol values exposed as options
+## Retired options and implementation ownership
 
-| Public field | Current behavior | Appropriate ownership |
+| Retired public field | Former behavior | Implementation ownership |
 | --- | --- | --- |
 | `rng.scheme_version` | Validation and authenticated publication require exactly 2; changing it does not select another implemented stream scheme. | Internal RNG protocol identity, recorded in artifacts. |
 | `rng.bit_generator` | Only `PCG64DXSM` is accepted. The RNG helper implements that generator directly; this string does not select it. | Internal RNG implementation identity. |
@@ -22,19 +22,24 @@ is published only by the final audit. See [Run profiles](config_reference.md#run
 | `robustness.report_pareto`, `report_maximin` | Both must be true. The summaries are required and these fields do not control whether their producers run. | Required outputs, rather than boolean switches. |
 | `orchestration.parallel_seeds` | The canonical two-root workflow rejects true; roots must run sequentially. | Orchestrator capability/constraint, rather than a supported toggle. |
 
-These remaining fields are retained by this change. Moving protocol identity out
-of the public configuration needs an explicit schema/freshness migration:
-constants must still be authenticated in outputs, unsupported old declarations
-must be rejected, and old results must never acquire new identities. Removing
-the identity from artifacts would be incorrect.
+All fields in the table are now retired public inputs. `farkle.protocols` owns
+the implemented values; the user-facing dataclasses and YAML templates no longer
+expose them. The loader rejects both nested and dotted declarations, including
+former defaults and empty retired sections. CLI overrides receive the same
+migration guidance.
 
-## Unused option
+Public configuration schema 2 binds an implementation-contract payload into
+compute hashes. Run-context contract 4 records the literal protocol metadata
+under its authenticated payload hash; sidecars retain their version vectors,
+method identities and configuration-schema identity. This migrates freshness,
+not game rules or RNG coordinates. Historical outputs are preserved and cannot
+be promoted by replacing metadata. Use fresh output roots with the new schema.
 
-`analysis.results_glob` has a dataclass definition and YAML examples but no
-production consumer. Canonical input paths are resolved from configured roots,
-player counts, and stage layouts. Changing this field can affect configuration
-identity without changing the selected inputs. Retire it with an explicit
-loader error; do not introduce directory discovery to justify the option.
+## Removed unused option
+
+`analysis.results_glob` had no production consumer and is now retired. Input
+ownership remains explicit through configured roots, player counts and stage
+layouts; the cleanup does not introduce directory discovery.
 
 ## Controls that remain meaningful
 

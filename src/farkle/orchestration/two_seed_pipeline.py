@@ -195,11 +195,6 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
-    if cfg.orchestration.parallel_seeds:
-        raise ValueError(
-            "orchestration.parallel_seeds=true is unsupported: root seeds must execute "
-            "sequentially so the active tournament receives the full worker budget"
-        )
     concurrency = 1
     requested: dict[str, int | None] = {
         "simulation": cfg.sim.n_jobs,
@@ -248,7 +243,7 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPol
         extra={
             "stage": "orchestration",
             "root_count": seed_count,
-            "parallel_roots": cfg.orchestration.parallel_seeds,
+            "parallel_roots": False,
             "resolved_policy": bundle.as_metadata(),
         },
     )
@@ -900,27 +895,8 @@ def _run_pipeline_observed(
 
     if len(set(seed_pair)) != 2:
         raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
-    if cfg.orchestration.parallel_seeds:
-        raise ValueError(
-            "orchestration.parallel_seeds=true is rejected before run start; "
-            "two-seed pipelines execute roots sequentially"
-        )
     if oracle_game_profile is None:
         cfg.validate_statistical_contract(require_two_roots=True)
-    else:
-        contract = cfg.artifact_contract
-        release_identity = (
-            contract.artifact_contract_version,
-            cfg.rng.scheme_version,
-            runner.OUTCOME_SCHEMA_VERSION,
-            contract.schema_version,
-            contract.estimand_version,
-            contract.conditioning_version,
-        )
-        if release_identity != (3, 2, 2, 2, 2, 2):
-            raise ValueError(
-                "the test-only oracle seam still requires release identity " "3/2/2/2/2/2"
-            )
     if cfg.config_sha is None:
         assign_config_sha(cfg)
     code_identity = resolve_code_identity(

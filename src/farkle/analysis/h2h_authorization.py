@@ -166,21 +166,18 @@ def resolve_cap_authorization(
         except (ArtifactContractError, AuthenticatedContractError):
             existing = None
         if existing is not None:
-            if cfg.artifact_contract.artifact_contract_version == 3:
-                metadata = load_authenticated_sidecar(path)
-                if (
-                    cfg._code_identity is not None
-                    and metadata.stage_identity.code != cfg._code_identity
-                ):
-                    raise ValueError("H2H authorization belongs to different code identity")
-                if (
-                    cfg._run_lineage_sha256 is not None
-                    and metadata.stage_identity.immutable_design_identities.get(
-                        "run_lineage_sha256"
-                    )
-                    != cfg._run_lineage_sha256
-                ):
-                    raise ValueError("H2H authorization belongs to a different run lineage")
+            metadata = load_authenticated_sidecar(path)
+            if (
+                cfg._code_identity is not None
+                and metadata.stage_identity.code != cfg._code_identity
+            ):
+                raise ValueError("H2H authorization belongs to different code identity")
+            if (
+                cfg._run_lineage_sha256 is not None
+                and metadata.stage_identity.immutable_design_identities.get("run_lineage_sha256")
+                != cfg._run_lineage_sha256
+            ):
+                raise ValueError("H2H authorization belongs to a different run lineage")
             validate_authorization(existing, plan)
             validate_authorization_sources(
                 existing, cfg.h2h_power_plan_path(), cfg.h2h_block_manifest_path()

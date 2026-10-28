@@ -77,11 +77,6 @@ sim:
 screening:
   practical_delta_by_k: {2: 0.03}
   delta_across_k: 0.03
-artifact_contract:
-  artifact_contract_version: 3
-  schema_version: 2
-  estimand_version: 2
-  conditioning_version: 2
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -159,29 +154,14 @@ def test_release_audit_rejects_mixed_v2_v3_descendants(tmp_path: Path) -> None:
         ),
     )
     legacy_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    legacy_cfg.artifact_contract.artifact_contract_version = 2
-    legacy_cfg.artifact_contract.schema_version = 1
-    legacy_cfg.artifact_contract.estimand_version = 1
-    legacy_cfg.artifact_contract.conditioning_version = 1
     legacy = legacy_cfg.scope_path(
         "metrics",
         ArtifactScope.DIAGNOSTICS,
         "legacy.parquet",
     )
-    write_parquet_artifact_atomic(
-        table,
-        legacy,
-        sidecar=make_artifact_sidecar(
-            legacy_cfg,
-            legacy,
-            producer="legacy_test",
-            scope=ArtifactScope.DIAGNOSTICS,
-            source_scope=ArtifactScope.BY_K,
-            operation="legacy_v2",
-            consistency_columns=table.schema.names,
-            missing_cell_policy="not_applicable",
-        ),
-    )
+    from tests.helpers.artifact_sidecars import write_parquet_test_artifact
+
+    write_parquet_test_artifact(table, legacy, scope="diagnostics")
 
     failures = audit_sidecar_completeness(cfg.analysis_dir)
 

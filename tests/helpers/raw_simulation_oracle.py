@@ -123,10 +123,8 @@ def write_tiny_oracle_config(tmp_path: Path) -> Path:
             "target_power": 0.1,
             "practical_delta": 0.2,
             "sensitivity_deltas": [0.2, 0.04],
-            "seat1_advantage_scenarios": [0.0, 0.03, 0.06],
             "delta_equivalence": None,
             "candidate_cap": 3,
-            "candidate_cap_policy": "balanced-tail",
             "min_candidate_completion_rate": 0.99,
             "max_attempt_multiplier": 2.0,
             "total_game_cap": 24,
@@ -134,7 +132,6 @@ def write_tiny_oracle_config(tmp_path: Path) -> Path:
         },
         "screening": {
             "resolution_delta": 0.9,
-            "interval_confidence": 0.95,
             "practical_delta_by_k": {2: 0.2, 4: 0.2},
             "delta_across_k": 0.2,
             "bootstrap_replicates": 1,
@@ -144,17 +141,9 @@ def write_tiny_oracle_config(tmp_path: Path) -> Path:
         },
         "batching": {"target_batches": 2, "min_shuffles_per_batch": 1},
         "robustness": {
-            "report_pareto": True,
-            "report_maximin": True,
             "delta_seed_stability": 0.2,
             "joint_discrepancy_alpha": 0.05,
             "matched_count_fractions": [1.0],
-        },
-        "artifact_contract": {
-            "artifact_contract_version": 3,
-            "estimand_version": 2,
-            "schema_version": 2,
-            "conditioning_version": 2,
         },
         "k_aggregation": {"method": "equal-k", "k_weights": None},
         "hgb": {
@@ -164,7 +153,6 @@ def write_tiny_oracle_config(tmp_path: Path) -> Path:
             "permutation_repeats": 1,
             "future_proposal_limit": 1,
         },
-        "orchestration": {"parallel_seeds": False},
     }
     path = tmp_path / "tiny_oracle.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")

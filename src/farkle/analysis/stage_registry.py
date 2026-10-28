@@ -113,7 +113,6 @@ _PROFILE_METADATA_SCOPE = (
     "sim.include_stop_at",
     "sim.include_stop_at_heuristic",
     "screening.resolution_delta",
-    "screening.interval_confidence",
     "screening.bootstrap_replicates",
     "screening.candidate_contribution_size",
     "screening.controls",
@@ -125,7 +124,6 @@ _PROFILE_METADATA_SCOPE = (
     "head2head.family_alpha",
     "head2head.target_power",
     "head2head.practical_delta",
-    "head2head.seat1_advantage_scenarios",
     "head2head.max_attempt_multiplier",
 )
 
@@ -198,7 +196,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "sim.seed",
             "sim.n_players_list",
             "sim.n_jobs",
-            "rng",
             "analysis.disable_rng_diagnostics",
             "analysis.rng_max_matchup_groups",
             "analysis.rng_diagnostic_lags",
@@ -235,7 +232,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "sim.n_players_list",
             "screening",
             "robustness",
-            "artifact_contract",
         ),
     ),
     # The single-root H2H tail is present in the layout but is never part of
@@ -256,7 +252,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "head2head.target_power",
             "head2head.practical_delta",
             "head2head.sensitivity_deltas",
-            "head2head.seat1_advantage_scenarios",
             "head2head.min_candidate_completion_rate",
             "head2head.max_attempt_multiplier",
             "head2head.allow_single_root",
@@ -267,7 +262,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "h2h_execute",
         group="single_root_tail",
         depends_on=("h2h_power",),
-        cache_scope=("head2head", "rng"),
+        cache_scope=("head2head",),
         cache_key_version=6,
     ),
     StageDefinition(
@@ -288,14 +283,14 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "agreement",
         group="single_root_tail",
         depends_on=("h2h_digest",),
-        cache_scope=("artifact_contract",),
+        cache_scope=("k_aggregation",),
         cache_key_version=2,
     ),
     StageDefinition(
         "reporting",
         group="single_root_tail",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract", *_PROFILE_METADATA_SCOPE),
+        cache_scope=_PROFILE_METADATA_SCOPE,
         cache_key_version=3,
     ),
 )
@@ -329,7 +324,6 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
             "head2head.target_power",
             "head2head.practical_delta",
             "head2head.sensitivity_deltas",
-            "head2head.seat1_advantage_scenarios",
             "head2head.min_candidate_completion_rate",
             "head2head.max_attempt_multiplier",
             "head2head.allow_single_root",
@@ -340,7 +334,7 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         "h2h_execute",
         group="root_pair",
         depends_on=("h2h_power",),
-        cache_scope=("head2head", "rng"),
+        cache_scope=("head2head",),
         cache_key_version=6,
     ),
     StageDefinition(
@@ -361,14 +355,14 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         "agreement",
         group="root_pair",
         depends_on=("h2h_digest",),
-        cache_scope=("artifact_contract",),
+        cache_scope=("k_aggregation",),
         cache_key_version=2,
     ),
     StageDefinition(
         "reporting",
         group="root_pair",
         depends_on=("agreement",),
-        cache_scope=("artifact_contract", *_PROFILE_METADATA_SCOPE),
+        cache_scope=_PROFILE_METADATA_SCOPE,
         cache_key_version=3,
     ),
 )
@@ -398,12 +392,9 @@ _DEFINITION_LOOKUP["simulation"] = StageDefinition(
         "sim.include_stop_at",
         "sim.include_stop_at_heuristic",
         "screening.resolution_delta",
-        "screening.interval_confidence",
         "screening.max_shuffles_per_root_k",
         "batching.target_batches",
         "batching.min_shuffles_per_batch",
-        "rng",
-        "artifact_contract",
     ),
 )
 

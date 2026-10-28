@@ -25,6 +25,7 @@ from scipy.stats import binom, nchypergeom_fisher, norm
 from farkle.analysis.h2h_authorization import resolve_cap_authorization
 from farkle.config import AppConfig, ArtifactScope
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
+from farkle.protocols import H2H_SEAT1_ADVANTAGE_SCENARIOS
 from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.simulation import PlayerRngCoordinates, _play_game
 from farkle.simulation.strategies import parse_strategy_identifier
@@ -482,7 +483,7 @@ def _power_grid(
     rows: list[dict[str, Any]] = []
     games_per_order = block_games * len(roots)
     for effect in cfg.head2head.sensitivity_deltas:
-        for advantage in cfg.head2head.seat1_advantage_scenarios:
+        for advantage in H2H_SEAT1_ADVANTAGE_SCENARIOS:
             q_ab, q_ba = _scenario_probabilities(float(effect), float(advantage))
             rows.append(
                 {
@@ -656,7 +657,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         raise ValueError("single-root H2H is disabled by head2head.allow_single_root")
     pair_count = len(candidates) * (len(candidates) - 1) // 2
     alpha_per_pair = cfg.head2head.family_alpha / pair_count
-    scenarios = tuple(float(value) for value in cfg.head2head.seat1_advantage_scenarios)
+    scenarios = tuple(float(value) for value in H2H_SEAT1_ADVANTAGE_SCENARIOS)
     block_games = _minimum_block_games(
         root_count=len(roots),
         effect=cfg.head2head.practical_delta,

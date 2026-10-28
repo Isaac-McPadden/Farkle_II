@@ -27,6 +27,7 @@ from farkle.analysis.h2h_schedule import (
     implemented_score_test_power,
 )
 from farkle.config import AppConfig, load_app_config
+from farkle.protocols import H2H_SEAT1_ADVANTAGE_SCENARIOS
 from farkle.utils.artifact_contract import sha256_file
 from farkle.utils.writer import atomic_path
 
@@ -36,7 +37,7 @@ def numerical_example(cfg: AppConfig, candidate_count: int) -> dict:
     roots = tuple(cfg.sim.seed_list or [cfg.sim.seed])
     pair_count = candidate_count * (candidate_count - 1) // 2
     alpha = h.family_alpha / pair_count
-    scenarios = tuple(h.seat1_advantage_scenarios)
+    scenarios = tuple(H2H_SEAT1_ADVANTAGE_SCENARIOS)
     block = _minimum_block_games(
         root_count=len(roots),
         effect=h.practical_delta,
