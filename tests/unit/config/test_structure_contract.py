@@ -52,13 +52,19 @@ CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
 @pytest.mark.parametrize(
     "filename",
-    ["default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
+    [
+        "default_config.yaml",
+        "farkle_mega_config.yaml",
+        "fast_config.yaml",
+        "fast_monitor_config.yaml",
+    ],
 )
 def test_active_configuration_examples_use_the_current_contract(filename: str) -> None:
     config_path = CONFIG_DIR / filename
     cfg = load_app_config(config_path)
     cfg.validate_statistical_contract(
-        require_two_roots=filename in {"farkle_mega_config.yaml", "fast_config.yaml"}
+        require_two_roots=filename
+        in {"farkle_mega_config.yaml", "fast_config.yaml", "fast_monitor_config.yaml"}
     )
     assert (
         artifact_versions()["artifact_contract_version"],
@@ -72,7 +78,13 @@ def test_active_configuration_examples_use_the_current_contract(filename: str) -
 
 @pytest.mark.parametrize(
     "filename",
-    ["blank_config.yaml", "default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
+    [
+        "blank_config.yaml",
+        "default_config.yaml",
+        "farkle_mega_config.yaml",
+        "fast_config.yaml",
+        "fast_monitor_config.yaml",
+    ],
 )
 def test_checked_in_config_templates_list_every_public_field(filename: str) -> None:
     """Keep every checked-in config synchronized with the typed public schema."""
@@ -97,7 +109,12 @@ def test_default_config_materializes_exact_app_config_defaults() -> None:
 
 @pytest.mark.parametrize(
     "filename",
-    ["default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
+    [
+        "default_config.yaml",
+        "farkle_mega_config.yaml",
+        "fast_config.yaml",
+        "fast_monitor_config.yaml",
+    ],
 )
 def test_runnable_configs_round_trip_under_public_schema(tmp_path: Path, filename: str) -> None:
     loaded = load_app_config(CONFIG_DIR / filename)

@@ -820,8 +820,8 @@ class SupervisorHeartbeatRecorder:
                 "completed_progress": dict(self._completed_progress),
             }
 
-    def close(self) -> float:
-        """Stop and join the supervisor thread idempotently."""
+    def close(self, *, status: str = "closed") -> float:
+        """Stop the recorder and persist one terminal snapshot idempotently."""
 
         started = float(self._clock())
         with self._lock:
@@ -854,6 +854,32 @@ class SupervisorHeartbeatRecorder:
                 channel.queue.close()
             with suppress(Exception):
                 channel.queue.join_thread()
+        if self._heartbeat_sink is not None and os.getpid() == self.owner_pid:
+            try:
+                self._heartbeat_sink(
+                    {
+                        **self.resource_snapshot(),
+                        "telemetry_kind": "terminal",
+                        "run": self.run,
+                        "scope": "pipeline",
+                        "stage": "pipeline",
+                        "phase": "finished",
+                        "state": status,
+                        "status": status,
+                        "elapsed_seconds": max(0.0, float(self._clock()) - self._started_at),
+                        "active_scope_count": 0,
+                        "active_scopes": [],
+                        "owner_pid": self.owner_pid,
+                        "heartbeat_count": self.heartbeat_count,
+                        "dropped_updates": self.dropped_updates,
+                        "telemetry_errors": list(self.telemetry_errors),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry cannot fail computation
+                with self._lock:
+                    self._record_error_locked(
+                        "terminal_publication", f"{type(exc).__name__}: {exc}"
+                    )
         return max(0.0, float(self._clock()) - started)
 
     def _run(self) -> None:

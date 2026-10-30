@@ -267,6 +267,13 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     assert context.root_pair == (11, 22)
     assert context.analysis_root == pair_root / SEED_PAIR_ANALYSIS_DIRNAME
     assert health["status"] == "complete_success"
+    assert health["profile"]["release_status"] == "passed"
+    assert health["profile"]["release_eligible"] is True
+    terminal = json.loads((pair_root / "pipeline_telemetry.json").read_text())
+    assert terminal["telemetry_kind"] == "terminal"
+    assert terminal["status"] == "complete_success"
+    assert terminal["active_scope_count"] == 0
+    assert terminal["active_scopes"] == []
     assert health["pair_workflow"]["analysis_root"] == str(context.analysis_root)
     policy = health["resource_telemetry"]["resource_policy"]
     assert set(policy) == {"limiter_mode", "requested", "resolved", "effective"}
@@ -650,6 +657,9 @@ def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(
     assert pair_calls == []
     assert health["status"] == "failed"
     assert health["pair_workflow"]["status"] == "failed"
+    terminal_path = two_seed_pipeline.seed_pair_root(cfg, (11, 22)) / "pipeline_telemetry.json"
+    terminal = json.loads(terminal_path.read_text())
+    assert terminal["status"] == "failed" and terminal["active_scope_count"] == 0
 
 
 def test_sequential_non_resource_failure_prevents_second_root(
@@ -705,6 +715,8 @@ def test_sequential_resource_failure_prevents_second_root_and_pair_workflow(
     assert raised.value.classification == "persistent_high_water"
     assert health["root_workflows"]["22"]["analysis"] == "not_started"
     assert pair_calls == []
+    terminal_path = two_seed_pipeline.seed_pair_root(cfg, (11, 22)) / "pipeline_telemetry.json"
+    assert json.loads(terminal_path.read_text())["status"] == "resource_failure"
 
 
 def test_h2h_refusal_is_a_resumable_operational_stop(monkeypatch, tmp_path) -> None:
@@ -728,6 +740,11 @@ def test_h2h_refusal_is_a_resumable_operational_stop(monkeypatch, tmp_path) -> N
     assert health["status"] == "blocked_by_cap"
     assert health["pair_workflow"]["status"] == "blocked_by_cap"
     assert health["pair_workflow"]["failure_classification"] == "blocked_by_cap"
+    assert health["profile"]["release_status"] == "not_run"
+    assert health["profile"]["release_eligible"] is False
+    terminal = json.loads(health_path.with_name("pipeline_telemetry.json").read_text())
+    assert terminal["status"] == "blocked_by_cap"
+    assert terminal["active_scope_count"] == 0
 
 
 def test_hard_supervisor_exit_cannot_leave_successful_health(
@@ -753,6 +770,9 @@ def test_hard_supervisor_exit_cannot_leave_successful_health(
     health = json.loads(health_path.read_text(encoding="utf-8"))
     assert health["status"] == "running"
     assert health["status"] != "complete_success"
+    terminal = json.loads(health_path.with_name("pipeline_telemetry.json").read_text())
+    assert terminal["status"] == "interrupted"
+    assert terminal["active_scope_count"] == 0
 
 
 def test_final_audit_interruption_cannot_publish_success_or_run_end(
@@ -837,7 +857,11 @@ def test_failed_final_audit_logs_artifact_failures(monkeypatch, tmp_path, caplog
     monkeypatch.setattr(
         two_seed_pipeline,
         "_final_release_gate",
-        lambda *_args, **_kwargs: {"status": "failed", "failures": failures},
+        lambda *_args, **_kwargs: {
+            "status": "failed",
+            "release_eligible": False,
+            "failures": failures,
+        },
     )
     with pytest.raises(RuntimeError, match="final release audit failed"):
         two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))

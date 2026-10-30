@@ -24,7 +24,7 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
-STRUCTURE_REPORT_CONTRACT_VERSION: Final = 10
+STRUCTURE_REPORT_CONTRACT_VERSION: Final = 11
 
 
 def _rng_evidence_summary(
@@ -438,7 +438,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Production configuration eligible: `{profile['production_eligible']}`",
         f"- Production qualification: `{profile['production_qualification']}`",
         f"- Production ineligibility reasons: `{profile['production_ineligibility_reasons']}`",
-        f"- Release status: `{profile['release_status']}` (see final pipeline audit)",
+        "- Final release audit and eligibility: see `pipeline_health.json` (`release_audit`).",
         f"- Configured resolution: `{profile['configured_resolution']}`",
         f"- Resolved workload by k: `{profile['workload_by_k']}`",
         f"- Bootstrap replicates: `{profile['bootstrap_replicates']}`",

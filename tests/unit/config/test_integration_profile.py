@@ -211,7 +211,7 @@ def test_development_purpose_does_not_reduce_full_resolution_settings() -> None:
     assert metadata["production_eligible"] is False
     assert len(metadata["production_ineligibility_reasons"]) == 1
     assert "development use" in metadata["production_ineligibility_reasons"][0]
-    assert metadata["release_status"] == "pending_final_audit"
+    assert metadata["release_status"] == "see_pipeline_health"
     assert "release_eligible" not in metadata
 
 
@@ -261,3 +261,46 @@ def test_metadata_publishers_bind_design_settings_but_not_worker_counts() -> Non
     assert {stage: cfg.stage_config_sha(stage) for stage in original} == original
     cfg.screening.bootstrap_replicates = 500
     assert all(cfg.stage_config_sha(stage) != previous for stage, previous in original.items())
+
+
+def test_monitor_config_preserves_fast_design_with_supported_30_batch_workload() -> None:
+    from farkle.analysis.batch_monitor import DEFAULT_POLICY
+    from farkle.config import effective_config_dict
+
+    fast = load_app_config(CONFIG_DIR / "fast_config.yaml", seed_list_len=2)
+    monitor = load_app_config(CONFIG_DIR / "fast_monitor_config.yaml", seed_list_len=2)
+    monitor.validate_statistical_contract(require_two_roots=True)
+    assert monitor.batching.target_batches in DEFAULT_POLICY.supported_batch_counts
+    assert monitor.batching.target_batches == DEFAULT_POLICY.minimum_batches == 30
+    assert monitor.batching.min_shuffles_per_batch == 30
+    metadata = resolved_profile_metadata(monitor)
+    assert {cell["required_shuffles"] for cell in metadata["workload_by_k"].values()} == {900}
+    assert {cell["batch_count"] for cell in metadata["workload_by_k"].values()} == {30}
+    assert (
+        sum(cell["required_games_per_root"] for cell in metadata["workload_by_k"].values()) == 68400
+    )
+    assert metadata["production_eligible"] is False
+    assert monitor.sim.seed == 68 and monitor.sim.seed_list == [68, 69]
+    assert monitor.io.results_dir_prefix != fast.io.results_dir_prefix
+    # Only the output namespace, fresh roots and batch count differ from fast.
+    expected = effective_config_dict(fast)
+    actual = effective_config_dict(monitor)
+    expected["io"]["results_dir_prefix"] = actual["io"]["results_dir_prefix"]
+    expected["sim"]["seed"] = actual["sim"]["seed"]
+    expected["sim"]["seed_list"] = actual["sim"]["seed_list"]
+    expected["batching"]["target_batches"] = 30
+    assert actual == expected
+
+
+@pytest.mark.parametrize("seed,expected_warnings", [(68, 0), (67, 1)])
+def test_seed_normalization_warns_only_for_a_conflict(tmp_path, caplog, seed, expected_warnings):
+    import logging
+
+    path = tmp_path / "seeds.yaml"
+    path.write_text(f"sim:\n  seed: {seed}\n  seed_list: [68, 69]\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="farkle.config"):
+        cfg = load_app_config(path)
+    assert cfg.sim.seed == 68
+    assert len(caplog.records) == expected_warnings
+    if expected_warnings:
+        assert "overwritten by sim.seed_list[0]" in caplog.records[0].message

@@ -121,7 +121,7 @@ protocol descriptions and unused fields elsewhere in the public schema.
 is the only profile setting. Purpose does not select batch counts or establish
 statistical adequacy. Numerical workload settings determine the work.
 
-Generated profile metadata (contract version 2) calculates `reduced_resolution`
+Generated profile metadata (contract version 4) calculates `reduced_resolution`
 from configured and planned Wilson widths relative to 0.03. It lists every
 production qualification check, its actual value, requirement, and outcome.
 The versioned `first_release_production_v1` policy retains the published
@@ -138,8 +138,10 @@ power or bootstrap settings are accepted within this contract.
 `production_eligible` requires both a qualifying configuration and declared
 production intent. Development runs remain development evidence even when
 their settings satisfy the design. A production request with unmet requirements
-remains ineligible and reports the reasons. Profile metadata says
-`release_status: pending_final_audit`; it cannot assert release eligibility.
+remains ineligible and reports the reasons. Immutable pre-audit profile metadata
+uses `release_status: see_pipeline_health`, pointing to the final operational
+result without claiming an audit is still pending. Final `pipeline_health.json`
+profile metadata records the actual audit status and release eligibility.
 Only the final pipeline audit publishes `release_eligible`, requiring a passed
 fresh root/root/pair audit, completed roots, clean release code provenance,
 qualifying production settings, standard game rules, authenticated correctness
@@ -165,6 +167,16 @@ contributions per ranking method, and a balanced-tail frozen-candidate cap of
 resolve the unrounded 597-shuffle requirement to 600 shuffles per root/k and
 achieve a maximum Wilson width of about 0.0797603. Production qualification requires
 100 batches. This is development evidence only.
+
+`fast_monitor_config.yaml` starts from that same design and uses exactly 30
+batches, a supported batch count for the descriptive monitor. With 30 shuffles
+per batch it plans 900 shuffles per root/k: 36,000 / 18,000 / 14,400 games for
+k=2/4/5 per root (136,800 tournament games over two roots). It uses seeds 68/69
+and the separate `results_monitor_30` output prefix. All other design and
+resource controls match the fast profile. This addresses batch-count support;
+zero denominators, constant series and sparse conditional outcomes can still
+yield `insufficient_evidence`. It remains integration evidence, with the same
+production qualification limitations apart from the changed batch count.
 
 ## H2H contract
 

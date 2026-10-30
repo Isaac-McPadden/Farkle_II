@@ -1,0 +1,167 @@
+# configs/fast_monitor_config.yaml
+# 30-batch monitor integration run; sparse/constant series may still be unestimable.
+# Drives BOTH simulation and analysis.
+
+io:
+  temp_dir: "S://farkle_temp"                # optional absolute scratch directory for per-file staging
+  results_dir_prefix: "results_monitor_30"
+  analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
+
+sim:
+  # Table sizes to run (single-N works by giving a 1-item list)
+  n_players_list: [2, 4, 5]
+
+  # Schedule & runtime controls
+  seed: 68                        # primary RNG seed (results_root uses seed suffix)
+  seed_list: [68, 69]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  n_jobs: 12                    # null = auto; otherwise an int
+  mp_start_method: null          # start method: default|null|spawn|fork|forkserver
+  expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
+  row_dir: "rows"                   # rows => per-N rows under {results_root}/{N}_players/rows/
+                                    # If row_dir == null, row writing skipped
+  metric_chunk_dir: null          # optional relative folder for metric chunks
+  per_n: {}                       # optional per-table overrides
+  desired_sec_per_chunk: 10
+  ckpt_every_sec: 30
+  progress_logging:
+    frequent_interval_sec: 30.0
+    info_phase_sec: 180.0
+    ongoing_interval_sec: 600.0
+
+  # Customize strategy grid
+  # null (yaml) / None (py) loads default values for that variable
+  score_thresholds: [250, 300, 350, 400]      # None -> use [200, 250, ..., 1000]
+  dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
+  smart_five_opts: [true]       # None -> [True, False]
+  smart_one_opts: [true]        # None -> [True, False]
+  consider_score_opts: [true]   # None -> (True, False)
+  consider_dice_opts: [true]    # None -> (True, False)
+  auto_hot_dice_opts: [true]    # None -> (True, False)
+  run_up_score_opts: [true]     # None -> (True, False)
+  include_stop_at: false
+  include_stop_at_heuristic: false
+
+  # Optional per-N overrides (keys are strings)
+  # per_n:
+    # "12":
+  
+analysis:
+  disable_rng_diagnostics: false
+  n_jobs: 4
+  mp_start_method: null
+  progress_logging:
+    frequent_interval_sec: 30.0
+    info_phase_sec: 180.0
+    ongoing_interval_sec: 600.0
+  log_level: "INFO"
+  outputs: {}
+  game_stats_margin_thresholds: [500, 1000]
+  rare_event_target_score: 10000
+  rare_event_write_details: false
+  rare_event_margin_quantile: null
+  rare_event_target_rate: null
+  rng_max_matchup_groups: 150000
+  rng_diagnostic_lags: [1]
+  rng_diagnostic_partitions: 8
+
+ingest:
+  row_group_size: 64000           # parquet/arrow row group target
+  parquet_codec: "snappy"
+  batch_rows: 100000
+  n_jobs: 1
+
+combine:
+  max_players: 12
+
+trueskill:
+  beta: 4.166667                  # 25/6
+  tau: 0.1
+  draw_probability: 0.0
+
+head2head:
+  n_jobs: 0
+  family_alpha: 0.02
+  target_power: 0.80
+  practical_delta: 0.03
+  sensitivity_deltas: [0.03, 0.04]
+  delta_equivalence: null
+  candidate_cap: 12
+  min_candidate_completion_rate: 0.99
+  max_attempt_multiplier: 2.0
+  total_game_cap: 100000000
+  allow_single_root: true
+
+profile:
+  purpose: "integration"
+
+screening:
+  resolution_delta: 0.08
+  practical_delta_by_k: {2: 0.03, 4: 0.03, 5: 0.03}
+  delta_across_k: 0.03
+  bootstrap_replicates: 500
+  candidate_contribution_size: 8
+  controls: []
+  mandatory_diagnostics: []
+  max_shuffles_per_root_k: null
+  projected_games_per_second: null
+
+batching:
+  target_batches: 30
+  min_shuffles_per_batch: 30
+
+robustness:
+  delta_seed_stability: 0.03
+  joint_discrepancy_alpha: 0.05
+  matched_count_fractions: [0.25, 0.50, 0.75, 1.0]
+
+k_aggregation:
+  method: "equal-k"
+  k_weights: null
+hgb:
+  max_depth: 6
+  n_estimators: 300
+  heldout_folds: 5
+  permutation_repeats: 10
+  future_proposal_limit: 25
+
+resources:
+  # Machine-targeted Ryzen 7 3700X / 32 GiB profile; not a portable default.
+  scheduler_memory_budget_mb: 8192
+  process_tree_warning_threshold_mb: 8192
+  aggregate_memory_hard_limit_mb: 12288
+  minimum_system_available_memory_mb: 4096
+  os_memory_limit_enabled: true
+  os_memory_limit_required: true
+  allow_unenforced_memory_fallback: false
+  parent_process_memory_mb: 512
+  logical_cpu_budget: 15
+  native_threads_per_worker: 1
+  max_in_flight_per_worker: 1
+  rss_sample_interval_seconds: 0.25
+  estimated_worker_memory_mb:
+    simulation: 128
+    ingest: 192
+    analysis: 192
+    game_stats: 192
+    all_player_metrics: 160
+    performance_bootstrap: 160
+    trueskill: 192
+    head2head: 128
+    rng_diagnostics_count_route: 256
+    rng_diagnostics_eligibility: 1536
+    rng_diagnostics_stats_route: 256
+    rng_diagnostics_stats: 1536
+    partitioned_stage: 128
+  stage_batch_bytes:
+    ingest: 33554432
+    combine: 33554432
+    analysis: 33554432
+    game_stats: 16777216
+    all_player_metrics: 16777216
+    performance: 16777216
+    trueskill: 16777216
+    rng_diagnostics_source: 33554432
+    rng_diagnostics_route_unit: 67108864
+    rng_diagnostics_route_unit_hard: 100663296
+    rng_diagnostics_reduce_run: 268435456
+    partitioned_stage: 16777216

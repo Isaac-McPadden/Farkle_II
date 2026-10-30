@@ -1062,7 +1062,7 @@ def guide_product_reusable(
         if (
             authenticated.stage_identity.code != current_code
             or authenticated.versions.method_versions.get("analysis_guide_method_version") != 1
-            or authenticated.versions.method_versions.get("structure_report_contract_version") != 10
+            or authenticated.versions.method_versions.get("structure_report_contract_version") != 11
         ):
             return False
         actual = (

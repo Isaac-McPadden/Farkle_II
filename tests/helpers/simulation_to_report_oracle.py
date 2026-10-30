@@ -220,6 +220,12 @@ def assert_pipeline_health_and_simulation_lifecycle(
     health = json.loads(health_path.read_text(encoding="utf-8"))
     assert health["seed_pair"] == [11, 22]
     assert health["status"] == "complete_success"
+    assert health["profile"]["release_status"] == "passed"
+    assert health["profile"]["release_eligible"] is False
+    terminal = json.loads((pair_context.pair_root / "pipeline_telemetry.json").read_text())
+    assert terminal["telemetry_kind"] == "terminal"
+    assert terminal["status"] == "complete_success"
+    assert terminal["active_scopes"] == [] and terminal["active_scope_count"] == 0
     assert health["config_sha"] == cfg.config_sha
     assert health["pair_public_config_sha256"] == pair_context.config.config_sha
     release_audit = health["release_audit"]
@@ -274,7 +280,7 @@ def assert_report_oracle(pair_context: RootPairRunContext) -> None:
 
     cfg = pair_context.config
     report = json.loads(cfg.structure_report_json_path().read_text(encoding="utf-8"))
-    assert report["report_contract_version"] == 10
+    assert report["report_contract_version"] == 11
     assert report["execution_scope"] == "root_pair"
     assert report["roots"] == [11, 22]
     assert report["support"]["player_counts"] == [2, 4]

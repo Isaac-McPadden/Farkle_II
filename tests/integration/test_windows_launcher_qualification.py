@@ -107,6 +107,9 @@ def test_windows_launcher_cross_volume_cap_stop_and_resume(
     health_path = pair_root / "pipeline_health.json"
     blocked = json.loads(health_path.read_text(encoding="utf-8"))
     assert blocked["status"] == "blocked_by_cap"
+    stopped_telemetry = json.loads((pair_root / "pipeline_telemetry.json").read_text())
+    assert stopped_telemetry["status"] == "blocked_by_cap"
+    assert stopped_telemetry["active_scope_count"] == 0
     power_path = next((pair_root / "seed_pair_analysis").rglob("power_plan.json"))
     validate_artifact_sidecar(power_path)
     plan = json.loads(power_path.read_text(encoding="utf-8"))
@@ -160,6 +163,12 @@ def test_windows_launcher_cross_volume_cap_stop_and_resume(
         ) == render_guide_markdown(guide)
         health = json.loads(health_path.read_text(encoding="utf-8"))
         assert health["status"] == "complete_success"
+        assert health["profile"]["release_status"] == "passed"
+        assert health["profile"]["release_eligible"] is False
+        terminal = json.loads((pair_root / "pipeline_telemetry.json").read_text())
+        assert terminal["telemetry_kind"] == "terminal"
+        assert terminal["status"] == "complete_success"
+        assert terminal["active_scopes"] == [] and terminal["active_scope_count"] == 0
         audit = health["release_audit"]
         assert audit["status"] == "passed" and not audit["failures"]
         assert audit["top_level_invocations"] == 1

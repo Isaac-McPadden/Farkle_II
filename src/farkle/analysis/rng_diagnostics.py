@@ -47,6 +47,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
+from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     ResourceSafetyError,
@@ -1886,6 +1887,9 @@ def _write_or_reuse_selection(
     selection_sha = hashlib.sha256(
         f"{stage_config_sha}:{eligibility_manifest_sha}".encode("ascii")
     ).hexdigest()
+    code_identity = cfg._code_identity or resolve_code_identity(
+        Path(__file__).resolve().parents[3], policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY
+    )
     if not force:
         state = resolve_stage_state(
             done,
@@ -1895,6 +1899,10 @@ def _write_or_reuse_selection(
             stage_config_sha=selection_sha,
             cache_key_version=1,
             sidecar_artifacts=[selection_file, report_file],
+            config_sha=cfg.config_sha,
+            freshness_key=cfg.freshness_key(),
+            code_identity=code_identity,
+            run_lineage_sha256=cfg._run_lineage_sha256,
         )
         if state is CompletionState.COMPLETE_VALID:
             return cast(dict[str, Any], json.loads(report_file.read_text(encoding="utf-8")))
@@ -2088,6 +2096,10 @@ def _write_or_reuse_selection(
         stage_config_sha=selection_sha,
         cache_key_version=1,
         sidecar_artifacts=[selection_file, report_file],
+        config_sha=cfg.config_sha,
+        freshness_key=cfg.freshness_key(),
+        code_identity=code_identity,
+        run_lineage_sha256=cfg._run_lineage_sha256,
         temp_dir=cfg.io.temp_dir,
     )
     return report

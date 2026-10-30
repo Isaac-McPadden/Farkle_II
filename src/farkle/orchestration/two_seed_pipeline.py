@@ -1266,10 +1266,11 @@ def _run_pipeline_observed(
         "status": overall_status,
         "config_sha": cfg.config_sha,
         "temp_dir": str(cfg.io.temp_dir) if cfg.io.temp_dir is not None else None,
-        "profile": _final_profile_metadata(
-            cfg,
-            pair_context if pair_error is None else None,
-        ),
+        "profile": {
+            **_final_profile_metadata(cfg, pair_context if pair_error is None else None),
+            "release_status": release_audit["status"],
+            "release_eligible": release_audit["release_eligible"],
+        },
         "resource_telemetry": {
             "resource_limiter_mode": cfg.resource_limiter_mode.value,
             "resource_policy": resource_policy,
@@ -1399,6 +1400,7 @@ def run_pipeline(
         ),
     )
     authentication_telemetry = AuthenticationTelemetry()
+    terminal_status = "interrupted"
     try:
         with use_authentication_telemetry(authentication_telemetry):
             _run_pipeline_observed(
@@ -1411,8 +1413,18 @@ def run_pipeline(
                 telemetry=telemetry,
                 authentication_telemetry=authentication_telemetry,
             )
+        terminal_status = "complete_success"
+    except H2HAuthorizationRequired:
+        terminal_status = "blocked_by_cap"
+        raise
+    except (ResourceSafetyError, ResourceFailureError):
+        terminal_status = "resource_failure"
+        raise
+    except Exception:
+        terminal_status = "failed"
+        raise
     finally:
-        cleanup_seconds = telemetry.close()
+        cleanup_seconds = telemetry.close(status=terminal_status)
         LOGGER.info(
             "Pipeline telemetry stopped",
             extra={

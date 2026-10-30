@@ -136,9 +136,14 @@ Success requires the fresh final root/root/pair byte-deep audit and
 `complete_success` health. Bounded integration products remain non-production
 and non-release even when that audit passes. For a scientific release, verify
 the finalized clean code identity, calculated production qualification, and
-`release_eligible: true` in the final audit. Pre-audit reports show
-`release_status: pending_final_audit`; unmet requirements and release
-ineligibility reasons identify the settings or evidence needing attention.
+`release_eligible: true` in the final audit. Pre-audit reports point to
+`pipeline_health.json` with `release_status: see_pipeline_health`. The final
+health profile records the actual audit status and eligibility; unmet
+requirements and release ineligibility reasons identify the settings or evidence
+needing attention. `pipeline_telemetry.json` is finalized on orderly shutdown
+with a terminal state (`complete_success`, `blocked_by_cap`, `resource_failure`,
+`failed`, or `interrupted`) and no active scopes. A hard process kill can leave
+the last heartbeat; final pipeline health remains authoritative.
 
 ## Limits that remain
 

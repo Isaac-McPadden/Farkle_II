@@ -357,3 +357,42 @@ def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     progress = heartbeats[-1].__dict__["active_scopes"][0]["progress"]
     assert 1 <= progress["worker_messages_received"] <= 12
     assert 1 <= progress["units_observed"] <= 12
+
+
+def test_close_replaces_last_active_heartbeat_with_terminal_snapshot_once() -> None:
+    snapshots = []
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.telemetry.terminal"),
+        run="test",
+        interval_seconds=1,
+        resource_sampler=_resources,
+        heartbeat_sink=lambda payload: snapshots.append(dict(payload)),
+        autostart=False,
+    )
+    scope = recorder.begin_scope("audit", run="test", stage="audit", phase="authenticating")
+    recorder.emit_if_due(force=True)
+    assert snapshots[-1]["active_scope_count"] == 1
+    scope.finish(status="success")
+    recorder.close(status="complete_success")
+    terminal = snapshots[-1]
+    assert terminal["telemetry_kind"] == "terminal"
+    assert terminal["state"] == "complete_success"
+    assert terminal["active_scopes"] == [] and terminal["active_scope_count"] == 0
+    assert terminal["heartbeat_count"] == 1
+    count = len(snapshots)
+    recorder.close(status="failed")
+    assert len(snapshots) == count
+
+
+def test_terminal_sink_failure_does_not_mask_pipeline_outcome() -> None:
+    def fail(_payload):
+        raise OSError("terminal sink unavailable")
+
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.telemetry.terminal_failure"),
+        run="test",
+        heartbeat_sink=fail,
+        autostart=False,
+    )
+    recorder.close(status="failed")
+    assert recorder.telemetry_errors == ("OSError: terminal sink unavailable",)

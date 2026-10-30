@@ -14,7 +14,7 @@ from farkle.protocols import (
 )
 from farkle.simulation import runner
 
-PROFILE_METADATA_CONTRACT_VERSION = 3
+PROFILE_METADATA_CONTRACT_VERSION = 4
 PRODUCTION_QUALIFICATION_CONTRACT = "first_release_production_v1"
 
 
@@ -236,9 +236,9 @@ def resolved_profile_metadata(
         "production_eligible": production_eligible,
         "production_qualification": qualification,
         "production_ineligibility_reasons": reasons,
-        "release_status": "pending_final_audit",
+        "release_status": "see_pipeline_health",
         "claim_scope": (
-            "production_configuration_pending_release_audit"
+            "production_configuration_evidence"
             if production_eligible
             else "non_production_non_release_development_evidence"
         ),

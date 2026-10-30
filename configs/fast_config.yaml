@@ -3,7 +3,7 @@
 
 io:
   temp_dir: "S://farkle_temp"                # optional absolute scratch directory for per-file staging
-  results_dir_prefix: "results_seed_pair"
+  results_dir_prefix: "results"
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:

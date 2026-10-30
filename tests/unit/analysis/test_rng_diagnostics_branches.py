@@ -1059,3 +1059,41 @@ def test_rng_config_freshness_and_typed_metadata_migrate_to_method_v4() -> None:
     typed = _typed_method(cfg, metadata, method_version=4)
     assert typed.rng_diagnostic_lags == (1, 2)
     assert typed.rng_tracked_matchup_group_count == 5
+
+
+def test_selection_checkpoint_binds_real_code_config_and_lineage(tmp_path: Path) -> None:
+    from dataclasses import asdict, replace
+
+    cfg = _config_with_input(
+        tmp_path,
+        name="selection_provenance",
+        table=_curated_table(root_seed=9, matchups=[(1, 2)] * 8),
+    )
+    rng_diagnostics.run(cfg)
+    done = cfg.rng_output_path("rng_group_selection.done.json")
+    stamp = json.loads(done.read_text())
+    identity = cfg._code_identity
+    assert identity is not None
+    assert stamp["code_identity"] == asdict(identity)
+    assert stamp["code_identity"]["state"] == "clean"
+    assert stamp["config_sha"] == cfg.config_sha
+    assert stamp["run_lineage_sha256"] == cfg._run_lineage_sha256
+    inputs = [Path(p) for p in stamp["inputs"]]
+    outputs = [Path(p) for p in stamp["outputs"]]
+    contract = {
+        "stage": "rng_diagnostics_selection",
+        "stage_config_sha": stamp["stage_config_sha"],
+        "cache_key_version": 1,
+        "config_sha": cfg.config_sha,
+        "freshness_key": cfg.freshness_key(),
+        "run_lineage_sha256": cfg._run_lineage_sha256,
+    }
+    assert (
+        resolve_stage_state(done, inputs, outputs, code_identity=cfg._code_identity, **contract)
+        is CompletionState.COMPLETE_VALID
+    )
+    other_code = replace(identity, commit="b" * 40)
+    assert (
+        resolve_stage_state(done, inputs, outputs, code_identity=other_code, **contract)
+        is CompletionState.COMPLETE_STALE
+    )

@@ -1574,7 +1574,6 @@ def _validate_seed_sources(
     sim: SimConfig,
     *,
     seed_provided: bool,
-    seed_list_provided: bool,
     expected_seed_len: int | None,
     context: str,
 ) -> None:
@@ -1584,16 +1583,6 @@ def _validate_seed_sources(
             raise ValueError(
                 f"{context}: sim.seed_list must contain exactly {expected_seed_len} seeds, "
                 f"got {sim.seed_list!r}"
-            )
-        if seed_list_provided and seed_provided:
-            LOGGER.warning(
-                "%s: sim.seed_list overrides sim.seed for deterministic root naming",
-                context,
-                extra={
-                    "stage": "config",
-                    "seed_list": list(sim.seed_list),
-                    "seed": sim.seed,
-                },
             )
         if sim.seed != sim.seed_list[0] and seed_provided:
             LOGGER.warning(
@@ -1639,9 +1628,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             raise ValueError(f"Retired config section {section_name!r}; remove it. {reason}")
 
     seed_provided = False
-    seed_list_provided = False
     per_n_seed_provided: dict[int, bool] = {}
-    per_n_seed_list_provided: dict[int, bool] = {}
     if "sim" in data:
         sim_section_raw = data["sim"]
         if not isinstance(sim_section_raw, Mapping):
@@ -1653,7 +1640,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             sim_section = dict(sim_section_raw)
             data["sim"] = sim_section
         seed_provided = "seed" in sim_section
-        seed_list_provided = "seed_list" in sim_section
         raw_players = sim_section.get("n_players_list")
         if isinstance(raw_players, list):
             numeric_players: list[int] = []
@@ -1684,8 +1670,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         continue
                     if "seed" in val:
                         per_n_seed_provided[per_n_key] = True
-                    if "seed_list" in val:
-                        per_n_seed_list_provided[per_n_key] = True
     _validate_config_keys(data)
 
     def build(cls, section: Mapping[str, Any]) -> Any:
@@ -1761,7 +1745,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     _validate_seed_sources(
         cfg.sim,
         seed_provided=seed_provided,
-        seed_list_provided=seed_list_provided,
         expected_seed_len=seed_list_len,
         context="load_app_config",
     )
@@ -1772,7 +1755,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             _validate_seed_sources(
                 sim_cfg,
                 seed_provided=per_n_seed_provided.get(key_int, False),
-                seed_list_provided=per_n_seed_list_provided.get(key_int, False),
                 expected_seed_len=None,
                 context=f"load_app_config(sim.per_n[{key_int}])",
             )

@@ -427,10 +427,13 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 10
+    assert report["report_contract_version"] == 11
     assert report["profile"]["purpose"] == "integration"
     assert report["profile"]["production_eligible"] is False
     assert "release_eligible" not in report["profile"]
+    assert report["profile"]["release_status"] == "see_pipeline_health"
+    assert "pending_final_audit" not in markdown
+    assert "`pipeline_health.json` (`release_audit`)" in markdown
     assert report["conditioning"]["trueskill"] == TRUESKILL_CONDITIONING
     completion = json.loads(
         stage_done_path(cfg.stage_dir("reporting"), "structure_reporting").read_text(
@@ -442,7 +445,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert completion["outputs"]
     report_identity = load_authenticated_sidecar(cfg.structure_report_json_path())
     assert report_identity.versions.artifact_contract_version == 3
-    assert report_identity.versions.method_versions["structure_report_contract_version"] == 10
+    assert report_identity.versions.method_versions["structure_report_contract_version"] == 11
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
@@ -556,7 +559,7 @@ def _claim_report(
             "production_eligible": False,
             "production_qualification": {"configuration_qualified": False},
             "production_ineligibility_reasons": ["fixture: reduced resolution"],
-            "release_status": "pending_final_audit",
+            "release_status": "see_pipeline_health",
             "configured_resolution": 0.08,
             "workload_by_k": {"2": {"achieved_resolution": 0.04}},
             "bootstrap_replicates": 500,
