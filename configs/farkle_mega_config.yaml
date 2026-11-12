@@ -2,7 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  temp_dir: null                # optional absolute scratch directory for per-file staging
+  temp_dir: "S://farkle_temp"                # optional absolute scratch directory for per-file staging
   results_dir_prefix: "results"     # prefix under data/ for per-N run folders
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
@@ -11,8 +11,8 @@ sim:
   n_players_list: [2, 3, 4, 5, 6, 8, 10, 12]
 
   # Schedule & runtime controls
-  seed: 102                        # active root RNG seed (results_root uses root suffix)
-  seed_list: [102, 103]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 104                        # active root RNG seed (results_root uses root suffix)
+  seed_list: [104, 105]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 16                      # null = auto; otherwise an int
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
@@ -63,7 +63,7 @@ analysis:
   rare_event_write_details: false
   rare_event_margin_quantile: null
   rare_event_target_rate: null
-  rng_max_matchup_groups: 100000
+  rng_max_matchup_groups: 1000000
   rng_diagnostic_lags: [1]
   rng_diagnostic_partitions: 32
 
