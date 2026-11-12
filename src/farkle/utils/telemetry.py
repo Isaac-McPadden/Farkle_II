@@ -81,6 +81,55 @@ def _duration_text(value: object) -> str:
     return f"{hours}h{minutes:02d}m"
 
 
+def _heartbeat_progress_snapshot(
+    progress: Mapping[str, object], *, elapsed_seconds: float, now: float
+) -> dict[str, object]:
+    """Show worker observations without promoting them to collected/durable totals.
+
+    Workers report every shuffle, whereas the parent collects whole batches.
+    These are overlapping counts: take their maximum, adding the resume baseline
+    only to this executor's worker counts. A lossy telemetry queue can undercount
+    observations but must never reduce the parent's collected totals.
+    """
+
+    snapshot = dict(progress)
+    started = progress.get("observation_started_monotonic")
+    if isinstance(started, (int, float)) and not isinstance(started, bool):
+        elapsed_seconds = max(0.0, now - started)
+    for unit in ("games", "shuffles"):
+        reported = progress.get(f"worker_completed_{unit}")
+        if not isinstance(reported, (int, float)) or isinstance(reported, bool):
+            continue
+        collected = progress.get(f"completed_{unit}", 0)
+        starting = progress.get(f"starting_{unit}", 0)
+        if not isinstance(collected, (int, float)) or not isinstance(starting, (int, float)):
+            continue
+        if any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+            for value in (reported, collected, starting)
+        ):
+            continue
+        observed = max(int(collected), int(starting) + int(reported))
+        snapshot[f"observed_{unit}"] = observed
+        if unit == "games":
+            planned = progress.get("planned_games")
+            if isinstance(planned, (int, float)) and planned > 0:
+                snapshot["observed_percent_complete"] = 100.0 * observed / planned
+                rate = (
+                    max(0, observed - int(starting)) / elapsed_seconds
+                    if elapsed_seconds > 0
+                    else 0.0
+                )
+                snapshot["observed_games_per_second"] = rate
+                snapshot["observed_eta_seconds"] = (
+                    max(0, planned - observed) / rate if rate > 0 else None
+                )
+    return snapshot
+
+
 def _heartbeat_message(
     active: Mapping[str, object],
     *,
@@ -112,17 +161,26 @@ def _heartbeat_message(
 
     planned_games = progress.get("planned_games")
     parent_games = progress.get("completed_games")
+    observed_games = progress.get("observed_games", parent_games)
     completed_games = (
-        int(parent_games)
-        if isinstance(parent_games, (int, float)) and not isinstance(parent_games, bool)
+        int(observed_games)
+        if isinstance(observed_games, (int, float)) and not isinstance(observed_games, bool)
         else None
     )
+    worker_ahead = (
+        completed_games is not None
+        and isinstance(parent_games, (int, float))
+        and completed_games > parent_games
+    )
+    games_label = "observed_games" if worker_ahead else "games"
     determinate = False
     if isinstance(planned_games, (int, float)) and planned_games > 0:
         if completed_games is not None and 0 <= completed_games <= int(planned_games):
             determinate = True
             percent = 100.0 * completed_games / float(planned_games)
-            parts.append(f"games={completed_games}/{int(planned_games)} ({percent:.1f}%)")
+            parts.append(f"{games_label}={completed_games}/{int(planned_games)} ({percent:.1f}%)")
+            if worker_ahead and isinstance(parent_games, (int, float)):
+                parts.append(f"collected_games={int(parent_games)}")
         else:
             parts.append("games=indeterminate")
     elif completed_games is not None:
@@ -134,7 +192,8 @@ def _heartbeat_message(
         ("completed_chunks", "scheduled_chunks", "chunks"),
         ("durable_units", "total_units", "durable_units"),
     ):
-        completed_value = progress.get(completed_key)
+        observed_key = completed_key.replace("completed_", "observed_")
+        completed_value = progress.get(observed_key, progress.get(completed_key))
         total_value = progress.get(total_key)
         if not (
             isinstance(completed_value, (int, float))
@@ -145,7 +204,8 @@ def _heartbeat_message(
         ):
             continue
         if 0 <= completed_value <= total_value:
-            parts.append(f"{label}={int(completed_value)}/{int(total_value)}")
+            display_label = "observed_shuffles" if label == "shuffles" and worker_ahead else label
+            parts.append(f"{display_label}={int(completed_value)}/{int(total_value)}")
         else:
             parts.append(f"{label}=indeterminate")
         if label == "chunks":
@@ -155,9 +215,12 @@ def _heartbeat_message(
     cumulative_raw = progress.get("cumulative_games_per_second", 0.0)
     recent = float(recent_raw) if isinstance(recent_raw, (int, float)) else 0.0
     cumulative = float(cumulative_raw) if isinstance(cumulative_raw, (int, float)) else 0.0
-    if recent > 0 or cumulative > 0:
+    observed_rate = progress.get("observed_games_per_second")
+    if worker_ahead and isinstance(observed_rate, (int, float)) and observed_rate > 0:
+        parts.append(f"rate={observed_rate:.1f}/s avg")
+    elif recent > 0 or cumulative > 0:
         parts.append(f"rate={max(0.0, recent):.1f}/s recent,{max(0.0, cumulative):.1f}/s avg")
-    eta = progress.get("eta_seconds")
+    eta = progress.get("observed_eta_seconds") if worker_ahead else progress.get("eta_seconds")
     eta_text = _duration_text(eta) if determinate else "?"
     parts.append(f"eta={eta_text if eta_text != '?' else 'indeterminate'}")
 
@@ -761,7 +824,9 @@ class SupervisorHeartbeatRecorder:
                     "state": item.state,
                     "elapsed_seconds": max(0.0, now - item.started_at),
                     "seconds_since_phase_change": max(0.0, now - item.phase_changed_at),
-                    "progress": dict(item.progress),
+                    "progress": _heartbeat_progress_snapshot(
+                        item.progress, elapsed_seconds=max(0.0, now - item.started_at), now=now
+                    ),
                 }
                 for item in active_items
             ]

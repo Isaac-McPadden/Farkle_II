@@ -11,8 +11,8 @@ sim:
   n_players_list: [2, 3, 4, 5, 6, 8, 10, 12]
 
   # Schedule & runtime controls
-  seed: 104                        # active root RNG seed (results_root uses root suffix)
-  seed_list: [104, 105]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 106                        # active root RNG seed (results_root uses root suffix)
+  seed_list: [106, 107]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 16                      # null = auto; otherwise an int
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums

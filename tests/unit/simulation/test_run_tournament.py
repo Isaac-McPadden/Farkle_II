@@ -24,6 +24,7 @@ pytest.importorskip("pyarrow")
 import farkle.simulation.run_tournament as rt
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.simulation.workload_planner import plan_tournament_workload
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder, use_supervisor_recorder
 
 # --------------------------------------------------------------------------- #
 # Mini test doubles ? replace expensive pieces with cheap determinism
@@ -82,6 +83,52 @@ def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match=r"n_players must divide [\d,]+"):
         rt._init_worker(strats, cfg)
+
+
+def test_successive_tournaments_reset_worker_observations_in_shared_root_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = SupervisorHeartbeatRecorder(
+        logging.getLogger("tests.simulation.worker_reset"),
+        run="root_104",
+        resource_sampler=lambda: {},
+        autostart=False,
+    )
+    scope = recorder.begin_scope(
+        "root_104_simulation", run="root_104", stage="simulation", phase="simulation"
+    )
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *args, **kwargs: 100.0)
+    observed: list[tuple[int, int]] = []
+
+    def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        assert recorder.emit_if_due(force=True)
+        progress = recorder._active[scope.scope].progress  # noqa: SLF001
+        observed.append((progress["worker_completed_games"], progress["worker_completed_shuffles"]))
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
+    with use_supervisor_recorder(recorder, scope):
+        for k in (2, 3):
+            scope.update(
+                phase="simulation",
+                progress={
+                    "worker_completed_games": 11094000,
+                    "worker_completed_shuffles": 4300,
+                },
+            )
+            rt.run_tournament(
+                config=rt.TournamentConfig(n_players=k, num_shuffles=1),
+                strategies=_mini_strats(6),
+                n_jobs=1,
+                checkpoint_path=tmp_path / f"{k}p.pkl",
+                global_seed=104,
+            )
+    assert observed == [(0, 0), (0, 0)]
+    scope.finish(status="success")
+    recorder.close()
 
 
 def test_run_chunk_logs_and_propagates(monkeypatch, caplog) -> None:

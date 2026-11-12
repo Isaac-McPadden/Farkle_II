@@ -1182,6 +1182,10 @@ def run_tournament(
                 "current_player_count": cfg.n_players,
                 "planned_shuffles": cfg.num_shuffles,
                 "planned_games": cfg.num_shuffles * cfg.games_per_shuffle,
+                # The root scope spans successive k tournaments, but each worker
+                # channel reports counts only for its own tournament execution.
+                "worker_completed_games": 0,
+                "worker_completed_shuffles": 0,
                 **policy_metadata,
             },
         )
@@ -1504,6 +1508,7 @@ def run_tournament(
             "planned_games": total_games,
             "starting_games": starting_games,
             "starting_shuffles": starting_shuffles,
+            "observation_started_monotonic": telemetry_started,
             "completed_games": completed_games_now,
             "percent_complete": (
                 100.0 * completed_games_now / total_games if total_games else 100.0

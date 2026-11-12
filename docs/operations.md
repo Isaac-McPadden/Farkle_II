@@ -118,6 +118,12 @@ control which messages are emitted. At INFO, heartbeats keep their readable
 single-line form, completion summaries show phase totals, and cleanup/timing
 messages omit bulk histories and resource snapshots. Full telemetry remains in
 the JSON artifacts; DEBUG logging also includes the full attached fields.
+During simulation, `observed_games` and `observed_shuffles` include worker
+reports from batches that have not returned yet. `collected_games` identifies
+the parent's overlapping batch totals; the two counts are never added together.
+The displayed rate and ETA use observed work while workers are ahead. Worker
+reports are best-effort operational measurements, not authenticated completion
+or checkpoint claims. JSON telemetry retains both observed and collected counts.
 Final release-audit failures are written explicitly to the log with their
 artifact paths, as well as retained in `pipeline_health.json`.
 Heartbeat `workers=live/created/resolved` counts refer to the current executor;

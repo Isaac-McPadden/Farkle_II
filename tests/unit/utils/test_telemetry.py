@@ -54,7 +54,12 @@ def _resources() -> dict[str, object]:
 def _spawn_progress_worker(value: int) -> tuple[int, bool]:
     return os.getpid(), report_worker_progress(
         "bounded_unit",
-        counters={"units_observed": 1, "value_sum": value},
+        counters={
+            "units_observed": 1,
+            "value_sum": value,
+            "worker_completed_games": 10,
+            "worker_completed_shuffles": 1,
+        },
     )
 
 
@@ -302,6 +307,106 @@ def test_duplicate_retried_and_out_of_order_worker_events_do_not_inflate_progres
     recorder.close()
 
 
+@pytest.mark.parametrize("starting_shuffles", [0, 43])
+def test_heartbeat_reports_shuffles_before_batch_returns_without_double_counting(
+    starting_shuffles: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = FakeClock()
+    snapshots: list[dict[str, object]] = []
+    logger = logging.getLogger("tests.telemetry.slow_simulation_batch")
+    recorder = SupervisorHeartbeatRecorder(
+        logger,
+        run="root_104",
+        interval_seconds=45,
+        clock=clock.monotonic,
+        utc_clock=clock.utc_now,
+        resource_sampler=_resources,
+        heartbeat_sink=lambda payload: snapshots.append(dict(payload)),
+        autostart=False,
+    )
+    baseline_games = starting_shuffles * 2580
+    parent_progress = {
+        "root_seed": 104,
+        "current_player_count": 2,
+        "starting_games": baseline_games,
+        "starting_shuffles": starting_shuffles,
+        "planned_games": 4300 * 2580,
+        "completed_games": baseline_games,
+        "planned_shuffles": 4300,
+        "completed_shuffles": starting_shuffles,
+        "durable_shuffles": starting_shuffles,
+        "planned_chunks": 100,
+        "completed_chunks": starting_shuffles // 43,
+    }
+    scope = recorder.begin_scope(
+        "simulation",
+        run="root_104",
+        stage="simulation",
+        phase="simulation",
+        progress=parent_progress,
+    )
+    channel_queue: queue.Queue[object] = queue.Queue()
+    recorder._worker_channels.append(  # noqa: SLF001 - deterministic worker-channel fixture
+        telemetry_module._WorkerProgressChannel(queue=channel_queue, scope=scope.scope)
+    )
+    # A root scope can already have spent time on a preceding player count.
+    clock.advance(600)
+    parent_progress["observation_started_monotonic"] = 600
+    scope.update(phase="simulation", progress=parent_progress)
+    # Fifteen workers can finish several shuffles each without returning a single
+    # 43-shuffle batch. Retries/delayed duplicate messages must not inflate this.
+    for index in (*range(60), 0, 59):
+        channel_queue.put_nowait(
+            {
+                "phase": "simulation_shuffle_complete",
+                "worker_pid": 101,
+                "event_id": f"simulation:104:2:{starting_shuffles + index}",
+                "counters": {"worker_completed_shuffles": 1, "worker_completed_games": 2580},
+            }
+        )
+    clock.advance(120)
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        assert recorder.emit_if_due(force=True)
+        record = caplog.records[-1]
+        progress = record.__dict__["active_scopes"][0]["progress"]
+        expected_games = baseline_games + 60 * 2580
+        assert progress["observed_games"] == expected_games
+        assert progress["observed_shuffles"] == starting_shuffles + 60
+        assert progress["completed_games"] == baseline_games
+        assert progress["durable_shuffles"] == starting_shuffles
+        assert progress["observed_games_per_second"] == 1290
+        assert progress["observed_eta_seconds"] == pytest.approx(
+            (4300 * 2580 - expected_games) / 1290
+        )
+        assert f"observed_games={expected_games}/11094000" in record.getMessage()
+        assert f"collected_games={baseline_games}" in record.getMessage()
+        assert f"observed_shuffles={starting_shuffles + 60}/4300" in record.getMessage()
+        assert "eta=indeterminate" not in record.getMessage()
+        assert progress["worker_duplicate_messages"] == 2
+        assert snapshots[-1]["active_scopes"] == record.__dict__["active_scopes"]
+
+        # A batch return overlaps worker reports; it is not additional work.
+        parent_progress.update(
+            completed_games=baseline_games + 43 * 2580,
+            completed_shuffles=starting_shuffles + 43,
+            completed_chunks=starting_shuffles // 43 + 1,
+        )
+        scope.update(phase="simulation", progress=parent_progress)
+        assert recorder.emit_if_due(force=True)
+        progress = caplog.records[-1].__dict__["active_scopes"][0]["progress"]
+        assert progress["observed_games"] == expected_games
+
+        # Lost worker messages cannot hide work already collected by the parent.
+        parent_progress.update(completed_games=baseline_games + 86 * 2580)
+        scope.update(phase="simulation", progress=parent_progress)
+        assert recorder.emit_if_due(force=True)
+        progress = caplog.records[-1].__dict__["active_scopes"][0]["progress"]
+        assert progress["observed_games"] == baseline_games + 86 * 2580
+        assert "observed_games=" not in caplog.records[-1].getMessage()
+    scope.finish(status="success")
+    recorder.close()
+
+
 @pytest.mark.skipif("spawn" not in mp.get_all_start_methods(), reason="spawn unavailable")
 def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     caplog: pytest.LogCaptureFixture,
@@ -317,8 +422,14 @@ def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     scope = recorder.begin_scope(
         "spawn_scope",
         run="spawn",
-        stage="rng_diagnostics",
-        phase="rng_reduce",
+        stage="simulation",
+        phase="simulation",
+        progress={
+            "planned_games": 120,
+            "planned_shuffles": 12,
+            "completed_games": 0,
+            "completed_shuffles": 0,
+        },
     )
     context = mp.get_context("spawn")
     endpoint = recorder.create_worker_progress_endpoint(
@@ -357,6 +468,10 @@ def test_spawn_workers_feed_one_parent_recorder_through_bounded_channel(
     progress = heartbeats[-1].__dict__["active_scopes"][0]["progress"]
     assert 1 <= progress["worker_messages_received"] <= 12
     assert 1 <= progress["units_observed"] <= 12
+    assert progress["observed_games"] == 10 * progress["units_observed"]
+    assert progress["observed_shuffles"] == progress["units_observed"]
+    assert progress["completed_games"] == 0
+    assert "observed_games=" in heartbeats[-1].getMessage()
 
 
 def test_close_replaces_last_active_heartbeat_with_terminal_snapshot_once() -> None:
