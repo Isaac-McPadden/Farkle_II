@@ -5,9 +5,9 @@ The authoritative methods reference is
 attempted performance, completed outcomes/precision, seat/game behavior,
 preflight/monitoring, TrueSkill/HGB, root stability, H2H and reporting.
 
-Before editing identify:
+For statistical changes, identify the following before editing.
 
-1. Estimand, conditioning and observational unit.
+1. Estimand, conditioning, observational unit and baseline.
 2. Complete support, missing/zero semantics and cross-k weights.
 3. Replication unit, uncertainty and dependence assumptions.
 4. Multiplicity, decision rule and permitted report claim.

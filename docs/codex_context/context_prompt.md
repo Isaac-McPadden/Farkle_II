@@ -1,28 +1,23 @@
 # Contributor context
 
-Farkle Mk II compares a finite strategy grid using deterministic Monte Carlo
-simulation and authenticated statistical analysis. Read [AGENTS.md](../../AGENTS.md),
-this orientation pack and relevant source before editing. Maps are navigation
-aids, not source authority.
+Use the references and contracts relevant to the change. Source and configuration
+are authoritative for implemented behavior. Repository-wide guidance is in
+[AGENTS.md](../../AGENTS.md).
 
 ## Find the relevant contract
 
-- [Repository map](repo_map.md): source ownership and entry points.
-- [Pipeline map](analysis_pipeline_map.md): order, scopes and lifecycle.
-- [Statistical review map](statistical_methods_map.md): methods and claim limits.
-- [Testing map](testing_and_review_map.md): focused checks and release gates.
-- [Metadata](metadata.md): maintenance boundary and protected dependencies.
-- [Documentation index](../index.md): user and operating references.
+- To locate source ownership or entry points, use the [repository map](repo_map.md).
+- For stage order, artifact scopes, or recovery, use the [pipeline map](analysis_pipeline_map.md).
+- For estimands, methods, or report claims, use the [statistical review map](statistical_methods_map.md).
+- For focused tests, recovery checks, or release gates, use the [testing map](testing_and_review_map.md).
+- For map maintenance or protected dependencies, see [orientation metadata](metadata.md).
+- For CLI, configuration, or operating guidance, use the [documentation index](../index.md).
 
 ## Preserve these invariants
 
-- Explicit full-coordinate PCG64DXSM streams; no hidden RNG, scalar-seed
-  substitution or worker/scheduling-dependent randomness.
-- Atomic, idempotent publication and useful exact resume. Large inputs use
-  byte-bounded streaming or partitioned durable units; check existing utils first.
-- AppConfig-owned paths and six canonical scopes. Each derived artifact has
-  one compatible sidecar; completion follows authenticated outputs. Never
-  promote historical bytes by replacing metadata.
+- Use the six canonical artifact scopes. Publish each derived artifact with
+  one compatible sidecar and record completion after authenticating outputs.
+  Preserve the original identity of historical artifacts.
 - Safety-limit attempts have no official winner/rank. Primary tournament rates
   use attempted player exposures; completed distributions, TrueSkill and H2H
   score tests retain their distinct conditioning.
@@ -32,19 +27,12 @@ aids, not source authority.
 - Screening, prediction, inference, dominance and display order remain separate.
   Two-root stability is descriptive fixed-design reproducibility; diagnostic
   bands/monitors make no independence guarantee.
-- Roots and player counts are sequential; parallelize independent admitted stage
-  units. Preserve bounded queues, nesting suppression, aggregate resource controls
+- Preserve bounded queues, nesting suppression, aggregate resource controls,
   and authenticated execution provenance.
 - H2H plans are immutable. Above-cap consent binds the exact plan and maximum
   attempts; approval/progress remain outside statistical planning.
 - Process-local authenticated snapshots do not replace the final fresh byte-deep
   root/root/pair audit. Retain canonical resume units and input lineage.
 
-Before a statistical change identify estimand, conditioning, baseline,
-replication unit, uncertainty, multiplicity and permitted claim. Before a
-recovery change compare coordinates/logical outputs across interruption,
-resume and workers.
-
-Use the root Python 3.12 `.venv`, inspect Git status and select focused checks.
-Do not force old results through freshness errors. Historical task narratives
-and measurements live in [development history](../development_history.md).
+For earlier decisions, task narratives, or measurements, see the
+[development history](../development_history.md).

@@ -1,40 +1,32 @@
-You are assisting with a Monte Carlo simulation for determining the best strategy or strategies in the dice game farkle.
+# Farkle Mk II
 
-Secondary goals are to produce professional software that performs the simulation, writes and pipes the data, and performs rigorous statistical analysis of game outcomes with randomized match groupings.
+Compare configured Farkle strategies with deterministic Monte Carlo simulation
+and statistical analysis of randomized match groupings.
 
-When operating locally in VSCode, use the venv located in the root as it has all dependencies installed and uses Python 3.12.
+## Engineering invariants
 
-## General Principles
+- Derive every RNG stream directly from explicit configuration seeds and full
+  semantic coordinates using `PCG64DXSM`. Preserve stream identity across
+  worker counts, scheduling, and resume.
+- Resolve output paths through `AppConfig` (`results_dir`, `analysis_subdir`,
+  `io.*`). Reuse helpers in `src/farkle/utils/` for I/O, logging, RNG, and
+  streaming.
+- Reuse valid outputs unless `--force` is passed. Enforce freshness checks
+  and preserve incompatible artifacts.
+- Stream large inputs within byte bounds and publish outputs atomically. Use
+  `atomic_path` for periodic checkpoints and preserve exact resume from durable
+  units. Treat process-tree memory ceilings as operational controls.
+- Run roots and player counts sequentially. Parallelize independent stage
+  units within resource and ordering constraints.
 
-- **Deterministic:**  
-  All randomness must be controlled through explicit seeds from config files. No hidden RNG. Avoid using Python's included random module as the RNG algorithm they use does not scale well.
+## Development and references
 
-- **Idempotent:**  
-  Analyses should skip recomputation if outputs already exist *unless* a `--force` flag is passed.
+Use the root Python 3.12 `.venv`. The project uses Ruff, Pyright/Pylance,
+Mypy for `src/`, and Black when formatting is needed.
 
-- **Resumable:**  
-  Long-running operations must write periodic checkpoints using the `atomic_path` helper.  
-  Never leave partial files.
-
-- **Stable File Paths:**  
-  Write outputs to predetermined paths based on config (`results_dir`, `analysis_subdir`, `io.*`).  
-  Never guess locations.
-
-- **Use Existing Helpers:**
-  There are many reusable tools in src/farkle/utils/ that should be checked before implementing ad-hoc helpers for basic and general computation processes (reads, atomic writes, logging, rng, streaming, etc)
-
-- **Parallel Process When Sensible:**
-  If it is possible to process something in parallel, always do so unless there is a logical reason not to. 
-  For example: In run_trueskill, order matters within a set of games between k players so that should not be performed in parallel.  However, there can be multiple k's for game size so different sets of games between different numbers of k players can and should be performed in parallel.
-
-- **Limit RAM Usage:**
-  Always prefer streaming small amounts of data when processing.  Do not put a whole data set in memory, run calculations, then write it all out at the end unless the data set and calculations are tiny (if you need a heuristic, less than 5 seconds of processing time).  Streaming reads and writing atomically have helper functions in src/farkle/utils/ to assist with this in addition to their usefulness in resumability.
-  Byte-bounded streaming, atomic durable units, and useful exact resume are the
-  permanent engineering invariants; no fixed 1 GiB process-tree ceiling is a
-  statistical or artifact-validity invariant.
-
-## Style
-  This project uses Ruff, Pylance/Pyright, Mypy (just in src\\**), and occasional formatting corrections with Black
-
-## Context
-  Before starting any complex tasks, check docs/codex_context/context_prompt.md for additional relevant information.
+- To locate source ownership or understand pipeline, statistical, or recovery
+  contracts, use the [contributor orientation](docs/codex_context/context_prompt.md).
+- Select checks appropriate to the change. For focused tests and release gates,
+  use the [testing and review map](docs/codex_context/testing_and_review_map.md).
+- Before changing retained protocols, fixtures, or evidence, check the
+  [protected dependencies](docs/codex_context/metadata.md#protected-dependencies).
