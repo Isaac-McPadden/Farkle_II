@@ -46,6 +46,7 @@ from farkle.utils.authenticated_contract import (
     AuthenticatedContractError,
     load_authenticated_sidecar,
 )
+from farkle.utils.frozen_h2h import frozen_family_inputs
 from farkle.utils.parallel import (
     apply_native_thread_limits,
     make_process_tree_memory_guard,
@@ -644,6 +645,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         raise ValueError("head2head.max_attempt_multiplier must be finite and at least 1")
     if not 0.0 <= cfg.head2head.min_candidate_completion_rate <= 1.0:
         raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
+    frozen_family_inputs(cfg)
     family, _membership = _load_frozen_family(cfg)
     candidates = [int(value) for value in family["candidates"]]
     family_hash = str(family["family_hash"])
@@ -796,48 +798,30 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         )
 
     if power_path.exists() and schedule_path.exists():
-        try:
-            validate_artifact_sidecar(
-                power_path,
-                expected={
-                    "scope": ArtifactScope.H2H_2P.value,
-                    "operation": "score_test_power_plan",
-                },
+        existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
+        existing_schedule = pq.read_table(schedule_path).to_pandas()
+        if existing_plan != plan or not existing_schedule.equals(schedule):
+            raise RuntimeError(
+                "published H2H statistical design differs from the requested design; "
+                "use a new output root"
             )
-            validate_artifact_sidecar(
-                schedule_path,
-                expected={
-                    "scope": ArtifactScope.H2H_2P.value,
-                    "operation": "construct_pair_root_order_blocks",
-                },
-            )
-            existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
-            existing_schedule = pq.read_table(schedule_path).to_pandas()
-        except (ArtifactContractError, OSError):
-            pass
-        else:
-            if existing_plan != plan or not existing_schedule.equals(schedule):
-                raise RuntimeError(
-                    "published H2H statistical design differs from the requested design; "
-                    "use a new output root"
-                )
-            authorization = _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
-            blocked = authorization["execution_authorization"] != "ready"
-            write_stage_done(
-                done,
-                inputs=family_sources,
-                outputs=[power_path, schedule_path],
-                cfg=cfg,
-                stage="h2h_power",
-                status="success",
-                sidecar_artifacts=[power_path, schedule_path],
-            )
-            return H2HScheduleArtifacts(
-                power_plan=power_path,
-                block_manifest=schedule_path,
-                planning_state=planning_state,
-                execution_blocked=blocked,
-            )
+        authorization = _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+        blocked = authorization["execution_authorization"] != "ready"
+        write_stage_done(
+            done,
+            inputs=family_sources,
+            outputs=[power_path, schedule_path],
+            cfg=cfg,
+            stage="h2h_power",
+            status="success",
+            sidecar_artifacts=[power_path, schedule_path],
+        )
+        return H2HScheduleArtifacts(
+            power_plan=power_path,
+            block_manifest=schedule_path,
+            planning_state=planning_state,
+            execution_blocked=blocked,
+        )
 
     common = _planning_sidecar_common(sources=family_sources, roots=roots)
     power_sidecar = make_artifact_sidecar(

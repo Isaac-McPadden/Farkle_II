@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,6 +9,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import clean_test_code_identity
 
 from farkle.analysis.candidate_family import (
     _contract_family,
@@ -15,6 +17,7 @@ from farkle.analysis.candidate_family import (
     _RankedContribution,
     freeze_h2h_candidate_family,
 )
+from farkle.analysis.h2h_schedule import plan_h2h_schedule
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.trueskill_screening import (
     TRUESKILL_CONDITIONING,
@@ -25,9 +28,15 @@ from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
     make_artifact_sidecar,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import (
+    ArtifactMismatchError,
+    load_authenticated_sidecar,
+    publish_staged_authenticated_artifact_atomic,
+)
 
 
 def _cfg(tmp_path: Path, *, cap: int | None = 5) -> AppConfig:
@@ -65,6 +74,7 @@ def _write_frame(
     operation: str,
     seed_scope: str,
     current_trueskill_contract: bool = True,
+    sources: tuple[Path, ...] = (),
 ) -> None:
     frame = frame.copy()
     frame["strategy"] = pd.array(frame["strategy"].tolist(), dtype="Int32")
@@ -76,6 +86,7 @@ def _write_frame(
         producer="test",
         scope=scope,
         source_scope=scope,
+        source_artifacts=list(sources),
         operation=operation,
         consistency_columns=table.schema.names,
         player_counts=[2, 4],
@@ -134,6 +145,128 @@ def _write_inputs(cfg: AppConfig, *, reverse_rows: bool = False) -> None:
         operation="equal_root_k_percentile_mean",
         seed_scope="both_roots_combined",
     )
+
+
+@pytest.fixture
+def planned_family(tmp_path: Path) -> AppConfig:
+    cfg = _cfg(tmp_path)
+    cfg._code_identity = clean_test_code_identity()
+    cfg._run_lineage_sha256 = "1" * 64
+    _write_inputs(cfg)
+    freeze_h2h_candidate_family(cfg)
+    plan_h2h_schedule(cfg)
+    return cfg
+
+
+def _frozen_publications(cfg: AppConfig) -> dict[Path, tuple[bytes, int]]:
+    files = (
+        cfg.root_combined_performance_across_k_path(),
+        cfg.trueskill_candidate_contribution_path(),
+        cfg.h2h_candidate_family_path(),
+        cfg.h2h_candidate_family_manifest_path(),
+        cfg.h2h_power_plan_path(),
+        cfg.h2h_block_manifest_path(),
+        cfg.h2h_cap_authorization_path(),
+    )
+    return {p: (p.read_bytes(), p.stat().st_mtime_ns) for f in files for p in (f, sidecar_path(f))}
+
+
+def test_frozen_inputs_reuse_original_publication(planned_family: AppConfig) -> None:
+    cfg = planned_family
+    before = _frozen_publications(cfg)
+    _write_inputs(cfg)
+    freeze_h2h_candidate_family(cfg, force=True)
+    assert _frozen_publications(cfg) == before
+
+
+@pytest.mark.parametrize(
+    "change", ["win_rate", "trueskill", "source", "selection", "code", "lineage"]
+)
+def test_frozen_plan_rejects_changed_input_before_replacement(
+    planned_family: AppConfig, change: str
+) -> None:
+    cfg = planned_family
+    before = _frozen_publications(cfg)
+    if change == "lineage":
+        cfg._run_lineage_sha256 = "2" * 64
+    with pytest.raises(ArtifactMismatchError, match="Frozen H2H input.*new output root") as error:
+        if change == "selection":
+            cfg.screening.controls = [7]
+            freeze_h2h_candidate_family(cfg, force=True)
+        elif change in {"trueskill", "source", "lineage"}:
+            path = cfg.trueskill_candidate_contribution_path()
+            frame = pq.read_table(path).to_pandas()
+            if change == "trueskill":
+                frame["mean_percentile_rank"] *= 0.5
+            _write_frame(
+                cfg,
+                path,
+                frame,
+                scope=ArtifactScope.ACROSS_K,
+                operation="equal_root_k_percentile_mean",
+                seed_scope="both_roots_combined",
+                sources=(
+                    (cfg.root_combined_performance_across_k_path(),) if change == "source" else ()
+                ),
+            )
+        elif change == "code":
+            cfg._code_identity = clean_test_code_identity("b" * 40)
+            _write_inputs(cfg)
+        else:
+            _write_inputs(cfg, reverse_rows=True)
+    if change == "lineage":
+        assert "differs in design or lineage (" in str(error.value)
+    assert _frozen_publications(cfg) == before
+
+
+def test_damaged_frozen_anchor_blocks_forced_republication(planned_family: AppConfig) -> None:
+    cfg = planned_family
+    sidecar_path(cfg.h2h_power_plan_path()).write_text("{}", encoding="utf-8")
+    before = _frozen_publications(cfg)
+    with pytest.raises(ArtifactMismatchError, match="Cannot authenticate frozen H2H references"):
+        freeze_h2h_candidate_family(cfg, force=True)
+    with pytest.raises(ArtifactMismatchError, match="Cannot authenticate frozen H2H references"):
+        plan_h2h_schedule(cfg, force=True)
+    assert _frozen_publications(cfg) == before
+
+
+def test_alternate_logical_name_cannot_overwrite_frozen_path(planned_family: AppConfig) -> None:
+    cfg = planned_family
+    before = _frozen_publications(cfg)
+    path = cfg.trueskill_candidate_contribution_path()
+    original = load_authenticated_sidecar(path)
+    location = original.artifact.location
+    staged = path.with_suffix(".staged")
+    staged.write_bytes(path.read_bytes())
+    with pytest.raises(ArtifactMismatchError, match="Frozen H2H input.*new output root"):
+        publish_staged_authenticated_artifact_atomic(
+            staged,
+            path,
+            cfg=cfg,
+            location=replace(location, relative_path="./" + location.relative_path),
+            stage_identity=original.stage_identity,
+            method_contract=original.method_contract,
+        )
+    assert _frozen_publications(cfg) == before
+
+
+def test_planner_rejects_preexisting_contribution_drift(planned_family: AppConfig) -> None:
+    cfg = planned_family
+    # A historical tree can already contain a self-consistent but different
+    # publication at the original path. Preserve it for side-by-side recovery.
+    other = _cfg(cfg.results_root.parent / "other")
+    other._code_identity = cfg._code_identity
+    other._run_lineage_sha256 = "2" * 64
+    _write_inputs(other)
+    path = cfg.trueskill_candidate_contribution_path()
+    assert other.trueskill_candidate_contribution_path().read_bytes() == path.read_bytes()
+    sidecar_path(path).write_bytes(
+        sidecar_path(other.trueskill_candidate_contribution_path()).read_bytes()
+    )
+    before = _frozen_publications(cfg)
+    with pytest.raises(ArtifactMismatchError, match="frozen source bytes or sidecar differ"):
+        plan_h2h_schedule(cfg)
+    assert _frozen_publications(cfg) == before
 
 
 def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Path) -> None:

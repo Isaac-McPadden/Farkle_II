@@ -1897,6 +1897,18 @@ def publish_staged_authenticated_artifact_atomic(
             sources=sources,
             manifest_roots=manifest_roots,
         )
+        from farkle.utils.frozen_h2h import reuse_frozen_input
+
+        frozen = reuse_frozen_input(cfg, metadata)
+        if frozen is not None:
+            # A no-op must authenticate its direct inputs just like a write.
+            validate_authenticated_artifact_unbound(
+                final_path,
+                expected_location=location,
+                source_paths=source_paths,
+                manifest_paths=manifest_paths,
+            )
+            return frozen
         staged_sidecar.write_bytes(metadata.canonical_bytes())
         final_sidecar.unlink(missing_ok=True)
         publish_staged_file_atomic(staged_path, final_path)
