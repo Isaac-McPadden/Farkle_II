@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,19 +18,22 @@ from farkle.analysis.release_audit import (
 )
 from farkle.analysis.stage_runner import StageRunContext, StageRunner, StageRunResult
 from farkle.config import AppConfig, assign_config_sha
+from farkle.orchestration.execution_history import (
+    publish_invocation,
+    resume_context_path,
+    retain_lifecycle,
+)
 from farkle.orchestration.profile_metadata import resolved_profile_metadata
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
     SeedRunContext,
-    write_run_context_atomic,
 )
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     seed_has_completion_markers,
     seed_pair_root,
     seed_pair_seed_root,
-    write_active_config,
 )
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
@@ -389,18 +393,21 @@ def _root_lifecycle_identity(
     states.update(_current_plan_states(context.config, plan))
     if any(value != CompletionState.COMPLETE_VALID.value for value in states.values()):
         return None, states
-    stamps = [
-        runner.simulation_done_path(context.config, int(k))
-        for k in context.config.sim.n_players_list
-    ]
-    stamps.extend(item.completion_stamp for item in plan if item.completion_stamp is not None)
+    stamps = _root_completion_paths(context, plan)
     identity = freshness_sha256(
         {
             "run_lineage_sha256": context.config._run_lineage_sha256,
-            "completion_stamps": [sha256_file(path) for path in stamps],
+            "completion_stamps": [sha256_file(path) for _, path in stamps],
         }
     )
     return identity, states
+
+
+def _root_completion_paths(context: SeedRunContext, plan: Sequence[Any]) -> list[tuple[str, Path]]:
+    return [
+        (f"simulation_{int(k)}p", runner.simulation_done_path(context.config, int(k)))
+        for k in context.config.sim.n_players_list
+    ] + [(item.name, item.completion_stamp) for item in plan if item.completion_stamp is not None]
 
 
 def _build_root_authenticated_snapshot(
@@ -409,6 +416,7 @@ def _build_root_authenticated_snapshot(
     *,
     code_identity: CodeIdentity,
     telemetry: AuthenticationTelemetry,
+    run_id: str,
 ) -> tuple[AuthenticatedGraphSnapshot, SnapshotGeneration]:
     """Authenticate one completed root once and capture its finalization snapshot."""
 
@@ -416,13 +424,7 @@ def _build_root_authenticated_snapshot(
         lifecycle_sha, states = _root_lifecycle_identity(context, plan)
         if lifecycle_sha is None:
             raise RuntimeError("root workflow contains stale or incomplete canonical stages")
-        completion_paths = [
-            (f"simulation_{int(k)}p", runner.simulation_done_path(context.config, int(k)))
-            for k in context.config.sim.n_players_list
-        ]
-        completion_paths.extend(
-            (item.name, item.completion_stamp) for item in plan if item.completion_stamp is not None
-        )
+        completion_paths = _root_completion_paths(context, plan)
         generation = SnapshotGeneration()
         snapshot = capture_authenticated_graph_snapshot(
             cfg=context.config,
@@ -439,6 +441,7 @@ def _build_root_authenticated_snapshot(
         )
         if snapshot.lifecycle_sha256 != lifecycle_sha:
             raise RuntimeError("snapshot changed the established root lifecycle identity")
+        retain_lifecycle(snapshot, run_id, completion_paths)
         return snapshot, generation
 
 
@@ -448,6 +451,7 @@ def _build_pair_authenticated_snapshot(
     *,
     code_identity: CodeIdentity,
     telemetry: AuthenticationTelemetry,
+    run_id: str,
 ) -> tuple[AuthenticatedGraphSnapshot, SnapshotGeneration]:
     """Authenticate one quiescent pair graph and capture its finalization snapshot."""
 
@@ -456,6 +460,9 @@ def _build_pair_authenticated_snapshot(
         if any(value != CompletionState.COMPLETE_VALID.value for value in states.values()):
             raise RuntimeError("pair workflow contains stale or incomplete canonical stages")
         generation = SnapshotGeneration()
+        completion_paths = [
+            (item.name, item.completion_stamp) for item in plan if item.completion_stamp is not None
+        ]
         snapshot = capture_authenticated_graph_snapshot(
             cfg=context.config,
             scope="pair",
@@ -465,14 +472,11 @@ def _build_pair_authenticated_snapshot(
             run_context_path=context.run_context_path,
             active_config_path=context.active_config_path,
             stage_states=states,
-            completion_paths=[
-                (item.name, item.completion_stamp)
-                for item in plan
-                if item.completion_stamp is not None
-            ],
+            completion_paths=completion_paths,
             generation=generation,
             code_identity=code_identity,
         )
+        retain_lifecycle(snapshot, run_id, completion_paths)
         return snapshot, generation
 
 
@@ -540,8 +544,11 @@ def _run_one_seed(
         policy_bundle=policy_bundle,
     )
     context = SeedRunContext.from_config(root_cfg)
-    write_run_context_atomic(
+    publish_invocation(
         context,
+        manifest_path=manifest_path,
+        run_id=run_id,
+        completion_paths=_root_completion_paths(context, analysis.build_root_stage_plan(root_cfg)),
         code_identity=code_identity,
         cli_overrides=cli_overrides,
         worker_counts=policy_bundle.as_metadata(),
@@ -549,7 +556,6 @@ def _run_one_seed(
             oracle_game_profile.sha256 if oracle_game_profile is not None else None
         ),
     )
-    write_active_config(root_cfg)
     apply_native_thread_limits(policy_bundle.simulation)
     root_timings: list[dict[str, object]] = []
     try:
@@ -633,6 +639,7 @@ def _run_one_seed(
                 plan,
                 code_identity=code_identity,
                 telemetry=auth_telemetry,
+                run_id=run_id,
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -673,6 +680,9 @@ def _write_pipeline_health(
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        if retained := payload.get("retained_health_artifact"):
+            with atomic_path(retained) as archived:
+                shutil.copyfile(temporary, archived)
 
 
 def _write_pipeline_telemetry(
@@ -696,7 +706,7 @@ def _require_existing_resume_identity(
 ) -> None:
     """Reject an incompatible existing pair before any resume publication."""
 
-    context_path = pair_root / "run_context.json"
+    context_path = resume_context_path(pair_root)
     if not context_path.is_file():
         return
     payload = read_json_file_with_retry(context_path)
@@ -786,6 +796,7 @@ def _final_release_gate(
     pair_snapshot: AuthenticatedGraphSnapshot,
     pair_generation: SnapshotGeneration,
     authentication_telemetry: AuthenticationTelemetry,
+    run_id: str,
 ) -> dict[str, Any]:
     """Execute the single byte-deep release gate before success publication."""
 
@@ -822,6 +833,7 @@ def _final_release_gate(
                 targets,
                 expected_code_identity=code_identity,
                 current_code_identity=current_code_identity,
+                invocation=(run_id, pair_context.pair_root / "two_seed_pipeline_manifest.jsonl"),
             )
         failures.extend(audit_result["failures"])
         if audit_result.get("status") != "passed" and not audit_result["failures"]:
@@ -944,6 +956,12 @@ def _run_pipeline_observed(
     resource_policy = resolve_resource_policy(cfg.resources).as_metadata(
         effective_hard_limit_mb=cast(int | None, boundary_provenance.get("effective_hard_limit_mb"))
     )
+    health_history = pair_root / "_provenance" / "health" / run_id
+    health_history.mkdir(parents=True)
+    if health_path.is_file():
+        # The previous report may be the only existing release/lifecycle receipt.
+        with atomic_path(str(health_history / "previous.json")) as temporary:
+            shutil.copyfile(health_path, temporary)
     _write_pipeline_health(
         health_path,
         {
@@ -1064,8 +1082,15 @@ def _run_pipeline_observed(
         parent_lifecycle_roots = tuple(
             cast(str, root_results[seed].lifecycle_sha256) for seed in seed_pair
         )
-        write_run_context_atomic(
+        publish_invocation(
             pair_context,
+            manifest_path=manifest_path,
+            run_id=run_id,
+            completion_paths=[
+                (item.name, item.completion_stamp)
+                for item in analysis.build_root_pair_stage_plan(pair_context)
+                if item.completion_stamp is not None
+            ],
             code_identity=code_identity,
             parent_lifecycle_roots=parent_lifecycle_roots,
             cli_overrides=cli_overrides,
@@ -1074,7 +1099,6 @@ def _run_pipeline_observed(
                 oracle_game_profile.sha256 if oracle_game_profile is not None else None
             ),
         )
-        write_active_config(pair_context.config, dest_dir=pair_root)
         apply_native_thread_limits(policy_bundle.analysis)
         try:
             pair_result = _run_timed_phase(
@@ -1115,6 +1139,7 @@ def _run_pipeline_observed(
                     analysis.build_root_pair_stage_plan(pair_context, force=False),
                     code_identity=code_identity,
                     telemetry=authentication_telemetry,
+                    run_id=run_id,
                 ),
             )
             pair_stage_states = dict(pair_snapshot.stage_states)
@@ -1192,6 +1217,7 @@ def _run_pipeline_observed(
                 pair_snapshot=pair_snapshot,
                 pair_generation=pair_generation,
                 authentication_telemetry=authentication_telemetry,
+                run_id=run_id,
             ),
         )
         if release_audit["status"] != "passed":
@@ -1262,6 +1288,8 @@ def _run_pipeline_observed(
         "authentication": authentication_telemetry.as_metadata(),
     }
     health = {
+        "run_id": run_id,
+        "retained_health_artifact": str(health_history / "pipeline_health.json"),
         "seed_pair": list(seed_pair),
         "status": overall_status,
         "config_sha": cfg.config_sha,
@@ -1341,6 +1369,7 @@ def _run_pipeline_observed(
                 "event": EVENT_RUN_END,
                 "status": overall_status,
                 "health_artifact": str(health_path),
+                "retained_health_artifact": str(health_history / "pipeline_health.json"),
             },
             run_id=run_id,
             config_sha=cfg.config_sha,

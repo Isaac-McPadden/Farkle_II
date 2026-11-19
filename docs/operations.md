@@ -102,6 +102,20 @@ replay preserves stable products. Inspection of `pipeline_health.json`,
 `pipeline_telemetry.json` and the append-only pipeline manifest locates a stop
 without treating partial staging files as completion inputs.
 
+For a two-seed run, each `invocation_published` event in the pipeline manifest
+gives the path and SHA-256 of that root or pair's `invocation.json`. The adjacent
+`run_context.json`, `active_config.yaml` and config stamp retain the exact bytes
+published for that invocation. An exact resume gets a new run ID even when the
+context bytes are reused. The `previous` directory captures the evidence present
+before publication, including partial stage records.
+
+When a root or pair finishes authentication, its `lifecycle/inventory.json`
+binds its context and lineage to the ordered completion stamps stored alongside
+it. The pair context names the two parent lifecycle digests in seed order.
+The terminal manifest event points to the invocation's retained health report.
+Its `release_audit.run_contexts` entries locate the evidence checked by the
+final audit. These files live under `_provenance` in each owning results root.
+
 `Pipeline progress summary` records completed work for a simulation or an
 analysis partition phase. The JSON fields after ` | ` identify its `stage` and
 `scope`, completed/reused units, and worker counts. A stage can have several

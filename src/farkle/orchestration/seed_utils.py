@@ -83,7 +83,9 @@ def resolve_seed_pair_args(
     return None
 
 
-def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
+def write_active_config(
+    cfg: AppConfig, dest_dir: Path | None = None, *, recorded_path: Path | None = None
+) -> None:
     """Persist and verify a reloadable public configuration alongside results."""
     target_dir = dest_dir or cfg.results_root
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +108,7 @@ def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
         )
     cfg.config_sha = expected_hash
     done_payload = {
-        "active_config": str(target),
+        "active_config": str(recorded_path or target),
         "active_config_sha256": sha256_file(target),
         "config_sha": expected_hash,
         "round_trip_config_sha": reloaded_hash,

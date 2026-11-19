@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.helpers.artifact_sidecars import clean_test_code_identity
 
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import (
@@ -16,7 +18,7 @@ from farkle.config import (
     assign_config_sha,
     compute_config_sha,
 )
-from farkle.orchestration import run_contexts
+from farkle.orchestration import execution_history, run_contexts
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -50,6 +52,112 @@ def test_root_pair_context_uses_pair_analysis_root_and_both_roots(tmp_path: Path
     assert context.config.sim.seed_list == [11, 22]
     assert context.config.stage_layout.keys()[0] == "root_stability"
     assert not context.analysis_root.exists()
+
+
+def test_invocation_history_preserves_legacy_pair_and_repeated_resumes(tmp_path: Path) -> None:
+    from farkle.orchestration.seed_utils import write_active_config
+
+    roots = (_root_context(tmp_path, 11), _root_context(tmp_path, 22))
+    context = RootPairRunContext.from_root_contexts(roots, pair_root=tmp_path / "pair")
+    code = clean_test_code_identity()
+    parents = ("a" * 64, "b" * 64)
+    workers = {"analysis": {"effective_n_jobs": 1}}
+    write_run_context_atomic(
+        context, code_identity=code, parent_lifecycle_roots=parents, worker_counts=workers
+    )
+    write_active_config(context.config, context.pair_root)
+    original_context = context.run_context_path.read_bytes()
+    original_config = context.active_config_path.read_bytes()
+    stamp = context.pair_root / "partial.stamp"
+    stamp.write_bytes(b"previous partial stage")
+
+    def resume(run: str, lifecycle: tuple[str, ...]) -> Path:
+        execution_history.publish_invocation(
+            context,
+            manifest_path=tmp_path / "manifest.jsonl",
+            run_id=run,
+            code_identity=code,
+            parent_lifecycle_roots=lifecycle,
+            completion_paths=[("partial", stamp)],
+            worker_counts=workers,
+        )
+        return execution_history.invocation_dir(context.pair_root, run)
+
+    first = resume("first", parents)
+    second = resume("second", parents)
+    context.config.resources.logical_cpu_budget = 2
+    third = resume("third", parents)
+    fourth = resume("fourth", tuple(reversed(parents)))
+    for folder in (first / "previous", first, second, third / "previous"):
+        assert (folder / "run_context.json").read_bytes() == original_context
+        assert (folder / "active_config.yaml").read_bytes() == original_config
+    assert (first / "previous" / "0.stamp").read_bytes() == b"previous partial stage"
+    resource_change = load_run_context(
+        third / "run_context.json", active_config_path=third / "active_config.yaml"
+    )
+    original = json.loads(original_context)
+    assert resource_change["run_lineage_sha256"] == original["run_lineage_sha256"]
+    assert resource_change["run_context_sha256"] != original["run_context_sha256"]
+    latest = load_run_context(
+        context.run_context_path, active_config_path=context.active_config_path
+    )
+    assert latest["parent_lifecycle_roots"] == list(reversed(parents))
+    assert latest["run_lineage_sha256"] != original["run_lineage_sha256"]
+    assert latest["code_identity"] == original["code_identity"]
+    assert (fourth / "run_context.json").read_bytes() == context.run_context_path.read_bytes()
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_interrupted_invocation_reconciles_only_recorded_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    conflict: bool,
+) -> None:
+    context = _root_context(tmp_path, 11)
+    root = context.results_root
+
+    def resume(run: str) -> None:
+        execution_history.publish_invocation(
+            context,
+            run_id=run,
+            completion_paths=[],
+            manifest_path=tmp_path / "manifest.jsonl",
+            code_identity=clean_test_code_identity(),
+            worker_counts={},
+        )
+
+    resume("original")
+    original = context.run_context_path.read_bytes()
+    context.config.resources.logical_cpu_budget = 3
+    live_config = context.active_config_path
+    atomic = execution_history.atomic_path
+
+    def interrupt(path: str):
+        if Path(path) == live_config:
+            raise InterruptedError("between context and configuration")
+        return atomic(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(execution_history, "atomic_path", interrupt)
+        with pytest.raises(InterruptedError):
+            resume("interrupted")
+    assert original != context.run_context_path.read_bytes()
+    assert execution_history.resume_context_path(root).is_file()
+    if conflict:
+        live_config.write_bytes(b"unexplained modification")
+        with pytest.raises(ValueError, match="conflicting evidence"):
+            resume("retry")
+        assert live_config.read_bytes() == b"unexplained modification"
+        assert not execution_history.invocation_dir(root, "retry").exists()
+    else:
+        resume("retry")
+        assert execution_history.resume_context_path(root) == context.run_context_path
+        interrupted = execution_history.invocation_dir(root, "interrupted")
+        assert (interrupted / "previous" / "run_context.json").read_bytes() == original
+        assert (
+            interrupted / "run_context.json"
+        ).read_bytes() == context.run_context_path.read_bytes()
+        load_run_context(context.run_context_path, active_config_path=live_config)
 
 
 def test_root_pair_context_maps_first_root_inputs_without_changing_outputs(tmp_path: Path) -> None:

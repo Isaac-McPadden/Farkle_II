@@ -199,7 +199,7 @@ def _install_root_results(
     )
     monkeypatch.setattr(two_seed_pipeline, "validate_manifest_contract", lambda _path: None)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(two_seed_pipeline, "publish_invocation", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         two_seed_pipeline,
         "_build_pair_authenticated_snapshot",
@@ -495,6 +495,7 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
         code_identity=code,
         allow_oracle_code_identity=False,
         pair_snapshot=pair_snapshot,
+        run_id="test",
         pair_generation=cast(two_seed_pipeline.SnapshotGeneration, object()),
         authentication_telemetry=two_seed_pipeline.AuthenticationTelemetry(),
     )
@@ -619,6 +620,7 @@ def test_clean_integration_profile_passes_audit_but_is_not_release_eligible(
             two_seed_pipeline.AuthenticatedGraphSnapshot,
             SimpleNamespace(graph_root=pair.analysis_root),
         ),
+        run_id="test",
         pair_generation=cast(two_seed_pipeline.SnapshotGeneration, object()),
         authentication_telemetry=two_seed_pipeline.AuthenticationTelemetry(),
     )
@@ -1068,8 +1070,7 @@ def test_force_bypasses_authenticated_simulation_skip(
     )
     policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
     calls: list[bool] = []
-    monkeypatch.setattr(two_seed_pipeline, "write_run_context_atomic", lambda *_a, **_k: "x")
-    monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(two_seed_pipeline, "publish_invocation", lambda *_a, **_k: None)
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(
         two_seed_pipeline.runner,

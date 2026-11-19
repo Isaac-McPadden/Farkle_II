@@ -17,6 +17,7 @@ from tests.helpers.raw_simulation_oracle import (
 )
 from tests.helpers.simulation_to_report_oracle import (
     assert_canonical_artifact_inventory,
+    assert_exact_resume_files,
     assert_pipeline_health_and_simulation_lifecycle,
     assert_report_oracle,
     snapshot_stable_workflow_files,
@@ -145,7 +146,7 @@ def test_raw_simulation_to_authenticated_report_via_normal_orchestration(
         seed_pair=ORACLE_ROOTS,
         oracle_game_profile=profile,
     )
-    assert snapshot_stable_workflow_files(contexts, pair_context) == first_hashes
+    assert_exact_resume_files(contexts, pair_context, first_hashes)
     assert len(list(pair_context.config.h2h_block_results_dir().glob("*.parquet"))) == (
         first_block_count
     )

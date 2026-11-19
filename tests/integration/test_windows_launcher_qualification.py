@@ -18,7 +18,10 @@ from tests.helpers.raw_simulation_oracle import (
     load_completed_pipeline_contexts,
     write_tiny_oracle_config,
 )
-from tests.helpers.simulation_to_report_oracle import snapshot_stable_workflow_files
+from tests.helpers.simulation_to_report_oracle import (
+    assert_exact_resume_files,
+    snapshot_stable_workflow_files,
+)
 from tests.helpers.task7_oracle import assert_task7_products
 
 from farkle.analysis.analysis_guide import render_guide_markdown, validate_guide
@@ -181,7 +184,7 @@ def test_windows_launcher_cross_volume_cap_stop_and_resume(
     health = check_report_and_audit()
     stable = snapshot_stable_workflow_files(contexts, pair)
     launch("no_force_replay", [], 0)
-    assert snapshot_stable_workflow_files(contexts, pair) == stable
+    assert_exact_resume_files(contexts, pair, stable)
     check_report_and_audit()
     # A lost final product cannot be accepted from its old completion. Recover
     # just reporting while preserving all producer and H2H durable Parquets.

@@ -22,7 +22,12 @@ from farkle.analysis.release_audit import (
     audit_authenticated_release_graphs,
 )
 from farkle.config import ArtifactScope, ResourcesConfig
-from farkle.orchestration.run_contexts import SeedRunContext, write_run_context_atomic
+from farkle.orchestration.execution_history import publish_invocation, retain_lifecycle
+from farkle.orchestration.run_contexts import (
+    RootPairRunContext,
+    SeedRunContext,
+    write_run_context_atomic,
+)
 from farkle.orchestration.seed_utils import write_active_config
 from farkle.utils.artifact_contract import sha256_file, sidecar_path
 from farkle.utils.authenticated_contract import (
@@ -74,12 +79,25 @@ def _build_graph(
     *,
     scope: str = "root",
     roots: tuple[int, ...] = (11,),
+    run_id: str | None = None,
+    manifest_path: Path | None = None,
 ) -> GraphFixture:
-    cfg = make_authenticated_v3_config(tmp_path, name="task4b", player_counts=(2,))
+    cfg = make_authenticated_v3_config(
+        tmp_path, name="task4b", root_seed=roots[0], player_counts=(2,)
+    )
     code = clean_test_code_identity()
     context = SeedRunContext.from_config(cfg)
-    write_run_context_atomic(context, code_identity=code)
-    write_active_config(cfg)
+    if run_id is None:
+        write_run_context_atomic(context, code_identity=code)
+        write_active_config(cfg)
+    else:
+        publish_invocation(
+            context,
+            run_id=run_id,
+            code_identity=code,
+            completion_paths=[],
+            manifest_path=manifest_path or tmp_path / "manifest.jsonl",
+        )
 
     source = cfg.scope_path("metrics", ArtifactScope.BY_K, "source.parquet", k=2)
     publish_v3_parquet(
@@ -149,7 +167,7 @@ def _build_graph(
             cfg=cfg,
             scope=scope,
             roots=roots,
-            graph_root=cfg.analysis_dir,
+            graph_root=cfg.results_root if run_id and scope == "root" else cfg.analysis_dir,
             analysis_root=cfg.analysis_dir,
             run_context_path=context.run_context_path,
             active_config_path=context.active_config_path,
@@ -282,7 +300,12 @@ def test_final_audit_rejects_missing_relocated_and_duplicated_completion(
         assert any("completion inventory" in failure for failure in result["failures"])
 
 
-def _audit(fixture: GraphFixture, *, current_code: Any | None = None) -> dict[str, Any]:
+def _audit(
+    fixture: GraphFixture,
+    *,
+    current_code: Any | None = None,
+    invocation: tuple[str, Path] | None = None,
+) -> dict[str, Any]:
     with use_authentication_telemetry(fixture.telemetry):
         return audit_authenticated_release_graphs(
             [
@@ -294,7 +317,111 @@ def _audit(fixture: GraphFixture, *, current_code: Any | None = None) -> dict[st
             ],
             expected_code_identity=fixture.code,
             current_code_identity=current_code or fixture.code,
+            invocation=invocation,
         )
+
+
+def test_byte_deep_audit_locates_and_checks_retained_lifecycle(tmp_path: Path) -> None:
+    run_id = "producer"
+    fixture = _build_graph(tmp_path, run_id=run_id)
+    paths = [("metrics", fixture.completion)]
+    retain_lifecycle(fixture.snapshot, run_id, paths)
+    invocation = (run_id, tmp_path / "manifest.jsonl")
+    result = _audit(fixture, invocation=invocation)
+    assert result["status"] == "passed", result["failures"]
+    retained = result["run_contexts"]["root_11"]
+    assert (
+        Path(retained["retained_run_context"]).read_bytes()
+        == fixture.context.run_context_path.read_bytes()
+    )
+    assert retained["lifecycle_sha256"] == fixture.snapshot.lifecycle_sha256
+    inventory = Path(retained["lifecycle_inventory"])
+    assert json.loads(inventory.read_bytes())["completion_stamps"] == [
+        ["metrics", str(fixture.completion.resolve()), sha256_file(fixture.completion)]
+    ]
+    stamp = inventory.with_name("0.stamp")
+    assert stamp.read_bytes() == fixture.completion.read_bytes()
+    stamp.write_bytes(stamp.read_bytes() + b" ")
+    rejected = _audit(fixture, invocation=invocation)
+    assert rejected["status"] == "failed"
+    assert any("retained lifecycle stamp differs" in msg for msg in rejected["failures"])
+    shutil.copyfile(fixture.completion, stamp)
+    receipt = Path(retained["invocation_record"])
+    receipt.write_bytes(receipt.read_bytes() + b" ")
+    rejected = _audit(fixture, invocation=invocation)
+    assert any("differs from its manifest event" in msg for msg in rejected["failures"])
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_final_pair_audit_binds_parents_in_configured_order(tmp_path: Path, swap: bool) -> None:
+    run_id = "resume"
+    seeds = (22, 11)
+    targets = []
+    roots = []
+    parents = []
+    code = clean_test_code_identity()
+    for seed in seeds:
+        f = _build_graph(
+            tmp_path / str(seed),
+            roots=(seed,),
+            run_id=run_id,
+            manifest_path=tmp_path / "manifest.jsonl",
+        )
+        retain_lifecycle(f.snapshot, run_id, [("metrics", f.completion)])
+        roots.append(f.context)
+        parents.append(f.snapshot.lifecycle_sha256)
+        targets.append(AuthenticatedReleaseAuditTarget(f.context.config, f.snapshot, f.generation))
+
+    pair = RootPairRunContext.from_root_contexts((roots[0], roots[1]), pair_root=tmp_path / "pair")
+    cfg = pair.config
+    publish_invocation(
+        pair,
+        run_id=run_id,
+        manifest_path=tmp_path / "manifest.jsonl",
+        code_identity=code,
+        completion_paths=[],
+        parent_lifecycle_roots=tuple(reversed(parents) if swap else parents),
+    )
+    stage = "root_stability"
+    output = cfg.root_discrepancies_path()
+    publish_v3_parquet(
+        cfg, output, pa.table({"value": [1]}), stage_key=stage, producer=stage, operation="test"
+    )
+    stamp = cfg.stage_dir(stage) / "root_stability.done.json"
+    write_v3_stage_completion(
+        stamp, cfg=cfg, stage_key=stage, inputs=[], outputs=[output], status="success"
+    )
+    state = resolve_stage_state(stamp, inputs=[], outputs=[output], cfg=cfg, stage=stage)
+    generation = SnapshotGeneration()
+    snapshot = capture_authenticated_graph_snapshot(
+        cfg=cfg,
+        scope="pair",
+        roots=tuple(sorted(seeds)),
+        graph_root=pair.analysis_root,
+        analysis_root=pair.analysis_root,
+        run_context_path=pair.run_context_path,
+        active_config_path=pair.active_config_path,
+        stage_states={stage: state.value},
+        completion_paths=[(stage, stamp)],
+        generation=generation,
+        code_identity=code,
+    )
+    retain_lifecycle(snapshot, run_id, [(stage, stamp)])
+    targets.append(AuthenticatedReleaseAuditTarget(cfg, snapshot, generation))
+    result = audit_authenticated_release_graphs(
+        targets,
+        expected_code_identity=code,
+        current_code_identity=code,
+        invocation=(run_id, tmp_path / "manifest.jsonl"),
+    )
+    if swap:
+        assert result["status"] == "failed"
+        assert any("parent lifecycles differ" in msg for msg in result["failures"])
+    else:
+        assert result["status"] == "passed", result["failures"]
+        assert [
+            result["run_contexts"][f"root_{seed}"]["lifecycle_sha256"] for seed in seeds
+        ] == parents
 
 
 def _mutate_case(fixture: GraphFixture, mutation: str) -> None:

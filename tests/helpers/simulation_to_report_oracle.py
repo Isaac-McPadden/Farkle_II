@@ -370,8 +370,31 @@ def snapshot_stable_workflow_files(
     }
 
 
+def assert_exact_resume_files(
+    contexts: tuple[SeedRunContext, SeedRunContext],
+    pair: RootPairRunContext,
+    before: dict[str, str],
+) -> None:
+    """Require every previous byte and permit additions only for the new invocation."""
+    after = snapshot_stable_workflow_files(contexts, pair)
+    assert {name: after.get(name) for name in before} == before
+    health = json.loads((pair.pair_root / "pipeline_health.json").read_bytes())
+    run_id = health["run_id"]
+    allowed = [
+        root / "_provenance" / "invocations" / run_id
+        for root in (pair.pair_root, *(context.results_root for context in contexts))
+    ]
+    allowed.append(pair.pair_root / "_provenance" / "health" / run_id)
+    for directory in allowed:
+        assert directory.is_dir()
+    for name in after.keys() - before.keys():
+        path = (pair.pair_root / name).resolve()
+        assert any(path.is_relative_to(directory.resolve()) for directory in allowed), name
+
+
 __all__ = [
     "assert_canonical_artifact_inventory",
+    "assert_exact_resume_files",
     "assert_pipeline_health_and_simulation_lifecycle",
     "assert_report_oracle",
     "snapshot_stable_workflow_files",

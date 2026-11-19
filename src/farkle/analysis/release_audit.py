@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Final
 
 from farkle.config import AppConfig, ArtifactScope, compute_config_sha, load_app_config
+from farkle.orchestration.execution_history import audit_invocation
 from farkle.orchestration.run_contexts import load_run_context
 from farkle.utils.artifact_contract import read_json_file_with_retry, sha256_file
 from farkle.utils.authenticated_contract import (
@@ -26,6 +27,7 @@ from farkle.utils.authenticated_graph import (
 )
 from farkle.utils.authentication_telemetry import active_authentication_telemetry
 from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
+from farkle.utils.manifest import iter_manifest
 
 _SIDECAR_SUFFIX: Final = ".sidecar.json"
 _STATE_SUFFIXES: Final = (".checkpoint.json", ".done.json")
@@ -677,6 +679,7 @@ def audit_authenticated_release_graphs(
     *,
     expected_code_identity: Any,
     current_code_identity: Any,
+    invocation: tuple[str, Path] | None = None,
     boundary_hook: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one top-level, fresh-byte release audit across every context graph."""
@@ -694,6 +697,17 @@ def audit_authenticated_release_graphs(
     if collector is not None:
         collector.bump("graph_audit_invocations")
     failures: list[str] = []
+    published: list[tuple[Path, str]] = []
+    if invocation is not None:
+        run_id, manifest_path = invocation
+        try:
+            published = [
+                (Path(event["invocation_record"]).resolve(), event["invocation_sha256"])
+                for event in iter_manifest(manifest_path)
+                if event.get("event") == "invocation_published" and event.get("run_id") == run_id
+            ]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            failures.append(f"cannot read invocation records from {manifest_path}: {exc}")
     run_contexts: dict[str, dict[str, str]] = {}
     root_metrics: list[dict[str, Any]] = []
     indexes: list[_AuditIndex] = []
@@ -735,6 +749,25 @@ def audit_authenticated_release_graphs(
                 "sha256": context_sha,
                 "identity_sha256": snapshot.run_context_identity_sha256,
             }
+            if invocation is not None:
+                evidence = audit_invocation(snapshot, invocation[0])
+                binding = (
+                    Path(evidence["invocation_record"]).resolve(),
+                    evidence["invocation_sha256"],
+                )
+                if published.count(binding) != 1:
+                    raise ValueError(
+                        f"invocation record differs from its manifest event: {binding[0]}"
+                    )
+                published.remove(binding)
+                run_contexts[label].update(evidence)
+                if snapshot.scope == "pair":
+                    parents = [
+                        run_contexts[f"root_{seed}"]["lifecycle_sha256"]
+                        for seed in target.cfg.sim.seed_list or ()
+                    ]
+                    if parents != persisted["parent_lifecycle_roots"]:
+                        raise ValueError("retained parent lifecycles differ from the pair context")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{label} run context: {type(exc).__name__}: {exc}")
 
@@ -761,6 +794,8 @@ def audit_authenticated_release_graphs(
         if boundary_hook is not None:
             boundary_hook(f"context:{label}")
 
+    if published:
+        failures.append("unmatched invocation publication in pipeline manifest")
     failures.extend(_validate_cross_context_provenance(indexes))
     if boundary_hook is not None:
         boundary_hook("complete")

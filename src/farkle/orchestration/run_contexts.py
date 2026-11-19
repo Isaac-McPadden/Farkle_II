@@ -257,6 +257,7 @@ def write_run_context_atomic(
     cli_overrides: tuple[str, ...] = (),
     worker_counts: Mapping[str, Mapping[str, object]] | None = None,
     game_profile_sha256: str | None = None,
+    destination: Path | None = None,
 ) -> str:
     """Publish the authenticated runtime/layout artifact separately from YAML."""
 
@@ -333,6 +334,9 @@ def write_run_context_atomic(
             and existing.get("lineage_extensions") == expected_extension
             and existing_stable_execution == stable_execution
         ):
+            if destination is not None:
+                with atomic_path(str(destination), temp_dir=cfg.io.temp_dir) as temporary:
+                    Path(temporary).write_bytes(context.run_context_path.read_bytes())
             return lineage_sha
 
     def default_worker_metadata(stage: str, section: Any) -> dict[str, object]:
@@ -407,7 +411,7 @@ def write_run_context_atomic(
             "game_profile_sha256": cfg._game_profile_sha256,
         }
     payload["run_context_sha256"] = identity_sha256(payload)
-    path = context.run_context_path
+    path = destination or context.run_context_path
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path), temp_dir=cfg.io.temp_dir) as temporary:
         Path(temporary).write_bytes(canonical_json_bytes(payload) + b"\n")
