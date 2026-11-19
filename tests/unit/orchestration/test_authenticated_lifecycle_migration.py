@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 
 import pyarrow as pa
@@ -30,7 +37,11 @@ from farkle.orchestration.seed_utils import write_active_config
 from farkle.simulation import runner
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import sidecar_path
-from farkle.utils.authenticated_contract import CodeIdentity
+from farkle.utils.authenticated_contract import CodeIdentity, reuse_stage_parquet_facts
+from farkle.utils.authentication_telemetry import (
+    AuthenticationTelemetry,
+    use_authentication_telemetry,
+)
 from farkle.utils.stage_completion import (
     CompletionState,
     resolve_stage_state,
@@ -182,6 +193,104 @@ def test_runtime_only_change_does_not_stale_root_stage(tmp_path: Path) -> None:
         resolve_stage_state(done, [source], [output], cfg=cfg, stage="metrics")
         is CompletionState.COMPLETE_VALID
     )
+
+
+def test_cross_stage_parquet_reads_and_invocation_lifetime(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    source = cfg.combined_rows_by_k(2)
+    output = cfg.metrics_all_player_batch_path(2)
+    _publish_table(cfg, source, producer="combine")
+    _publish_table(cfg, output, producer="metrics", sources=[source])
+    for stage, path in (("combine", source), ("metrics", output)):
+        write_stage_done(
+            stage_done_path(cfg.stage_dir(stage), stage),
+            inputs=[],
+            outputs=[path],
+            cfg=cfg,
+            stage=stage,
+        )
+
+    def check(stage: str) -> AuthenticationTelemetry:
+        counts = AuthenticationTelemetry()
+        with use_authentication_telemetry(counts):
+            assert (
+                resolve_stage_state(
+                    stage_done_path(cfg.stage_dir(stage), stage), [], [], cfg=cfg, stage=stage
+                )
+                is CompletionState.COMPLETE_VALID
+            )
+        return counts
+
+    baseline = check("metrics")
+    with reuse_stage_parquet_facts():
+        assert check("combine").schema_validations == 1
+        shared = check("metrics")
+        assert shared.schema_validations == baseline.schema_validations - 1
+        assert (
+            shared.artifact_bytes_hashed == baseline.artifact_bytes_hashed - source.stat().st_size
+        )
+        assert shared.as_metadata()["total_opens"] == baseline.as_metadata()["total_opens"]
+        assert check("metrics").artifact_bytes_hashed == 0
+        publication = AuthenticationTelemetry()
+        with use_authentication_telemetry(publication):
+            write_stage_done(
+                stage_done_path(cfg.stage_dir("metrics"), "metrics"),
+                inputs=[source],
+                outputs=[output],
+                cfg=cfg,
+                stage="metrics",
+            )
+        assert publication.artifact_bytes_hashed >= source.stat().st_size + output.stat().st_size
+        copied = copy_context()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            foreign = pool.submit(copied.run, check, "metrics").result()
+        assert foreign.schema_validations == baseline.schema_validations
+    assert copied.run(check, "metrics").schema_validations == baseline.schema_validations
+    with reuse_stage_parquet_facts():
+        assert check("metrics").artifact_bytes_hashed == baseline.artifact_bytes_hashed
+
+
+@pytest.mark.parametrize("mutation", ["writer", "rebind", "interrupted"])
+def test_warm_completion_reopens_live_namespace(tmp_path: Path, mutation: str) -> None:
+    cfg = _cfg(tmp_path)
+    output = cfg.metrics_all_player_batch_path(2)
+    _publish_table(cfg, output, producer="metrics")
+    stamp = stage_done_path(cfg.metrics_stage_dir, "metrics")
+    write_stage_done(stamp, inputs=[], outputs=[output], cfg=cfg, stage="metrics")
+
+    def check() -> CompletionState:
+        return resolve_stage_state(stamp, [], [output], cfg=cfg, stage="metrics")
+
+    if mutation == "rebind":
+        # Even a read-only leaf cannot pin its parent directory.
+        output.chmod(stat.S_IREAD)
+    with reuse_stage_parquet_facts():
+        assert check() is CompletionState.COMPLETE_VALID
+        if mutation == "writer":
+            # A separate writer can change this file even with an ordinary reader open.
+            before = output.stat()
+            with output.open("rb"):
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; f=open(sys.argv[1],'r+b'); f.write(b'FAIL'); f.close()",
+                        str(output),
+                    ],
+                    check=True,
+                )
+            os.utime(output, ns=(before.st_atime_ns, before.st_mtime_ns))
+        elif mutation == "rebind":
+            old = output.parent.with_name("previous_directory")
+            output.parent.rename(old)
+            shutil.copytree(old, output.parent)
+            output.chmod(stat.S_IREAD | stat.S_IWRITE)
+            (old / output.name).chmod(stat.S_IREAD | stat.S_IWRITE)
+            with output.open("r+b") as handle:
+                handle.write(b"FAIL")
+        else:
+            sidecar_path(output).rename(output.with_suffix(".staged"))
+        assert check() is CompletionState.COMPLETE_STALE
 
 
 def test_pair_public_config_and_context_round_trip_bind_parent_and_stage_hashes(

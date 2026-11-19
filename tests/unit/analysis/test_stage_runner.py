@@ -298,8 +298,7 @@ def test_stage_runner_records_separate_phase_timings_without_changing_manifest_p
         clock.advance(2.0)
 
     def read(_path: Path) -> dict[str, object]:
-        clock.advance(3.0)
-        return {"status": "success"}
+        pytest.fail("successful completion was reopened for diagnostics")
 
     def resolve(*_args: object, **_kwargs: object) -> object:
         clock.advance(4.0)
@@ -332,7 +331,7 @@ def test_stage_runner_records_separate_phase_timings_without_changing_manifest_p
     assert timing.stage_start_publication_seconds == 1.0
     assert timing.action_seconds == 2.0
     assert timing.output_validation_seconds == 0.0
-    assert timing.completion_read_seconds == 3.0
+    assert timing.completion_read_seconds == 0.0
     assert timing.authentication_seconds == 4.0
     assert timing.stage_end_publication_seconds == 1.0
     assert timing.status == "success"

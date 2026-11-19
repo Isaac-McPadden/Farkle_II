@@ -48,6 +48,7 @@ from farkle.utils.authenticated_contract import (
     CodeIdentity,
     CodeIdentityPolicy,
     resolve_code_identity,
+    reuse_stage_parquet_facts,
 )
 from farkle.utils.authenticated_graph import (
     AuthenticatedGraphSnapshot,
@@ -1431,7 +1432,7 @@ def run_pipeline(
     authentication_telemetry = AuthenticationTelemetry()
     terminal_status = "interrupted"
     try:
-        with use_authentication_telemetry(authentication_telemetry):
+        with use_authentication_telemetry(authentication_telemetry), reuse_stage_parquet_facts():
             _run_pipeline_observed(
                 cfg,
                 seed_pair=seed_pair,

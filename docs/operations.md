@@ -116,6 +116,15 @@ The terminal manifest event points to the invocation's retained health report.
 Its `release_audit.run_contexts` entries locate the evidence checked by the
 final audit. These files live under `_provenance` in each owning results root.
 
+During stage completion checks the two-seed parent can retain up to 32 Parquet
+byte strings of at most 64 KiB each. It reopens the canonical path for every
+independent check. An exact byte match at the same path and schema version
+allows the parent to reuse the SHA-256 and Arrow schema computed from those
+bytes. Each check authenticates the current sidecars, source bindings and
+required output inventory. This also applies on OneDrive. The process-local
+snapshot generation governs ownership of captured evidence and provides no
+filesystem lock. The final release audit independently reads the live graph.
+
 `Pipeline progress summary` records completed work for a simulation or an
 analysis partition phase. The JSON fields after ` | ` identify its `stage` and
 `scope`, completed/reused units, and worker counts. A stage can have several

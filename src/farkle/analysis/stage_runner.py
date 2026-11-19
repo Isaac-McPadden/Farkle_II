@@ -292,21 +292,6 @@ class StageRunner:
                         if missing_outputs:
                             raise StageValidationError(item.name, missing_outputs)
 
-                        scope.update(phase="completion_read", state="authenticating")
-                        phase_started = float(context.monotonic_clock())
-                        try:
-                            stage_done = (
-                                read_stage_done(item.completion_stamp)
-                                if item.completion_stamp is not None
-                                else {"status": "success"}
-                            )
-                        finally:
-                            durations["completion_read"] += _elapsed(
-                                context.monotonic_clock,
-                                phase_started,
-                            )
-                        stage_status = str(stage_done.get("status", "success"))
-
                         if item.completion_stamp is not None:
                             scope.update(
                                 phase="completion_authentication",
@@ -328,6 +313,15 @@ class StageRunner:
                                     phase_started,
                                 )
                             if completion_state is not CompletionState.COMPLETE_VALID:
+                                scope.update(phase="completion_read", state="authenticating")
+                                phase_started = float(context.monotonic_clock())
+                                try:
+                                    stage_done = read_stage_done(item.completion_stamp)
+                                finally:
+                                    durations["completion_read"] += _elapsed(
+                                        context.monotonic_clock, phase_started
+                                    )
+                                stage_status = str(stage_done.get("status", "success"))
                                 failure_status = (
                                     completion_state.value
                                     if stage_status == "success"
@@ -342,17 +336,18 @@ class StageRunner:
 
                         stage_health = "healthy"
                         stage_health_states[item.name] = stage_health
-                        status = stage_status
+                        # A validated v3 success stamp has no diagnostic fields.
+                        status = "success"
                         stage_end_payload: dict[str, object] = {
                             "event": context.stage_end_event,
                             "run": context.run_label,
                             "stage": item.name,
                             "ok": stage_health == "healthy",
-                            "status": stage_status,
+                            "status": status,
                             "health": stage_health,
-                            "reason": stage_done.get("reason"),
-                            "blocking_dependency": stage_done.get("blocking_dependency"),
-                            "upstream_stage": stage_done.get("upstream_stage"),
+                            "reason": None,
+                            "blocking_dependency": None,
+                            "upstream_stage": None,
                         }
                     except H2HAuthorizationRequired as exc:
                         status = "blocked_by_cap"

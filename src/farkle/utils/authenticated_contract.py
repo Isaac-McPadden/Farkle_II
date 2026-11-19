@@ -14,9 +14,13 @@ import math
 import os
 import re
 import subprocess
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import threading
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final, TypeVar, cast
 
@@ -1465,6 +1469,76 @@ def _verify_artifact_bytes(path: Path, metadata: AuthenticatedSidecar) -> None:
         raise ArtifactMismatchError("artifact bytes or actual schema do not match sidecar")
 
 
+_VerifyBytes = Callable[[Path, AuthenticatedSidecar], None]
+_STAGE_PARQUET_CHECK: ContextVar[_VerifyBytes | None] = ContextVar(
+    "stage_parquet_check", default=None
+)
+_MAX_RETAINED_PARQUET_BYTES = 64 * 1024
+
+
+@contextmanager
+def reuse_stage_parquet_facts() -> Iterator[None]:
+    """Share pure byte computations during one parent's stage resolutions.
+
+    Every lookup includes a complete fresh read. Publication, replacement or
+    rebinding can never carry a path verdict forward. Only immutable Python
+    bytes, their digest and their versioned Arrow schema live across checks.
+    """
+    from farkle.utils.authentication_telemetry import (
+        record_authentication_hash,
+        record_authentication_open,
+        record_schema_validation,
+    )
+
+    owner_pid = os.getpid()
+    owner_thread = threading.current_thread()
+    active = True
+
+    @lru_cache(maxsize=32)
+    def facts(path: Path, contents: bytes, version: int) -> tuple[str, ArrowSchemaIdentity]:
+        digest = hashlib.sha256(contents).hexdigest()
+        record_authentication_hash(path, len(contents))
+        record_schema_validation()
+        schema = pq.read_schema(pa.BufferReader(contents))
+        return digest, arrow_schema_identity(schema, schema_version=version)
+
+    def verify(path: Path, metadata: AuthenticatedSidecar) -> None:
+        artifact = metadata.artifact
+        if (
+            not active
+            or owner_pid != os.getpid()
+            or threading.current_thread() is not owner_thread
+            or artifact.arrow_schema is None
+            or artifact.byte_length > _MAX_RETAINED_PARQUET_BYTES
+        ):
+            _verify_artifact_bytes(path, metadata)
+            return
+        _require_unbound_canonical_suffix(path, artifact.location)
+
+        def read() -> bytes:
+            record_authentication_open(path)
+            with path.open("rb") as handle:
+                return handle.read(artifact.byte_length + 1)
+
+        try:
+            contents = retry_transient_io(read)
+            if len(contents) != artifact.byte_length:
+                raise ArtifactMismatchError(f"artifact byte length differs: {path}")
+            digest, schema = facts(path, contents, artifact.arrow_schema.schema_version)
+        except (OSError, pa.ArrowException) as exc:
+            raise ArtifactMismatchError(f"artifact cannot be authenticated: {path}: {exc}") from exc
+        if digest != artifact.content_sha256 or schema != artifact.arrow_schema:
+            raise ArtifactMismatchError(f"artifact bytes or actual schema do not match: {path}")
+
+    token = _STAGE_PARQUET_CHECK.set(verify)
+    try:
+        yield
+    finally:
+        active = False
+        facts.cache_clear()
+        _STAGE_PARQUET_CHECK.reset(token)
+
+
 def validate_authenticated_artifact_unbound(
     path: Path | str,
     *,
@@ -2076,7 +2150,10 @@ class _CompletionVerification:
     establishes the byte or metadata identity required by the caller.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, stage_resolution: bool = False) -> None:
+        self._verify_bytes = (
+            _STAGE_PARQUET_CHECK.get() if stage_resolution else None
+        ) or _verify_artifact_bytes
         self._observed: dict[Path, os.stat_result] = {}
         self._sidecars: dict[
             Path, tuple[AuthenticatedSidecar | ImmutableManifestSidecar | None, str]
@@ -2141,7 +2218,7 @@ class _CompletionVerification:
         if previous_deep is None or (deep and not previous_deep):
             stat = self.watch(path)
             if deep:
-                _verify_artifact_bytes(path, metadata)
+                self._verify_bytes(path, metadata)
             else:
                 _require_unbound_canonical_suffix(path, metadata.artifact.location)
                 if stat.st_size != metadata.artifact.byte_length:
@@ -2409,6 +2486,7 @@ __all__ = [
     "publish_immutable_manifest_atomic",
     "publish_immutable_manifest_bytes_atomic",
     "resolve_code_identity",
+    "reuse_stage_parquet_facts",
     "stage_config_identity",
     "validate_authenticated_artifact",
     "validate_authenticated_artifact_metadata",

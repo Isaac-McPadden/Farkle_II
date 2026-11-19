@@ -1350,7 +1350,7 @@ def resolve_v3_stage_state(
         materialized = any(path.exists() for path in [*outputs, *partial_paths])
         return CompletionState.PARTIAL_RESUMABLE if materialized else CompletionState.NOT_STARTED
     try:
-        verification = _CompletionVerification()
+        verification = _CompletionVerification(stage_resolution=True)
         verification.watch(done_path)
         completion = load_authenticated_completion(done_path)
         if not outputs:

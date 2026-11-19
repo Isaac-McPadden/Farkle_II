@@ -32,6 +32,7 @@ from farkle.orchestration.seed_utils import write_active_config
 from farkle.utils.artifact_contract import sha256_file, sidecar_path
 from farkle.utils.authenticated_contract import (
     ManifestEntry,
+    reuse_stage_parquet_facts,
     validate_authenticated_artifact_unbound,
 )
 from farkle.utils.authenticated_graph import (
@@ -569,6 +570,7 @@ def _mutate_case(fixture: GraphFixture, mutation: str) -> None:
         "mixed_global_identity",
     ],
 )
+@reuse_stage_parquet_facts()
 def test_final_byte_deep_audit_rejects_post_snapshot_mutation(
     tmp_path: Path,
     mutation: str,
@@ -826,6 +828,7 @@ def test_data_without_sidecar_and_sidecar_without_completion_cannot_snapshot(
         )
 
 
+@reuse_stage_parquet_facts()
 def test_snapshot_reuse_avoids_byte_hashing_before_final_audit(tmp_path: Path) -> None:
     fixture = _build_graph(tmp_path)
     before = fixture.telemetry.as_metadata()
@@ -847,3 +850,7 @@ def test_snapshot_reuse_avoids_byte_hashing_before_final_audit(tmp_path: Path) -
     assert final["graph_audit_invocations"] == 1
     assert final["graph_root_traversals"] == 1
     assert final["sha256_calls"] > reused["sha256_calls"]
+    assert final["artifact_bytes_hashed"] - reused["artifact_bytes_hashed"] >= (
+        fixture.source.stat().st_size + fixture.derived.stat().st_size
+    )
+    assert final["schema_validations"] - reused["schema_validations"] >= 2

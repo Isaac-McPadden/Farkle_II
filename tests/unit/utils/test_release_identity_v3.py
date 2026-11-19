@@ -191,6 +191,7 @@ def test_completion_rejects_input_change_during_verification(
 
 
 @pytest.mark.parametrize("change", ["added", "missing"])
+@authenticated_contract.reuse_stage_parquet_facts()
 def test_completion_still_requires_exact_expanded_output_inventory(
     v3_cfg: AppConfig, change: str
 ) -> None:
@@ -208,6 +209,31 @@ def test_completion_still_requires_exact_expanded_output_inventory(
     assert resolve_stage_state(done, [], outputs, cfg=v3_cfg, stage="metrics") is (
         CompletionState.COMPLETE_STALE
     )
+
+
+def test_stage_reuse_requires_deep_bytes_and_respects_size_bound(
+    v3_cfg: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _publish(v3_cfg, "depth.parquet")
+    counts = AuthenticationTelemetry()
+    with authenticated_contract.reuse_stage_parquet_facts(), use_authentication_telemetry(counts):
+
+        def verify(deep: bool) -> None:
+            operation = authenticated_contract._CompletionVerification(stage_resolution=True)
+            operation.artifact(path, deep=deep)
+            operation.require_unchanged()
+
+        verify(False)
+        assert counts.schema_validations == 0
+        verify(True)
+        verify(True)
+        assert counts.schema_validations == 1
+        monkeypatch.setattr(
+            authenticated_contract, "_MAX_RETAINED_PARQUET_BYTES", path.stat().st_size - 1
+        )
+        verify(True)
+        verify(True)
+        assert counts.schema_validations == 3
 
 
 def test_wrong_scope_and_schema_are_rejected(v3_cfg: AppConfig) -> None:
