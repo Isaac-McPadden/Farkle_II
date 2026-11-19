@@ -15,6 +15,7 @@ from tests.helpers.artifact_sidecars import publish_v3_simulation_run
 from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.runner import simulation_is_complete, write_simulation_done
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils import authenticated_contract
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     make_artifact_sidecar,
@@ -28,6 +29,10 @@ from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     validate_authenticated_artifact,
     validate_authenticated_artifact_unbound,
+)
+from farkle.utils.authentication_telemetry import (
+    AuthenticationTelemetry,
+    use_authentication_telemetry,
 )
 from farkle.utils.stage_completion import (
     CompletionState,
@@ -126,6 +131,82 @@ def test_changed_source_bytes_invalidate_cached_descendant(v3_cfg: AppConfig) ->
             stage="metrics",
         )
         is CompletionState.COMPLETE_STALE
+    )
+
+
+def test_completion_shared_source_authentication_cost(v3_cfg: AppConfig) -> None:
+    source = _publish(v3_cfg, "source.parquet")
+    outputs = [
+        _publish(v3_cfg, name, sources=[source]) for name in ("first.parquet", "second.parquet")
+    ]
+    done = stage_done_path(v3_cfg.stage_dir("metrics"), "metrics")
+    write_stage_done(done, inputs=[source], outputs=outputs, cfg=v3_cfg, stage="metrics")
+    telemetry = AuthenticationTelemetry()
+    with use_authentication_telemetry(telemetry):
+        state = resolve_stage_state(done, [], [], cfg=v3_cfg, stage="metrics")
+    assert state is CompletionState.COMPLETE_VALID
+    paths = [source, *outputs]
+    assert telemetry.completion_opens == 1
+    assert telemetry.sidecar_opens == len(paths)
+    assert telemetry.artifact_opens == len(paths)
+    assert telemetry.schema_validations == len(paths)
+    assert telemetry.metadata_validations == len(paths)
+    assert telemetry.sha256_calls == 2 * len(paths)
+    assert telemetry.artifact_bytes_hashed == sum(path.stat().st_size for path in paths)
+    assert telemetry.sidecar_bytes_hashed == sum(
+        sidecar_path(path).stat().st_size for path in paths
+    )
+
+    # Revalidate a same-size mutation on the next operation.
+    original = source.read_bytes()
+    source.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+    assert resolve_stage_state(done, [], [], cfg=v3_cfg, stage="metrics") is (
+        CompletionState.COMPLETE_STALE
+    )
+
+
+def test_completion_rejects_input_change_during_verification(
+    v3_cfg: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _publish(v3_cfg, "a_source.parquet")
+    first = _publish(v3_cfg, "b_first.parquet", sources=[source])
+    second = _publish(v3_cfg, "c_second.parquet", sources=[source])
+    done = stage_done_path(v3_cfg.stage_dir("metrics"), "metrics")
+    outputs = [source, first, second]
+    write_stage_done(done, inputs=[], outputs=outputs, cfg=v3_cfg, stage="metrics")
+    verify = authenticated_contract._verify_artifact_bytes
+
+    def mutate_after_check(
+        path: Path, metadata: authenticated_contract.AuthenticatedSidecar
+    ) -> None:
+        verify(path, metadata)
+        if path == second:
+            adjacent = sidecar_path(source)
+            adjacent.write_bytes(adjacent.read_bytes() + b" ")
+
+    monkeypatch.setattr(authenticated_contract, "_verify_artifact_bytes", mutate_after_check)
+    assert resolve_stage_state(done, [], outputs, cfg=v3_cfg, stage="metrics") is (
+        CompletionState.COMPLETE_STALE
+    )
+
+
+@pytest.mark.parametrize("change", ["added", "missing"])
+def test_completion_still_requires_exact_expanded_output_inventory(
+    v3_cfg: AppConfig, change: str
+) -> None:
+    output = _publish(v3_cfg, "inventory/child.parquet")
+    outputs = [output.parent]
+    done = stage_done_path(v3_cfg.stage_dir("metrics"), "metrics")
+    write_stage_done(done, inputs=[], outputs=outputs, cfg=v3_cfg, stage="metrics")
+    assert resolve_stage_state(done, [], outputs, cfg=v3_cfg, stage="metrics") is (
+        CompletionState.COMPLETE_VALID
+    )
+    if change == "added":
+        _publish(v3_cfg, "inventory/extra.parquet")
+    else:
+        output.unlink()
+    assert resolve_stage_state(done, [], outputs, cfg=v3_cfg, stage="metrics") is (
+        CompletionState.COMPLETE_STALE
     )
 
 

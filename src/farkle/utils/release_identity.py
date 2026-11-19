@@ -13,6 +13,7 @@ import os
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -43,16 +44,21 @@ from farkle.utils.authenticated_contract import (
     CanonicalArtifactLocation,
     CodeIdentityPolicy,
     CompletionOutputIdentity,
+    ImmutableManifestSidecar,
     ManifestEntry,
     ManifestRootIdentity,
     MethodContract,
     SourceArtifactIdentity,
+    StageIdentity,
     VersionIdentity,
+    _classify_loaded_completion,
+    _CompletionVerification,
     canonical_json_bytes,
     capture_source_artifact_unbound,
     classify_authenticated_lifecycle,
     derive_canonical_location,
     identity_sha256,
+    load_authenticated_completion,
     load_immutable_manifest_sidecar,
     make_stage_identity,
     publish_immutable_manifest_bytes_atomic,
@@ -954,18 +960,18 @@ def _root_owned_candidate(
 def _find_root_owned_source(
     cfg: AppConfig,
     source: SourceArtifactIdentity,
+    roots: Sequence[Path],
+    verification: _CompletionVerification,
 ) -> Path | None:
     """Resolve an authenticated root source only within the declared pair root."""
 
-    pair_root = cfg.analysis_dir.parent
-    roots = [path for path in pair_root.iterdir() if path.is_dir()] if pair_root.is_dir() else []
     candidates: list[Path] = []
     for root in roots:
         candidate = _root_owned_candidate(cfg, root, source.artifact.location)
         if candidate is None or not candidate.is_file():
             continue
         try:
-            current = capture_source_artifact_unbound(
+            current = verification.source(
                 candidate,
                 logical_role=source.logical_role,
             )
@@ -979,9 +985,9 @@ def _find_root_owned_source(
 def _find_root_owned_manifest(
     cfg: AppConfig,
     manifest: ManifestRootIdentity,
+    roots: Sequence[Path],
+    verification: _CompletionVerification,
 ) -> tuple[Path, Path] | None:
-    pair_root = cfg.analysis_dir.parent
-    roots = [path for path in pair_root.iterdir() if path.is_dir()] if pair_root.is_dir() else []
     candidates: list[tuple[Path, Path]] = []
     for root in roots:
         candidate = _root_owned_candidate(cfg, root, manifest.location)
@@ -991,13 +997,14 @@ def _find_root_owned_manifest(
         if not candidate.is_file() or not adjacent.is_file():
             continue
         try:
-            loaded = load_immutable_manifest_sidecar(candidate)
+            loaded, sidecar_sha = verification.sidecar(candidate)
         except Exception:
             continue
         if (
-            loaded.location == manifest.location
-            and sha256_file(candidate) == manifest.manifest_sha256
-            and sha256_file(adjacent) == manifest.sidecar_sha256
+            isinstance(loaded, ImmutableManifestSidecar)
+            and loaded.location == manifest.location
+            and verification.manifest_sha256(candidate) == manifest.manifest_sha256
+            and sidecar_sha == manifest.sidecar_sha256
             and loaded.sidecar_contract_sha256 == manifest.sidecar_contract_sha256
             and loaded.summary == manifest.summary
         ):
@@ -1050,9 +1057,10 @@ def _completion_contract(
     stage_key: str,
     inputs: list[Path],
     outputs: list[Path],
+    verification: _CompletionVerification,
     deep_verify_outputs: bool = True,
 ) -> tuple[
-    Any,
+    StageIdentity,
     tuple[CompletionOutputIdentity, ...],
     tuple[CanonicalArtifactLocation, ...],
     dict[str, Path],
@@ -1064,6 +1072,7 @@ def _completion_contract(
     output_identities: list[CompletionOutputIdentity] = []
     locations: list[CanonicalArtifactLocation] = []
     sidecars: list[AuthenticatedSidecar] = []
+    first_manifest_versions: VersionIdentity | None = None
     # Every ordinary input or immutable manifest is already bound by each
     # output sidecar's typed provenance. Completion identity must be
     # reconstructible from its authoritative output inventory alone because
@@ -1080,13 +1089,15 @@ def _completion_contract(
             raise ArtifactContractError(
                 f"authenticated completion requires a valid sidecar for {path}"
             )
-        payload = read_json_file_with_retry(adjacent)
-        if not isinstance(payload, dict) or payload.get("artifact_contract_version") != 3:
+        sidecar, sidecar_sha = verification.sidecar(path)
+        if sidecar is None:
             raise ArtifactContractError(
                 f"contract-v2 artifact cannot satisfy v3 completion: {path}"
             )
-        if "manifest_contract_version" in payload:
-            manifest = load_immutable_manifest_sidecar(path)
+        if isinstance(sidecar, ImmutableManifestSidecar):
+            manifest = sidecar
+            if first_manifest_versions is None:
+                first_manifest_versions = manifest.stage_identity.versions
             _require_current_output_versions(
                 manifest.stage_identity.versions, cfg=cfg, stage_key=stage_key
             )
@@ -1097,7 +1108,7 @@ def _completion_contract(
                 logical_role=_manifest_role(manifest),
                 location=manifest.location,
                 manifest_sha256=manifest.manifest_sha256,
-                sidecar_sha256=sha256_file(adjacent),
+                sidecar_sha256=sidecar_sha,
                 sidecar_contract_sha256=manifest.sidecar_contract_sha256,
                 summary=manifest.summary,
             )
@@ -1105,17 +1116,13 @@ def _completion_contract(
                 CompletionOutputIdentity(
                     artifact=None,
                     manifest=root,
-                    sidecar_sha256=sha256_file(adjacent),
+                    sidecar_sha256=sidecar_sha,
                 )
             )
             locations.append(location)
-            designs[f"output:{location.relative_path}"] = sha256_file(adjacent)
+            designs[f"output:{location.relative_path}"] = sidecar_sha
             continue
-        sidecar = (
-            validate_authenticated_artifact_unbound(path, validate_provenance=False)
-            if deep_verify_outputs
-            else validate_authenticated_artifact_metadata(path)
-        )
+        sidecar = verification.artifact(path, deep=deep_verify_outputs)
         _require_current_output_versions(
             sidecar.versions,
             cfg=cfg,
@@ -1129,17 +1136,14 @@ def _completion_contract(
         output_identities.append(
             CompletionOutputIdentity(
                 artifact=sidecar.artifact,
-                sidecar_sha256=sha256_file(adjacent),
+                sidecar_sha256=sidecar_sha,
             )
         )
         locations.append(location)
-        designs[f"output:{location.relative_path}"] = sha256_file(adjacent)
+        designs[f"output:{location.relative_path}"] = sidecar_sha
 
-    versions = (
-        sidecars[0].versions
-        if sidecars
-        else load_immutable_manifest_sidecar(output_files[0]).stage_identity.versions
-    )
+    versions = sidecars[0].versions if sidecars else first_manifest_versions
+    assert versions is not None
     config_identity = stage_config_identity(
         cfg,
         stage_key=stage_key,
@@ -1173,26 +1177,29 @@ def _completion_contract(
         immutable_design_identities=dict(sorted(designs.items())),
     )
 
-    candidate_paths = _expanded_files([*inputs, *outputs])
+    candidate_paths = _expanded_files([*inputs, *output_files])
     source_paths: dict[str, Path] = {}
     manifest_paths: dict[str, tuple[Path, Path]] = {}
     for path in candidate_paths:
         adjacent = sidecar_path(path)
         if not adjacent.is_file():
             continue
-        payload = read_json_file_with_retry(adjacent)
-        if not isinstance(payload, dict) or payload.get("artifact_contract_version") != 3:
+        sidecar, _ = verification.sidecar(path)
+        if sidecar is None:
             continue
-        if "manifest_contract_version" in payload:
-            manifest = load_immutable_manifest_sidecar(path)
-            manifest_paths[_manifest_role(manifest)] = (path, adjacent)
+        if isinstance(sidecar, ImmutableManifestSidecar):
+            manifest_paths[_manifest_role(sidecar)] = (path, adjacent)
         else:
-            sidecar = (
-                validate_authenticated_artifact_unbound(path, validate_provenance=False)
-                if deep_verify_outputs
-                else validate_authenticated_artifact_metadata(path)
-            )
+            sidecar = verification.artifact(path, deep=deep_verify_outputs)
             source_paths[_source_role(sidecar)] = path
+
+    @cache
+    def roots() -> list[Path]:
+        pair_root = cfg.analysis_dir.parent
+        if not pair_root.is_dir():
+            return []
+        verification.watch(pair_root)
+        return [path for path in pair_root.iterdir() if path.is_dir()]
 
     for output_sidecar in sidecars:
         for source in output_sidecar.source_artifacts:
@@ -1203,14 +1210,14 @@ def _completion_contract(
             except (KeyError, ValueError):
                 candidate = None
             if candidate is not None and candidate.is_file():
-                current = capture_source_artifact_unbound(
+                current = verification.source(
                     candidate,
                     logical_role=source.logical_role,
                 )
                 if current == source:
                     source_paths[source.logical_role] = candidate
                     continue
-            root_candidate = _find_root_owned_source(cfg, source)
+            root_candidate = _find_root_owned_source(cfg, source, roots(), verification)
             if root_candidate is not None:
                 source_paths[source.logical_role] = root_candidate
         for manifest_root in output_sidecar.manifest_roots:
@@ -1234,7 +1241,9 @@ def _completion_contract(
                     manifest_adjacent,
                 )
                 continue
-            root_manifest_candidate = _find_root_owned_manifest(cfg, manifest_root)
+            root_manifest_candidate = _find_root_owned_manifest(
+                cfg, manifest_root, roots(), verification
+            )
             if root_manifest_candidate is not None:
                 manifest_paths[manifest_root.logical_role] = root_manifest_candidate
 
@@ -1270,6 +1279,7 @@ def write_v3_stage_completion(
         stage_key=stage_key,
         inputs=inputs,
         outputs=outputs,
+        verification=_CompletionVerification(),
         deep_verify_outputs=deep_verify_outputs,
     )
     completion = AuthenticatedCompletion(
@@ -1282,7 +1292,7 @@ def write_v3_stage_completion(
         ),
         outputs=identities,
     )
-    # Validate the complete graph before making success observable.
+    # Read the graph afresh after staging the stamp, before making success observable.
     validation_fd, temporary = make_staged_path(
         done_path,
         prefix=f".{done_path.name}.validation_",
@@ -1336,41 +1346,35 @@ def resolve_v3_stage_state(
 
     if cap_reached:
         return CompletionState.BLOCKED_BY_CAP
-    if done_path.exists() and not outputs:
-        try:
-            payload = read_json_file_with_retry(done_path)
-            recorded_locations = [
-                (item.get("artifact") or item.get("manifest"))["location"]
-                for item in payload["outputs"]
-            ]
-            outputs = [
-                CanonicalArtifactLocation(**location).path(cfg) for location in recorded_locations
-            ]
-        except (KeyError, TypeError, ValueError):
-            return CompletionState.COMPLETE_STALE
-    materialized = any(path.exists() for path in [*outputs, *partial_paths])
     if not done_path.exists():
+        materialized = any(path.exists() for path in [*outputs, *partial_paths])
         return CompletionState.PARTIAL_RESUMABLE if materialized else CompletionState.NOT_STARTED
     try:
+        verification = _CompletionVerification()
+        verification.watch(done_path)
+        completion = load_authenticated_completion(done_path)
+        if not outputs:
+            outputs = [item.location.path(cfg) for item in completion.outputs]
         deep_verify_outputs = stage_key != "simulation"
         stage_identity, _, locations, source_paths, manifest_paths = _completion_contract(
             cfg,
             stage_key=stage_key,
             inputs=inputs,
             outputs=outputs,
+            verification=verification,
             deep_verify_outputs=deep_verify_outputs,
         )
     except Exception:
         return CompletionState.COMPLETE_STALE
-    return classify_authenticated_lifecycle(
-        done_path,
+    return _classify_loaded_completion(
+        completion,
         cfg=cfg,
         expected_stage_identity=stage_identity,
         required_locations=locations,
-        partial_paths=partial_paths,
         source_paths=source_paths,
         manifest_paths=manifest_paths,
         deep_verify_artifacts=deep_verify_outputs,
+        verification=verification,
     )
 
 

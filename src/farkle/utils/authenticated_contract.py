@@ -30,6 +30,7 @@ from farkle.protocols import DERIVED_SCHEMA_VERSION
 from farkle.utils.artifact_contract import (
     make_staged_path,
     read_json_file_with_retry,
+    read_json_file_with_sha256,
     replace_file_atomic,
     retry_transient_io,
     sha256_file,
@@ -1447,6 +1448,23 @@ def _require_unbound_canonical_suffix(
         )
 
 
+def _verify_artifact_bytes(path: Path, metadata: AuthenticatedSidecar) -> None:
+    _require_unbound_canonical_suffix(path, metadata.artifact.location)
+    current = _current_artifact_identity(
+        path,
+        location=metadata.artifact.location,
+        schema_version=(
+            metadata.versions.schema_version
+            if metadata.artifact.arrow_schema is None
+            else metadata.artifact.arrow_schema.schema_version
+        ),
+        logical_operation=metadata.artifact.logical_operation,
+        format_identity=metadata.artifact.format_identity,
+    )
+    if current != metadata.artifact:
+        raise ArtifactMismatchError("artifact bytes or actual schema do not match sidecar")
+
+
 def validate_authenticated_artifact_unbound(
     path: Path | str,
     *,
@@ -1469,20 +1487,7 @@ def validate_authenticated_artifact_unbound(
     location = expected_location or metadata.artifact.location
     if metadata.artifact.location != location:
         raise ArtifactMismatchError("sidecar declares a different canonical artifact location")
-    _require_unbound_canonical_suffix(artifact_path, location)
-    current = _current_artifact_identity(
-        artifact_path,
-        location=location,
-        schema_version=(
-            metadata.versions.schema_version
-            if metadata.artifact.arrow_schema is None
-            else metadata.artifact.arrow_schema.schema_version
-        ),
-        logical_operation=metadata.artifact.logical_operation,
-        format_identity=metadata.artifact.format_identity,
-    )
-    if current != metadata.artifact:
-        raise ArtifactMismatchError("artifact bytes or actual schema do not match sidecar")
+    _verify_artifact_bytes(artifact_path, metadata)
     if (
         expected_method_contract is not None
         and metadata.method_contract != expected_method_contract
@@ -1490,14 +1495,26 @@ def validate_authenticated_artifact_unbound(
         raise ArtifactMismatchError("method contract does not match")
     if expected_versions is not None and metadata.versions != expected_versions:
         raise ArtifactMismatchError("method/RNG/outcome/schema version identity does not match")
-    if not validate_provenance:
-        return metadata
+    if validate_provenance:
+        _validate_unbound_dependencies(metadata, source_paths, manifest_paths)
+    return metadata
+
+
+def _validate_unbound_dependencies(
+    metadata: AuthenticatedSidecar,
+    source_paths: Mapping[str, Path] | None,
+    manifest_paths: Mapping[str, tuple[Path, Path]] | None,
+    verification: _CompletionVerification | None = None,
+) -> None:
     source_roles = {source.logical_role for source in metadata.source_artifacts}
     if source_roles:
         if source_paths is None or set(source_paths) != source_roles:
             raise ArtifactMismatchError("all declared source artifact roles require exact paths")
+        capture_source = (
+            capture_source_artifact_unbound if verification is None else verification.source
+        )
         for source in metadata.source_artifacts:
-            current_source = capture_source_artifact_unbound(
+            current_source = capture_source(
                 source_paths[source.logical_role],
                 logical_role=source.logical_role,
             )
@@ -1516,15 +1533,23 @@ def validate_authenticated_artifact_unbound(
                 raise ArtifactMismatchError(
                     f"manifest sidecar is not adjacent: {manifest.logical_role}"
                 )
-            loaded_manifest = load_immutable_manifest_sidecar(manifest_path)
+            if verification is None:
+                loaded_manifest: AuthenticatedSidecar | ImmutableManifestSidecar | None = (
+                    load_immutable_manifest_sidecar(manifest_path)
+                )
+                sidecar_sha = None
+                manifest_sha = sha256_file(manifest_path)
+            else:
+                loaded_manifest, sidecar_sha = verification.sidecar(manifest_path)
+                manifest_sha = verification.manifest_sha256(manifest_path)
             if (
-                sha256_file(manifest_path) != manifest.manifest_sha256
-                or sha256_file(manifest_sidecar_path) != manifest.sidecar_sha256
+                not isinstance(loaded_manifest, ImmutableManifestSidecar)
+                or manifest_sha != manifest.manifest_sha256
+                or (sidecar_sha or sha256_file(manifest_sidecar_path)) != manifest.sidecar_sha256
                 or loaded_manifest.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
                 or loaded_manifest.summary != manifest.summary
             ):
                 raise ArtifactMismatchError(f"manifest root changed: {manifest.logical_role}")
-    return metadata
 
 
 def validate_authenticated_artifact_metadata(
@@ -2044,6 +2069,105 @@ def load_authenticated_completion(path: Path | str) -> AuthenticatedCompletion:
     return _load_completion(Path(path))
 
 
+class _CompletionVerification:
+    """Physical reads owned by one completion check. Binding checks stay per use.
+
+    File metadata detects changes during the operation. Each first read still
+    establishes the byte or metadata identity required by the caller.
+    """
+
+    def __init__(self) -> None:
+        self._observed: dict[Path, os.stat_result] = {}
+        self._sidecars: dict[
+            Path, tuple[AuthenticatedSidecar | ImmutableManifestSidecar | None, str]
+        ] = {}
+        self._artifact_depth: dict[Path, bool] = {}
+        self._manifest_hashes: dict[Path, str] = {}
+
+    def watch(self, path: Path) -> os.stat_result:
+        path = path.absolute()
+        if path not in self._observed:
+            self._observed[path] = retry_transient_io(path.stat)
+        return self._observed[path]
+
+    def require_unchanged(self) -> None:
+        # Ignore access time, which can advance as a result of the reads.
+        def version(stat: os.stat_result) -> tuple[int, ...]:
+            return (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_mode,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+
+        for path, before in self._observed.items():
+            after = retry_transient_io(path.stat)
+            if version(before) != version(after):
+                raise ArtifactMismatchError(f"file changed during completion validation: {path}")
+
+    def sidecar(
+        self, path: Path
+    ) -> tuple[AuthenticatedSidecar | ImmutableManifestSidecar | None, str]:
+        from farkle.utils.authentication_telemetry import record_metadata_validation
+
+        adjacent = sidecar_path(path).absolute()
+        if adjacent not in self._sidecars:
+            try:
+                self.watch(adjacent)
+                payload, digest = read_json_file_with_sha256(adjacent)
+                metadata: AuthenticatedSidecar | ImmutableManifestSidecar | None = None
+                if isinstance(payload, dict) and payload.get("artifact_contract_version") == 3:
+                    record_metadata_validation()
+                    metadata = (
+                        _parse_immutable_manifest_sidecar(payload)
+                        if "manifest_contract_version" in payload
+                        else _parse_sidecar(payload)
+                    )
+                self._sidecars[adjacent] = metadata, digest
+            except FileNotFoundError as exc:
+                raise MissingSidecarError(f"missing sidecar for {path}") from exc
+            except Exception as exc:
+                raise CorruptSidecarError(f"corrupt sidecar {adjacent}: {exc}") from exc
+        return self._sidecars[adjacent]
+
+    def artifact(self, path: Path, *, deep: bool) -> AuthenticatedSidecar:
+        path = path.absolute()
+        metadata, _ = self.sidecar(path)
+        if not isinstance(metadata, AuthenticatedSidecar):
+            raise ArtifactMismatchError(f"expected an authenticated artifact sidecar: {path}")
+        previous_deep = self._artifact_depth.get(path)
+        if previous_deep is None or (deep and not previous_deep):
+            stat = self.watch(path)
+            if deep:
+                _verify_artifact_bytes(path, metadata)
+            else:
+                _require_unbound_canonical_suffix(path, metadata.artifact.location)
+                if stat.st_size != metadata.artifact.byte_length:
+                    raise ArtifactMismatchError("artifact byte length does not match sidecar")
+            self._artifact_depth[path] = deep
+        return metadata
+
+    def source(self, path: Path | str, *, logical_role: str) -> SourceArtifactIdentity:
+        artifact_path = Path(path)
+        metadata = self.artifact(artifact_path, deep=True)
+        _, sidecar_sha = self.sidecar(artifact_path)
+        return SourceArtifactIdentity(
+            logical_role=logical_role,
+            artifact=metadata.artifact,
+            sidecar_sha256=sidecar_sha,
+            sidecar_contract_sha256=metadata.sidecar_contract_sha256,
+        )
+
+    def manifest_sha256(self, path: Path) -> str:
+        path = path.absolute()
+        if path not in self._manifest_hashes:
+            self.watch(path)
+            self._manifest_hashes[path] = sha256_file(path)
+        return self._manifest_hashes[path]
+
+
 def classify_authenticated_lifecycle(
     completion_path: Path,
     *,
@@ -2067,84 +2191,94 @@ def classify_authenticated_lifecycle(
     )
     if not completion_path.exists():
         return CompletionState.PARTIAL_RESUMABLE if materialized else CompletionState.NOT_STARTED
+    verification = _CompletionVerification()
     try:
+        verification.watch(completion_path)
         completion = _load_completion(completion_path)
     except Exception:
         return CompletionState.COMPLETE_STALE
+    return _classify_loaded_completion(
+        completion,
+        cfg=cfg,
+        expected_stage_identity=expected_stage_identity,
+        required_locations=required_locations,
+        source_paths=source_paths,
+        manifest_paths=manifest_paths,
+        deep_verify_artifacts=deep_verify_artifacts,
+        verification=verification,
+    )
+
+
+def _classify_loaded_completion(
+    completion: AuthenticatedCompletion,
+    *,
+    cfg: AppConfig,
+    expected_stage_identity: StageIdentity,
+    required_locations: Sequence[CanonicalArtifactLocation],
+    source_paths: Mapping[str, Path] | None,
+    manifest_paths: Mapping[str, tuple[Path, Path]] | None,
+    deep_verify_artifacts: bool,
+    verification: _CompletionVerification,
+) -> CompletionState:
     if completion.stage_identity_sha256 != expected_stage_identity.sha256:
         return CompletionState.COMPLETE_STALE
-    if completion.state == CompletionState.BLOCKED_BY_CAP.value:
-        return CompletionState.BLOCKED_BY_CAP
-    expected_paths = {location.path(cfg).resolve(): location for location in required_locations}
-    recorded = {output.location: output for output in completion.outputs}
-    if set(recorded) != set(required_locations):
-        return CompletionState.COMPLETE_STALE
     try:
+        if completion.state == CompletionState.BLOCKED_BY_CAP.value:
+            verification.require_unchanged()
+            return CompletionState.BLOCKED_BY_CAP
+        expected_paths = {location.path(cfg).resolve(): location for location in required_locations}
+        recorded = {output.location: output for output in completion.outputs}
+        if set(recorded) != set(required_locations):
+            return CompletionState.COMPLETE_STALE
         for path, location in expected_paths.items():
             output = recorded[location]
+            metadata, sidecar_sha = verification.sidecar(path)
             if output.manifest is not None:
-                manifest = load_immutable_manifest_sidecar(path)
                 if (
-                    manifest.location != location
-                    or manifest.stage_identity.versions != expected_stage_identity.versions
-                    or manifest.stage_identity.code != expected_stage_identity.code
-                    or manifest.stage_identity.stage_config.sha256
+                    not isinstance(metadata, ImmutableManifestSidecar)
+                    or metadata.location != location
+                    or metadata.stage_identity.versions != expected_stage_identity.versions
+                    or metadata.stage_identity.code != expected_stage_identity.code
+                    or metadata.stage_identity.stage_config.sha256
                     != expected_stage_identity.stage_config.sha256
-                    or sha256_file(path) != manifest.manifest_sha256
-                    or sha256_file(sidecar_path(path)) != output.sidecar_sha256
-                    or output.manifest.manifest_sha256 != manifest.manifest_sha256
-                    or output.manifest.summary != manifest.summary
+                    or verification.manifest_sha256(path) != metadata.manifest_sha256
+                    or sidecar_sha != output.sidecar_sha256
+                    or output.manifest.manifest_sha256 != metadata.manifest_sha256
+                    or output.manifest.summary != metadata.summary
                 ):
                     return CompletionState.COMPLETE_STALE
                 continue
             assert output.artifact is not None
             location.require_path(cfg, path)
-            declared = load_authenticated_sidecar(path)
-            source_roles = {item.logical_role for item in declared.source_artifacts}
-            manifest_roles = {item.logical_role for item in declared.manifest_roots}
-            resolved_sources = (
-                None
-                if not source_roles
-                else {
-                    role: source_paths[role]
-                    for role in source_roles
-                    if source_paths is not None and role in source_paths
-                }
-            )
-            resolved_manifests = (
-                None
-                if not manifest_roles
-                else {
-                    role: manifest_paths[role]
-                    for role in manifest_roles
-                    if manifest_paths is not None and role in manifest_paths
-                }
-            )
-            metadata = (
-                validate_authenticated_artifact_unbound(
-                    path,
-                    expected_location=location,
-                    expected_versions=expected_stage_identity.versions,
-                    source_paths=resolved_sources,
-                    manifest_paths=resolved_manifests,
-                )
-                if deep_verify_artifacts
-                else validate_authenticated_artifact_metadata(
-                    path,
-                    cfg=cfg,
-                    expected_location=location,
-                    expected_versions=expected_stage_identity.versions,
-                )
-            )
             if (
-                sha256_file(sidecar_path(path)) != output.sidecar_sha256
+                not isinstance(metadata, AuthenticatedSidecar)
+                or metadata.artifact.location != location
+                or metadata.versions != expected_stage_identity.versions
+                or sidecar_sha != output.sidecar_sha256
                 or metadata.artifact != output.artifact
                 or metadata.stage_identity.code != expected_stage_identity.code
                 or metadata.stage_identity.stage_config.sha256
                 != expected_stage_identity.stage_config.sha256
             ):
                 return CompletionState.COMPLETE_STALE
-    except AuthenticatedContractError:
+            verification.artifact(path, deep=deep_verify_artifacts)
+            if deep_verify_artifacts:
+                _validate_unbound_dependencies(
+                    metadata,
+                    {
+                        item.logical_role: source_paths[item.logical_role]
+                        for item in metadata.source_artifacts
+                        if source_paths is not None and item.logical_role in source_paths
+                    },
+                    {
+                        item.logical_role: manifest_paths[item.logical_role]
+                        for item in metadata.manifest_roots
+                        if manifest_paths is not None and item.logical_role in manifest_paths
+                    },
+                    verification,
+                )
+        verification.require_unchanged()
+    except (AuthenticatedContractError, OSError, TypeError, ValueError):
         return CompletionState.COMPLETE_STALE
     return CompletionState.COMPLETE_VALID
 

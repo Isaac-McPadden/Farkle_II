@@ -582,6 +582,97 @@ def test_final_byte_deep_audit_rejects_post_snapshot_mutation(
     assert result["failures"]
 
 
+@pytest.mark.parametrize("change", ["missing", "changed_bytes", "changed_sidecar"])
+def test_completion_rechecks_manifest_dependencies(tmp_path: Path, change: str) -> None:
+    fixture = _build_graph(tmp_path)
+    if change == "missing":
+        fixture.manifest.unlink()
+    else:
+        path = fixture.manifest if change == "changed_bytes" else sidecar_path(fixture.manifest)
+        path.write_bytes(path.read_bytes() + b" ")
+    assert (
+        resolve_stage_state(
+            fixture.completion,
+            inputs=[],
+            outputs=[],
+            cfg=fixture.context.config,
+            stage="metrics",
+        )
+        is CompletionState.COMPLETE_STALE
+    )
+
+
+def test_completion_hashes_shared_manifest_dependency_once(tmp_path: Path) -> None:
+    fixture = _build_graph(tmp_path)
+    cfg = fixture.context.config
+    other = fixture.derived.with_name("other.parquet")
+    publish_v3_parquet(
+        cfg,
+        other,
+        pa.table({"other_value": [4]}),
+        stage_key="metrics",
+        producer="task4b_test",
+        operation="task4b_derived",
+        sources=(fixture.source,),
+        manifests=(fixture.manifest,),
+    )
+    outputs = [fixture.derived, other]
+    write_v3_stage_completion(
+        fixture.completion,
+        cfg=cfg,
+        stage_key="metrics",
+        inputs=[],
+        outputs=outputs,
+        status="success",
+    )
+
+    telemetry = AuthenticationTelemetry()
+    with use_authentication_telemetry(telemetry):
+        state = resolve_stage_state(fixture.completion, [], outputs, cfg=cfg, stage="metrics")
+    assert state is CompletionState.COMPLETE_VALID
+    assert telemetry.manifest_opens == 1
+    assert telemetry.manifest_bytes_hashed == fixture.manifest.stat().st_size
+
+
+@pytest.mark.parametrize("duplicate", ["source", "manifest"])
+def test_pair_completion_rejects_ambiguous_root_dependencies(
+    tmp_path: Path, duplicate: str
+) -> None:
+    fixture = _build_graph(tmp_path)
+    other_cfg = make_authenticated_v3_config(tmp_path, name="other", root_seed=22)
+    pair = RootPairRunContext.from_root_contexts(
+        (fixture.context, SeedRunContext.from_config(other_cfg)), pair_root=tmp_path
+    )
+    cfg = pair.config
+    stage = "root_stability"
+    output = cfg.root_discrepancies_path()
+    publish_v3_parquet(
+        cfg,
+        output,
+        pa.table({"value": [1]}),
+        stage_key=stage,
+        producer=stage,
+        operation="test",
+        sources=(fixture.source,),
+        manifests=(fixture.manifest,),
+    )
+    stamp = cfg.stage_dir(stage) / "root_stability.done.json"
+    write_v3_stage_completion(
+        stamp, cfg=cfg, stage_key=stage, inputs=[], outputs=[output], status="success"
+    )
+    assert resolve_stage_state(stamp, [], [output], cfg=cfg, stage=stage) is (
+        CompletionState.COMPLETE_VALID
+    )
+    original = fixture.source if duplicate == "source" else fixture.manifest
+    new_path = other_cfg.results_root / original.relative_to(fixture.context.results_root)
+    new_path.parent.mkdir(parents=True)
+    shutil.copyfile(original, new_path)
+    shutil.copyfile(sidecar_path(original), sidecar_path(new_path))
+    assert resolve_stage_state(stamp, [], [output], cfg=cfg, stage=stage) is (
+        CompletionState.COMPLETE_STALE
+    )
+
+
 def test_final_audit_rejects_changed_repository_code_identity(tmp_path: Path) -> None:
     fixture = _build_graph(tmp_path)
     changed = clean_test_code_identity(commit="b" * 40)

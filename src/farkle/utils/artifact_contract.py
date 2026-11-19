@@ -108,6 +108,25 @@ def read_json_file_with_retry(path: Path | str) -> Any:
     """Read JSON while tolerating transient access and non-atomic remote views."""
 
     source = Path(path)
+    return _read_json_with_retry(source, lambda: json.loads(source.read_text(encoding="utf-8")))
+
+
+def read_json_file_with_sha256(path: Path) -> tuple[Any, str]:
+    """Parse JSON and fingerprint the exact bytes used for parsing."""
+
+    from farkle.utils.authentication_telemetry import record_authentication_hash
+
+    def read() -> tuple[Any, str]:
+        contents = path.read_bytes()
+        payload = json.loads(contents.decode("utf-8"))
+        digest = hashlib.sha256(contents).hexdigest()
+        record_authentication_hash(path, len(contents))
+        return payload, digest
+
+    return _read_json_with_retry(path, read)
+
+
+def _read_json_with_retry(source: Path, read: Callable[[], _T]) -> _T:
     from farkle.utils.authentication_telemetry import record_authentication_open
 
     record_authentication_open(source)
@@ -115,7 +134,7 @@ def read_json_file_with_retry(path: Path | str) -> Any:
     json_view_attempt = 0
     while True:
         try:
-            return json.loads(source.read_text(encoding="utf-8"))
+            return read()
         except json.JSONDecodeError:
             if json_view_attempt == len(_JSON_VIEW_RETRY_DELAYS):
                 raise
