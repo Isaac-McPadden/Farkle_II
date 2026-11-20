@@ -14,7 +14,7 @@ from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 
 
-def publish_task7_reporting_fixture(cfg: AppConfig) -> None:
+def publish_task7_reporting_fixture(cfg: AppConfig, *, include_authorization: bool = True) -> None:
     """Publish labeled tiny deterministic products; this is not a producer oracle."""
 
     def publish(path, table, operation, k=None):
@@ -176,4 +176,4 @@ def publish_task7_reporting_fixture(cfg: AppConfig) -> None:
 
     from tests.helpers.task8_fixture import publish_task8_reporting_fixture
 
-    publish_task8_reporting_fixture(cfg)
+    publish_task8_reporting_fixture(cfg, include_authorization=include_authorization)

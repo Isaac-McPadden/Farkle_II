@@ -116,7 +116,8 @@ def _cfg(root: Path) -> AppConfig:
     for seed in (11, 22):
         root_cfg = prepare_seed_config(base, seed=seed, base_results_dir=base_results_dir(base))
         _publish_rng_inputs(root_cfg)
-        publish_task7_reporting_fixture(root_cfg)
+        # The pair executes its own frozen plan and publishes its authorization.
+        publish_task7_reporting_fixture(root_cfg, include_authorization=False)
     pair_root = root / "results_seed_pair_11_22"
     return RunContextConfig.from_base(
         base,

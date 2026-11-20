@@ -815,12 +815,14 @@ def test_partial_row_block_rebuilds_its_metric_shard(
     assert runner.simulation_is_complete(cfg, 2)
 
 
-def test_out_of_order_partial_coverage_resumes_with_different_workers(
+def test_out_of_order_partial_coverage_resumes_with_different_resources(
     aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, strategies = aggregate_run
     cfg.sim.metric_chunk_dir = None
     cfg.batching.target_batches = 4
+    cfg.resources.logical_cpu_budget = 1
+    cfg.resources.scheduler_memory_budget_mb = 512
     assign_config_sha(cfg)
     tournament = runner.tournament_mod
     process_map = tournament.parallel.process_map
@@ -851,6 +853,9 @@ def test_out_of_order_partial_coverage_resumes_with_different_workers(
 
     monkeypatch.setattr(tournament.parallel, "process_map", observe)
     cfg.sim.n_jobs = 2
+    cfg.resources.logical_cpu_budget = 2
+    cfg.resources.scheduler_memory_budget_mb = 768
+    assign_config_sha(cfg)
     runner.run_single_n(cfg, 2, strategies=strategies)
     assert submitted == [0, 1, 2]
     assert workers == [2]

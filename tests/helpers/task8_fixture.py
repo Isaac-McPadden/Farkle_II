@@ -16,10 +16,11 @@ from farkle.utils.authenticated_contract import derive_canonical_location
 from farkle.utils.release_identity import _stage_key_for_path
 
 
-def publish_task8_reporting_fixture(cfg: AppConfig) -> None:
+def publish_task8_reporting_fixture(cfg: AppConfig, *, include_authorization: bool = True) -> None:
     """Supply missing inputs for structural tests only, never a simulated run."""
+    authorization = cfg.h2h_cap_authorization_path()
     for path in guide_sources(cfg, (cfg.sim.seed,)):
-        if path.exists():
+        if (path == authorization and not include_authorization) or path.exists():
             continue
         k = (
             int(path.parent.name[:-1])
