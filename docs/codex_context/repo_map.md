@@ -44,6 +44,12 @@ retained benchmark evidence. Current H2H storage is per block.
 
 - Scopes/path APIs: `ArtifactScope` and `AppConfig` in `config.py`.
 - Artifact compatibility: `utils/artifact_contract.py`.
+- Phase 4A scientific dependencies live in `utils/scientific_dependencies.py`.
+  Its root, pair and partition definitions use the scoped stage registry.
+  `utils/scientific_identity.py` compares proposed fingerprints on a stable
+  checkout with complete upstream and numerical build evidence. Publication,
+  Git compatibility, H2H authorization and release auditing keep their existing
+  decision paths.
 - Lifecycle/freshness: `utils/stage_completion.py`.
 - Fixed protocol ownership: `protocols.py`; public schema/retired-key migration: `config.py`.
 - RNG implementation: `utils/random.py` and `docs/rng_contract.md`.

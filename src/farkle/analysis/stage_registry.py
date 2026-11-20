@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Literal, Mapping
 
 from farkle.config import AppConfig
 
@@ -13,6 +13,7 @@ __all__ = [
     "StageLayout",
     "StagePlacement",
     "resolve_stage_definition",
+    "resolve_scoped_stage_definition",
     "resolve_root_pair_stage_layout",
     "resolve_stage_layout",
 ]
@@ -456,3 +457,15 @@ def resolve_stage_definition(key: str) -> StageDefinition:
         return _DEFINITION_LOOKUP[key]
     except KeyError as exc:
         raise KeyError(f"Unknown stage key {key!r}") from exc
+
+
+def resolve_scoped_stage_definition(scope: Literal["root", "pair"], key: str) -> StageDefinition:
+    """Resolve ownership without the legacy unqualified lookup's pair precedence."""
+
+    if scope == "root" and key == "simulation":
+        return _DEFINITION_LOOKUP[key]
+    registries = {"root": _REGISTRY, "pair": _ROOT_PAIR_REGISTRY}
+    for definition in registries[scope]:
+        if definition.key == key:
+            return definition
+    raise KeyError(f"Unknown {scope} stage {key!r}")

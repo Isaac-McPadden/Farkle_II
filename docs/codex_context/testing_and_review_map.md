@@ -12,6 +12,7 @@ timings are in [development history](../development_history.md).
 | Topology/publication | `unit/utils/test_parallel_files.py`, `unit/orchestration/test_seed_workflows.py`, `unit/simulation/test_simulation_publication_v3.py` |
 | Rows/turns/scoring | `unit/game/test_engine*.py`, `test_scoring*.py`; `unit/analysis/test_all_player_metrics.py` |
 | Authentication/recovery | `unit/utils/test_artifact_contract.py`, `test_partitioned_stage.py`, `test_authenticated_graph.py`; `unit/analysis/test_release_audit.py` |
+| Proposed scientific compatibility | `unit/utils/test_scientific_identity.py` exercises scoped dependencies, build and source changes, and unclassified evidence on small fixtures. |
 | Outcomes/precision | `unit/analysis/test_outcome_distributions.py`, `test_outcome_publication.py`, `test_outcome_precision.py` |
 | RNG preflight/monitoring | `unit/analysis/test_batch_monitor.py`, `test_rng_monitor.py`; the raw integration oracle exercises full preflight |
 | Performance/behavior/models | `unit/analysis/test_performance.py`, `test_seat_analysis.py`, `test_seat_behavior.py`, `test_parameter_responses.py`, `test_run_trueskill*.py`, `test_hgb_feat.py` |
