@@ -1082,6 +1082,7 @@ def _validate_resume_outputs(
     )
     payload: dict[str, Any] | None = None
     checkpoint_error: Exception | None = None
+    checkpoint_sources: set[str] = set()
     if ckpt_path.exists():
         try:
             candidate = tournament_mod._read_checkpoint(
@@ -1092,6 +1093,7 @@ def _validate_resume_outputs(
                     else None
                 ),
                 validate_sources=require_authenticated_checkpoint,
+                source_identities=checkpoint_sources,
             )
             meta = candidate.get("meta")
             if not isinstance(meta, Mapping):
@@ -1137,15 +1139,17 @@ def _validate_resume_outputs(
             stage_key="simulation",
             field_paths=_stage_field_paths(cfg, "simulation"),
         )
-        template = _simulation_output_sidecar(
-            cfg,
-            ckpt_path,
-            n_players=n_players,
-            operation="publish_simulation_checkpoint",
-            sources=[root_manifest_path, ckpt_path.parent / "simulation_workload_plan.json"],
-        )
-        inputs = capture_v3_inputs(template)
-        source_identities = {item.sha256 for item in inputs.sources}
+        if payload is not None and checkpoint_sources:
+            source_identities = checkpoint_sources
+        else:
+            template = _simulation_output_sidecar(
+                cfg,
+                ckpt_path,
+                n_players=n_players,
+                operation="publish_simulation_checkpoint",
+                sources=[root_manifest_path, ckpt_path.parent / "simulation_workload_plan.json"],
+            )
+            source_identities = {item.sha256 for item in capture_v3_inputs(template).sources}
 
         def check(path: Path, record: Mapping[str, Any], metadata: AuthenticatedSidecar) -> None:
             shard = tournament_mod._resolve_manifest_record_path(path, record)
@@ -1154,13 +1158,20 @@ def _validate_resume_outputs(
                 stage.stage_config.sha256 != stage_config.sha256
                 or (cfg._code_identity is not None and stage.code != cfg._code_identity)
                 or {item.sha256 for item in metadata.source_artifacts} != source_identities
-                or sha256_file(shard) != record["data_sha256"]
+                or (checkpoint_error is not None and sha256_file(shard) != record["data_sha256"])
             ):
                 raise ValueError(f"simulation shard recovery identity mismatch: {shard}")
 
         return check
 
-    verify_replay_shard = require_replay_context() if checkpoint_error is not None else None
+    checkpoint_meta = payload.get("meta", {}) if payload is not None else {}
+    verify_replay_shard = (
+        require_replay_context()
+        if checkpoint_error is not None
+        or "partial_aggregate" in checkpoint_meta
+        or (require_authenticated_checkpoint and has_row_manifest and metric_chunk_dir is not None)
+        else None
+    )
 
     def require_manifest_seal(path: Path) -> None:
         if require_authenticated_checkpoint and sidecar_path(path).is_file():
@@ -1187,12 +1198,18 @@ def _validate_resume_outputs(
             }
             expected_seeds = set(expected_seed_by_index.values())
             seen_indices: set[int] = set()
+            seen_paths: set[Path] = set()
             duplicates = 0
             unexpected = 0
             coordinate_errors = 0
             all_sealed = True
             for record in iter_manifest(manifest_path):
                 record_path = manifest_path.parent / str(record.get("path", ""))
+                if require_authenticated_checkpoint:
+                    resolved = record_path.resolve()
+                    if resolved in seen_paths:
+                        raise ValueError(f"Duplicate shard path in {manifest_path}: {record_path}")
+                    seen_paths.add(resolved)
                 if is_v3_config(cfg) and (
                     "data_sha256" in record or sidecar_path(record_path).is_file()
                 ):
@@ -1248,10 +1265,18 @@ def _validate_resume_outputs(
             coordinate_errors = 0
             seen_batches: set[int] = set()
             seen_shuffle_indices: set[int] = set()
+            seen_paths = set()
             duplicates = 0
             all_sealed = True
             for record in iter_manifest(metrics_manifest):
                 record_path = metrics_manifest.parent / str(record.get("path", ""))
+                if require_authenticated_checkpoint:
+                    resolved = record_path.resolve()
+                    if resolved in seen_paths:
+                        raise ValueError(
+                            f"Duplicate shard path in {metrics_manifest}: {record_path}"
+                        )
+                    seen_paths.add(resolved)
                 if is_v3_config(cfg) and (
                     "data_sha256" in record or sidecar_path(record_path).is_file()
                 ):
@@ -1316,6 +1341,7 @@ def _validate_resume_outputs(
                     or record.get("game_profile_sha256") != cfg._game_profile_sha256
                     or process_block_index != batch_id + 1
                     or not shuffle_indices
+                    or len(set(shuffle_indices)) != len(shuffle_indices)
                     or shuffle_indices != sorted(shuffle_indices)
                     or start != shuffle_indices[0]
                     or end != shuffle_indices[-1]

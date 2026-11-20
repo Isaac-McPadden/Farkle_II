@@ -130,8 +130,17 @@ deterministic shuffle blocks. The certificate binds the exact shard inventory
 and requires integer metric totals within the exact binary64 range so block
 completion order cannot change the sums. On recovery the runner verifies the
 checkpoint and shard bytes and skips decoding the Parquet rows when the
-certificate matches. Periodic and legacy checkpoints use the existing replay
-path on shard-backed runs.
+certificate matches.
+
+Periodic checkpoints can also bind the shard records already represented in
+their saved aggregate. On resume, the runner authenticates those records and
+reduces the durable remainder from verified bytes. A missing append-manifest
+record can be restored from the checkpoint after its shard and sidecar match
+the saved digests. A lost contribution invalidates the indivisible aggregate
+and requires replay from the remaining inventory. When row shards exist for
+a block whose metric shard was never published, the runner reconstructs that
+block with the original shuffle grouping. Legacy checkpoints and arithmetic
+outside the exact range use conservative replay.
 
 `Pipeline progress summary` records completed work for a simulation or an
 analysis partition phase. The JSON fields after ` | ` identify its `stage` and

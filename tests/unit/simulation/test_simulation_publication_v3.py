@@ -572,8 +572,8 @@ def test_unusable_aggregate_checkpoint_replays_existing_rows(
     tournament = runner.tournament_mod
     replay = tournament._load_row_manifest_aggregates
 
-    def count_replay(path: Path) -> Any:
-        aggregate = replay(path)
+    def count_replay(path: Path, **kwargs: Any) -> Any:
+        aggregate = replay(path, **kwargs)
         replayed.append(aggregate[0].games_attempted)
         return aggregate
 
@@ -587,7 +587,7 @@ def test_unusable_aggregate_checkpoint_replays_existing_rows(
     assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
 
 
-def test_periodic_checkpoint_cannot_certify_unreduced_coverage(
+def test_periodic_checkpoint_contains_its_independently_reduced_coverage(
     aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, strategies = aggregate_run
@@ -606,12 +606,17 @@ def test_periodic_checkpoint_cannot_certify_unreduced_coverage(
         range(payload["meta"]["num_shuffles"])
     )
     assert "complete_aggregate" not in payload["meta"]
+    assert (
+        payload["meta"]["partial_aggregate"]["shuffle_indices"]
+        == payload["meta"]["completed_shuffle_indices"]
+    )
+    assert payload["metric_sums"]["winning_score"]
     assert not runner.simulation_done_path(cfg, 2).exists()
     assert (
         runner.run_single_n(cfg, 2, strategies=strategies)
         == payload["outcome_counts"]["games_attempted"]
     )
-    assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
+    assert "complete_aggregate" in pickle.loads(checkpoint.read_bytes())["meta"]
 
 
 def test_interrupted_final_checkpoint_publication_requires_replay(
@@ -644,3 +649,253 @@ def test_interrupted_final_checkpoint_publication_requires_replay(
     monkeypatch.setattr(tournament, "_play_one_shuffle", unexpected)
     runner.run_single_n(cfg, 2, strategies=strategies)
     assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
+
+
+@pytest.mark.parametrize(
+    ("storage", "incompatible"),
+    [("rows", False), ("chunks", False), ("both", False), ("rows", True)],
+)
+def test_partial_aggregate_reduces_only_the_durable_remainder(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    storage: str,
+    incompatible: bool,
+) -> None:
+    cfg, strategies = aggregate_run
+    if storage == "rows":
+        cfg.sim.metric_chunk_dir = None
+    if storage == "chunks":
+        cfg.sim.row_dir = None
+    cfg.batching.target_batches = 4
+    assign_config_sha(cfg)
+    tournament = runner.tournament_mod
+    checkpoint = cfg.n_dir(2) / "2p_checkpoint.pkl"
+    saved = {}
+    save = tournament._save_checkpoint
+
+    def capture(*args: Any, **kwargs: Any) -> None:
+        save(*args, **kwargs)
+        meta = kwargs["meta"]
+        if meta.get("completed_shuffle_indices") == [0, 1]:
+            assert meta["partial_aggregate"]["shuffle_indices"] == [0, 1]
+            saved.update(
+                {path: path.read_bytes() for path in (checkpoint, sidecar_path(checkpoint))}
+            )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tournament, "_save_checkpoint", capture)
+        runner.run_single_n(cfg, 2, strategies=strategies)
+    original = pickle.loads(checkpoint.read_bytes())
+    summaries = {path: path.read_bytes() for path in cfg.n_dir(2).glob("*.parquet")}
+    for path, contents in saved.items():
+        path.write_bytes(contents)
+    if incompatible:
+        payload = pickle.loads(checkpoint.read_bytes())
+        payload["meta"]["partial_aggregate"]["version"] = 999
+        sidecar = runner._simulation_output_sidecar(
+            cfg,
+            checkpoint,
+            n_players=2,
+            operation="publish_simulation_checkpoint",
+            sources=[
+                cfg.strategy_manifest_root_path(),
+                cfg.n_dir(2) / "simulation_workload_plan.json",
+            ],
+        )
+
+        def write(staged: Path) -> None:
+            staged.write_bytes(pickle.dumps(payload))
+
+        write_artifact_with_sidecar_atomic(checkpoint, sidecar, write)
+    runner.simulation_done_path(cfg, 2).unlink()
+    reducer_name = (
+        "_load_metric_chunk_aggregates" if storage == "chunks" else "_load_row_manifest_aggregates"
+    )
+    replay = getattr(tournament, reducer_name)
+    observed: list[int] = []
+
+    def observe(path: Path, *, records: list[dict[str, Any]] | None = None, **kwargs: Any) -> Any:
+        assert (records is None) == incompatible
+        if records is None:
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+        index = "process_block_index" if storage == "chunks" else "shuffle_index"
+        observed.extend(item[index] for item in records)
+        return replay(path, records=records, **kwargs)
+
+    def no_game(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("durable shuffle was simulated again")
+
+    monkeypatch.setattr(tournament, reducer_name, observe)
+    monkeypatch.setattr(tournament, "_play_one_shuffle", no_game)
+    cfg.sim.n_jobs = 2
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    assert observed == ([0, 1, 2, 3] if incompatible else [3, 4] if storage == "chunks" else [2, 3])
+    restored = pickle.loads(checkpoint.read_bytes())
+    for key in ("win_totals", "outcome_counts", "metric_sums", "metric_square_sums"):
+        assert restored[key] == original[key]
+    assert {path: path.read_bytes() for path in summaries} == summaries
+    assert ("complete_aggregate" in restored["meta"]) is (not incompatible)
+
+
+@pytest.mark.parametrize("lost_shard", [False, True])
+def test_checkpoint_ahead_of_append_manifest(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    lost_shard: bool,
+) -> None:
+    cfg, strategies = aggregate_run
+    cfg.sim.metric_chunk_dir = None
+    cfg.batching.target_batches = 3
+    assign_config_sha(cfg)
+    tournament = runner.tournament_mod
+    save = tournament._save_checkpoint
+    play = tournament._play_one_shuffle
+
+    def stop(*args: Any, **kwargs: Any) -> None:
+        save(*args, **kwargs)
+        if kwargs["meta"]["partial_aggregate"]["shuffle_indices"] == [0, 1]:
+            raise InterruptedError("after incorporating two shuffles")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tournament, "_save_checkpoint", stop)
+        with pytest.raises(InterruptedError):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+    row_dir = cfg.simulation_row_dir(2)
+    assert row_dir is not None
+    (row_dir / "manifest.jsonl").unlink()
+    first = min(row_dir.glob("rows_*.parquet"))
+    if lost_shard:
+        first.unlink()
+        sidecar_path(first).unlink()
+    scheduled = []
+
+    def observe(task: Any, **kwargs: Any) -> Any:
+        scheduled.append(task.shuffle_index)
+        return play(task, **kwargs)
+
+    monkeypatch.setattr(tournament, "_play_one_shuffle", observe)
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    assert scheduled == ([0, 2] if lost_shard else [2])
+    assert runner.simulation_is_complete(cfg, 2)
+
+
+def test_partial_row_block_rebuilds_its_metric_shard(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, strategies = aggregate_run
+    cfg.batching.min_shuffles_per_batch = 2
+    assign_config_sha(cfg)
+    play = runner.tournament_mod._play_one_shuffle
+
+    def interrupt(task: Any, **kwargs: Any) -> Any:
+        if task.shuffle_index == 3:
+            raise InterruptedError("after the first row of a metric block")
+        return play(task, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.tournament_mod, "_play_one_shuffle", interrupt)
+        with pytest.raises(InterruptedError):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+    scheduled = []
+
+    def observe(task: Any, **kwargs: Any) -> Any:
+        scheduled.append(task.shuffle_index)
+        return play(task, **kwargs)
+
+    monkeypatch.setattr(runner.tournament_mod, "_play_one_shuffle", observe)
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    assert scheduled == [3]
+    metric_dir = runner._resolve_metric_chunk_dir(cfg, 2)
+    assert metric_dir is not None
+    records = [
+        json.loads(line)
+        for line in (metric_dir / "metrics_manifest.jsonl").read_text().splitlines()
+    ]
+    assert [record["shuffle_indices"] for record in records] == [[0, 1], [2, 3]]
+    assert runner.simulation_is_complete(cfg, 2)
+
+
+def test_out_of_order_partial_coverage_resumes_with_different_workers(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, strategies = aggregate_run
+    cfg.sim.metric_chunk_dir = None
+    cfg.batching.target_batches = 4
+    assign_config_sha(cfg)
+    tournament = runner.tournament_mod
+    process_map = tournament.parallel.process_map
+    save = tournament._save_checkpoint
+
+    def reversed_blocks(function: Any, items: Any, **kwargs: Any) -> Any:
+        return process_map(function, reversed(list(items)), **kwargs)
+
+    def stop(*args: Any, **kwargs: Any) -> None:
+        save(*args, **kwargs)
+        assert kwargs["meta"]["partial_aggregate"]["shuffle_indices"] == [3]
+        raise InterruptedError("after an out-of-order block")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tournament.parallel, "process_map", reversed_blocks)
+        patch.setattr(tournament, "_save_checkpoint", stop)
+        with pytest.raises(InterruptedError):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+
+    submitted = []
+    workers = []
+
+    def observe(function: Any, items: Any, **kwargs: Any) -> Any:
+        pending = list(items)
+        submitted.extend(task.shuffle_index for _, tasks in pending for task in tasks)
+        workers.append(kwargs["n_jobs"])
+        return process_map(function, pending, **kwargs)
+
+    monkeypatch.setattr(tournament.parallel, "process_map", observe)
+    cfg.sim.n_jobs = 2
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    assert submitted == [0, 1, 2]
+    assert workers == [2]
+    assert runner.simulation_is_complete(cfg, 2)
+
+
+@pytest.mark.parametrize("damage", ["duplicate", "overlap", "corrupt"])
+def test_partial_recovery_rejects_invalid_durable_evidence(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    cfg, strategies = aggregate_run
+    tournament = runner.tournament_mod
+    save = tournament._save_checkpoint
+
+    def stop(*args: Any, **kwargs: Any) -> None:
+        save(*args, **kwargs)
+        raise InterruptedError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tournament, "_save_checkpoint", stop)
+        with pytest.raises(InterruptedError):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+    row_dir = cfg.simulation_row_dir(2)
+    metric_dir = runner._resolve_metric_chunk_dir(cfg, 2)
+    assert row_dir is not None and metric_dir is not None
+    manifest = row_dir / "manifest.jsonl"
+    if damage == "duplicate":
+        with manifest.open("ab") as handle:
+            handle.write(manifest.read_bytes())
+        message = "Duplicate shard path"
+    elif damage == "overlap":
+        manifest = metric_dir / "metrics_manifest.jsonl"
+        record = json.loads(manifest.read_text())
+        record["shuffle_indices"] *= 2
+        record["shuffle_seeds"] *= 2
+        record["shuffle_count"] = 2
+        manifest.write_text(json.dumps(record) + "\n")
+        message = "Metrics manifest mismatch"
+    else:
+        row = next(row_dir.glob("rows_*.parquet"))
+        with row.open("r+b") as handle:
+            handle.write(b"FAIL")
+        message = "aggregate checkpoint shard authentication failed"
+    with pytest.raises(ValueError, match=message):
+        runner.run_single_n(cfg, 2, strategies=strategies)
+    assert not runner.simulation_done_path(cfg, 2).exists()

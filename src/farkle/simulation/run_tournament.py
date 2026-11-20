@@ -13,14 +13,17 @@ from __future__ import annotations
 import hashlib
 import logging
 import pickle
+import shutil
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import islice
 from os import getpid
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Sequence, Tuple, cast
+from tempfile import SpooledTemporaryFile
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 import pyarrow as pa
@@ -62,7 +65,7 @@ from farkle.utils.authentication_telemetry import (
     record_authentication_hash,
     record_authentication_open,
 )
-from farkle.utils.manifest import iter_manifest
+from farkle.utils.manifest import append_manifest_many, iter_manifest
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.streaming_loop import run_streaming_shard
@@ -543,6 +546,16 @@ def _run_chunk_metrics(
             },
         )
     for task in tasks:
+        if (
+            row_dir is not None
+            and row_sidecar is not None
+            and sidecar_path(
+                row_dir / f"rows_{task.root_seed}_{task.k}p_{task.shuffle_index:012d}.parquet"
+            ).is_file()
+        ):
+            raise ValueError(
+                f"sealed row shard has no scheduled manifest ownership: {task.shuffle_index}"
+            )
         wins, sums, sqs, rows = _play_one_shuffle(task, collect_rows=collect_rows)
         wins_total.absorb(wins)
         for label in METRIC_LABELS:
@@ -679,7 +692,11 @@ def _save_checkpoint(
 
 
 def _read_checkpoint(
-    path: Path, *, cfg: AppConfig | None = None, validate_sources: bool = False
+    path: Path,
+    *,
+    cfg: AppConfig | None = None,
+    validate_sources: bool = False,
+    source_identities: set[str] | None = None,
 ) -> dict[str, Any]:
     """Decode the same bytes authenticated by the producer sidecar."""
     if cfg is None:
@@ -726,6 +743,8 @@ def _read_checkpoint(
             )
         ):
             raise ArtifactMismatchError(f"checkpoint strategy or workload identity differs: {path}")
+        if source_identities is not None:
+            source_identities.update(source.sha256 for source in actual_sources.values())
     payload = pickle.loads(contents)
     if not isinstance(payload, dict):
         raise TypeError(f"checkpoint payload is not a mapping: {path}")
@@ -733,6 +752,7 @@ def _read_checkpoint(
 
 
 _COMPLETE_AGGREGATE_VERSION = 1
+_PARTIAL_AGGREGATE_VERSION = 1
 _AGGREGATE_REDUCTION = "game_order_then_shuffle_order_then_exact_block_addition"
 
 
@@ -786,29 +806,8 @@ def _complete_aggregate_coverage(
     metric_records: list[dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
     """Describe complete coverage only after the producer's full reduction."""
-    if (
-        (row_records is None and metric_records is None)
-        or win_totals.games_attempted != cfg.num_shuffles * cfg.games_per_shuffle
-        or len(win_totals.attempted_exposures) != cfg.n_strategies
-        or any(exposure != cfg.num_shuffles for exposure in win_totals.attempted_exposures.values())
-        or sums is None
-        or squares is None
-        or set(sums) != set(METRIC_LABELS)
-        or set(squares) != set(METRIC_LABELS)
-        or not _exact_metric_totals(sums)
-        or not _exact_metric_totals(squares)
-    ):
-        return None
-    winners = {strategy for strategy, wins in win_totals.items() if wins}
-    if any(
-        not winners.issubset(values)
-        or any(
-            strategy not in win_totals.attempted_exposures
-            or (strategy not in winners and value != 0)
-            for strategy, value in values.items()
-        )
-        for aggregate in (sums, squares)
-        for values in aggregate.values()
+    if (row_records is None and metric_records is None) or not _valid_exact_aggregate(
+        cfg, cfg.num_shuffles, win_totals, sums, squares
     ):
         return None
     try:
@@ -826,6 +825,38 @@ def _complete_aggregate_coverage(
         }
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _valid_exact_aggregate(
+    cfg: TournamentConfig,
+    shuffles: int,
+    win_totals: OutcomeCounter,
+    sums: Mapping[str, Mapping[int | str, float]] | None,
+    squares: Mapping[str, Mapping[int | str, float]] | None,
+) -> bool:
+    if (
+        win_totals.games_attempted != shuffles * cfg.games_per_shuffle
+        or len(win_totals.attempted_exposures) != cfg.n_strategies
+        or any(exposure != shuffles for exposure in win_totals.attempted_exposures.values())
+        or sums is None
+        or squares is None
+        or set(sums) != set(METRIC_LABELS)
+        or set(squares) != set(METRIC_LABELS)
+        or not _exact_metric_totals(sums)
+        or not _exact_metric_totals(squares)
+    ):
+        return False
+    winners = {strategy for strategy, wins in win_totals.items() if wins}
+    return not any(
+        not winners.issubset(values)
+        or any(
+            strategy not in win_totals.attempted_exposures
+            or (strategy not in winners and value != 0)
+            for strategy, value in values.items()
+        )
+        for aggregate in (sums, squares)
+        for values in aggregate.values()
+    )
 
 
 def _restore_complete_aggregate(
@@ -871,13 +902,234 @@ def _restore_complete_aggregate(
     for path, records in ((rows_path, rows), (metrics_path, metrics)):
         if path is not None and records is not None:
             for record in records:
-                shard = _resolve_manifest_record_path(path, record)
-                if (
-                    sha256_file(shard) != record["data_sha256"]
-                    or sha256_file(sidecar_path(shard)) != record["sidecar_sha256"]
-                ):
-                    raise ValueError(f"aggregate checkpoint shard authentication failed: {shard}")
+                _authenticate_aggregate_shard(path, record)
     return True
+
+
+def _authenticate_aggregate_shard(manifest: Path, record: Mapping[str, Any]) -> None:
+    shard = _resolve_manifest_record_path(manifest, record)
+    if (
+        sha256_file(shard) != record["data_sha256"]
+        or sha256_file(sidecar_path(shard)) != record["sidecar_sha256"]
+    ):
+        raise ValueError(f"aggregate checkpoint shard authentication failed: {shard}")
+
+
+def _stable_shard_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if key not in {"pid", "ts"}}
+
+
+def _shard_coordinates(
+    records: Iterable[dict[str, Any]], cfg: TournamentConfig, *, rows: bool
+) -> set[int]:
+    """Validate disjoint, complete reduction units within one inventory."""
+    coordinates: set[int] = set()
+    paths = set()
+    batch_size = cfg.deterministic_batch_size
+    for record in records:
+        if rows:
+            indices = [record["shuffle_index"]]
+            if record["rows"] != cfg.games_per_shuffle:
+                raise ValueError("row shard does not cover a full shuffle")
+        else:
+            start = (record["process_block_index"] - 1) * batch_size
+            indices = record["shuffle_indices"]
+            if not indices or indices != list(
+                range(start, min(start + batch_size, cfg.num_shuffles))
+            ):
+                raise ValueError("metric shard does not cover its full deterministic block")
+        if (
+            any(type(index) is not int or not 0 <= index < cfg.num_shuffles for index in indices)
+            or coordinates.intersection(indices)
+            or record["path"] in paths
+        ):
+            raise ValueError("aggregate shard inventories contain duplicate or invalid coordinates")
+        for field_name in ("data_sha256", "sidecar_sha256", "schema_fingerprint_sha256"):
+            digest = record[field_name]
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ValueError("aggregate coverage requires sealed shard records")
+        coordinates.update(indices)
+        paths.add(record["path"])
+    return coordinates
+
+
+def _partial_aggregate_receipt(
+    cfg: TournamentConfig,
+    *,
+    covered: set[int],
+    wins: OutcomeCounter,
+    sums: Mapping[str, Mapping[int | str, float]] | None,
+    squares: Mapping[str, Mapping[int | str, float]] | None,
+    rows: list[dict[str, Any]] | None,
+    metrics: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    if (
+        not covered
+        or (rows is None and metrics is None)
+        or not _valid_exact_aggregate(cfg, len(covered), wins, sums, squares)
+    ):
+        return None
+    try:
+        for records, row_backed in ((rows, True), (metrics, False)):
+            if records is not None and _shard_coordinates(records, cfg, rows=row_backed) != covered:
+                return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "version": _PARTIAL_AGGREGATE_VERSION,
+        "reduction": _AGGREGATE_REDUCTION,
+        "shuffle_indices": sorted(covered),
+        "rows": None if rows is None else [_stable_shard_record(record) for record in rows],
+        "metrics": (
+            None if metrics is None else [_stable_shard_record(record) for record in metrics]
+        ),
+    }
+
+
+@dataclass
+class _RecoveredAggregate:
+    wins: OutcomeCounter
+    sums: dict[str, dict[int | str, float]]
+    squares: dict[str, dict[int | str, float]]
+    rows: list[dict[str, Any]] | None
+    metrics: list[dict[str, Any]] | None
+
+
+def _restore_partial_aggregate(
+    payload: Mapping[str, Any],
+    *,
+    meta: Mapping[str, Any],
+    cfg: TournamentConfig,
+    rows_path: Path | None,
+    metrics_path: Path | None,
+    temp_dir: Path | None,
+) -> _RecoveredAggregate | None:
+    """Restore one indivisible aggregate and replay only its durable complement."""
+    stored = payload.get("meta", {})
+    if not isinstance(stored, Mapping) or any(
+        stored.get(key) != value for key, value in meta.items()
+    ):
+        return None
+    receipt = stored.get("partial_aggregate")
+    if not isinstance(receipt, dict):
+        return None
+    try:
+        covered = set(receipt["shuffle_indices"])
+        wins = _coerce_counter(payload["win_totals"], payload["outcome_counts"])
+        sums = _coerce_metric_sums(payload["metric_sums"])
+        squares = _coerce_metric_sums(payload["metric_square_sums"])
+        expected = _partial_aggregate_receipt(
+            cfg,
+            covered=covered,
+            wins=wins,
+            sums=payload["metric_sums"],
+            squares=payload["metric_square_sums"],
+            rows=receipt["rows"],
+            metrics=receipt["metrics"],
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    if expected != receipt or sums is None or squares is None:
+        return None
+    if (rows_path is None) != (receipt["rows"] is None) or (
+        (metrics_path is None) != (receipt["metrics"] is None)
+    ):
+        return None
+
+    current: dict[str, list[dict[str, Any]]] = {}
+    remainder: dict[str, list[dict[str, Any]]] = {}
+    repairs: list[tuple[Path, list[dict[str, Any]]]] = []
+    compatible = True
+    for name, path, key in (
+        ("rows", rows_path, "shuffle_index"),
+        ("metrics", metrics_path, "process_block_index"),
+    ):
+        if path is None:
+            continue
+        records = list(iter_manifest(path))
+        indexed = {item[key]: item for item in records}
+        additions = []
+        for saved in receipt[name]:
+            existing = indexed.get(saved[key])
+            if existing is not None:
+                compatible &= _stable_shard_record(existing) == saved
+            elif not sidecar_path(path).exists():
+                shard = _resolve_manifest_record_path(path, saved)
+                if shard.is_file():
+                    additions.append(saved)
+                else:
+                    compatible = False
+            else:
+                compatible = False
+        records.extend(additions)
+        # Authenticate every shard kept without decoding its data. The
+        # remainder is authenticated during replay.
+        _shard_coordinates(records, cfg, rows=name == "rows")
+        saved_units = {item[key] for item in receipt[name]}
+        for record in records:
+            if record[key] in saved_units or (rows_path is not None and name == "metrics"):
+                _authenticate_aggregate_shard(path, record)
+        if additions:
+            repairs.append((path, additions))
+        current[name] = records
+        remainder[name] = [item for item in records if item[key] not in saved_units]
+
+    for path, additions in repairs:
+        if sidecar_path(path).exists():
+            raise ValueError(f"refusing to repair an immutable simulation manifest: {path}")
+        with atomic_path(str(path), temp_dir=temp_dir) as temporary:
+            if path.is_file():
+                shutil.copyfile(path, temporary)
+                with Path(temporary).open("ab") as handle:
+                    handle.write(b"\n")
+            append_manifest_many(temporary, additions, add_timestamp=False)
+    if not compatible:
+        return None
+    if (
+        rows_path is not None
+        and metrics_path is not None
+        and not _shard_coordinates(current["metrics"], cfg, rows=False).issubset(
+            _shard_coordinates(current["rows"], cfg, rows=True)
+        )
+    ):
+        raise ValueError("durable metric blocks are missing their required row shards")
+
+    replayed: OutcomeCounter | None
+    if rows_path is not None:
+        pending = remainder["rows"]
+        replayed, extra_sums, extra_squares = _load_row_manifest_aggregates(
+            rows_path, records=pending, authenticate=True, temp_dir=temp_dir
+        )
+        durable = _shard_coordinates(current["rows"], cfg, rows=True)
+    else:
+        assert metrics_path is not None
+        pending = remainder["metrics"]
+        if pending:
+            replayed, extra_sums, extra_squares = _load_metric_chunk_aggregates(
+                metrics_path, records=pending, authenticate=True, temp_dir=temp_dir
+            )
+        else:
+            replayed = OutcomeCounter()
+            extra_sums, extra_squares = _empty_metric_aggregates()
+        durable = _shard_coordinates(current["metrics"], cfg, rows=False)
+    if replayed is None or not (
+        _exact_metric_totals(extra_sums) and _exact_metric_totals(extra_squares)
+    ):
+        return None
+    wins.absorb(replayed)
+    _reduce_metric_chunk_payloads({0: (extra_sums, extra_squares)}, sums, squares)
+    if not _valid_exact_aggregate(cfg, len(durable), wins, sums, squares):
+        return None
+    LOGGER.info(
+        "Restored partial authenticated simulation aggregate",
+        extra={
+            "stage": "simulation",
+            "checkpoint_shuffles": len(covered),
+            "additional_durable_shuffles": len(durable - covered),
+            "aggregate_rows_replayed": sum(item["rows"] for item in pending),
+        },
+    )
+    return _RecoveredAggregate(wins, sums, squares, current.get("rows"), current.get("metrics"))
 
 
 def _coerce_counter(raw: object, outcome_counts: Mapping[str, Any] | None = None) -> OutcomeCounter:
@@ -1046,8 +1298,48 @@ def _resolve_manifest_record_path(manifest_path: Path, record: Mapping[str, Any]
     return (manifest_path.parent / path).resolve()
 
 
+@contextmanager
+def _open_aggregate_shard(
+    path: Path, record: Mapping[str, Any], *, authenticate: bool, temp_dir: Path | None
+) -> Iterator[pq.ParquetFile]:
+    if not authenticate:
+        yield pq.ParquetFile(path)
+        return
+    # Decode the verified bytes even if the live file is replaced afterwards.
+    digest = hashlib.sha256()
+    size = 0
+    if temp_dir is not None:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+    with SpooledTemporaryFile(
+        max_size=1024 * 1024, mode="w+b", dir=str(temp_dir) if temp_dir is not None else None
+    ) as verified:
+        record_authentication_open(path)
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                size += len(chunk)
+                if size > record["byte_length"]:
+                    raise ValueError(
+                        f"aggregate checkpoint shard grew during authentication: {path}"
+                    )
+                digest.update(chunk)
+                verified.write(chunk)
+        record_authentication_hash(path, size)
+        if (
+            size != record["byte_length"]
+            or digest.hexdigest() != record["data_sha256"]
+            or sha256_file(sidecar_path(path)) != record["sidecar_sha256"]
+        ):
+            raise ValueError(f"aggregate checkpoint shard authentication failed: {path}")
+        verified.seek(0)
+        yield pq.ParquetFile(verified)
+
+
 def _load_row_manifest_aggregates(
     manifest_path: Path,
+    *,
+    records: Iterable[dict[str, Any]] | None = None,
+    authenticate: bool = False,
+    temp_dir: Path | None = None,
 ) -> Tuple[
     OutcomeCounter,
     Dict[str, Dict[int | str, float]],
@@ -1064,36 +1356,44 @@ def _load_row_manifest_aggregates(
     win_totals = OutcomeCounter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
 
-    for record in iter_manifest(manifest_path):
+    for record in iter_manifest(manifest_path) if records is None else records:
         row_path = _resolve_manifest_record_path(manifest_path, record)
         if not row_path.exists():
             raise FileNotFoundError(f"Missing row shard listed in manifest: {row_path}")
-        parquet_file = pq.ParquetFile(row_path)
-        for batch in parquet_file.iter_batches():
-            for row in batch.to_pylist():
-                status = win_totals.record_row(row, k=int(row["k"]), source=f"Row shard {row_path}")
-                if status is TerminationStatus.SAFETY_LIMIT:
-                    continue
-                winner = row.get("winner_seat")
-                if winner is None:
-                    raise ValueError(f"Row shard missing canonical winner_seat: {row_path}")
-                winner_name = cast(str, winner)
-                strategy = row.get(f"{winner_name}_strategy")
-                if strategy is None:
-                    raise ValueError(
-                        f"Row shard missing winner strategy for {winner_name!r}: {row_path}"
+        with _open_aggregate_shard(
+            row_path, record, authenticate=authenticate, temp_dir=temp_dir
+        ) as parquet_file:
+            for batch in parquet_file.iter_batches():
+                for row in batch.to_pylist():
+                    status = win_totals.record_row(
+                        row, k=int(row["k"]), source=f"Row shard {row_path}"
                     )
-                metrics = _extract_winner_metrics(row, winner_name)
-                win_totals[strategy] += 1
-                for label, value in zip(METRIC_LABELS, metrics, strict=True):
-                    metric_sums[label][strategy] += float(value)
-                    metric_sq_sums[label][strategy] += float(value) * float(value)
+                    if status is TerminationStatus.SAFETY_LIMIT:
+                        continue
+                    winner = row.get("winner_seat")
+                    if winner is None:
+                        raise ValueError(f"Row shard missing canonical winner_seat: {row_path}")
+                    winner_name = cast(str, winner)
+                    strategy = row.get(f"{winner_name}_strategy")
+                    if strategy is None:
+                        raise ValueError(
+                            f"Row shard missing winner strategy for {winner_name!r}: {row_path}"
+                        )
+                    metrics = _extract_winner_metrics(row, winner_name)
+                    win_totals[strategy] += 1
+                    for label, value in zip(METRIC_LABELS, metrics, strict=True):
+                        metric_sums[label][strategy] += float(value)
+                        metric_sq_sums[label][strategy] += float(value) * float(value)
 
     return win_totals, metric_sums, metric_sq_sums
 
 
 def _load_metric_chunk_aggregates(
     manifest_path: Path,
+    *,
+    records: Iterable[dict[str, Any]] | None = None,
+    authenticate: bool = False,
+    temp_dir: Path | None = None,
 ) -> Tuple[
     OutcomeCounter | None,
     Dict[str, Dict[int | str, float]],
@@ -1112,44 +1412,50 @@ def _load_metric_chunk_aggregates(
     wins_available = True
     outcomes_available = True
 
-    for record in iter_manifest(manifest_path):
+    for record in iter_manifest(manifest_path) if records is None else records:
         chunk_path = _resolve_manifest_record_path(manifest_path, record)
         if not chunk_path.exists():
             raise FileNotFoundError(f"Missing metric chunk listed in manifest: {chunk_path}")
-        parquet_file = pq.ParquetFile(chunk_path)
-        column_names = set(parquet_file.schema_arrow.names)
-        file_has_wins = "wins" in column_names
-        wins_available = wins_available and file_has_wins
-        columns = ["metric", "strategy", "sum", "square_sum"]
-        if file_has_wins:
-            columns.append("wins")
-        outcome_columns = [
-            "attempted_exposures",
-            "completed_exposures",
-            "safety_limit_exposures",
-        ]
-        file_has_outcomes = set(outcome_columns).issubset(column_names)
-        outcomes_available = outcomes_available and file_has_outcomes
-        if file_has_outcomes:
-            columns.extend(outcome_columns)
-        for batch in parquet_file.iter_batches(columns=columns):
-            for row in batch.to_pylist():
-                label = row["metric"]
-                strategy = row["strategy"]
-                metric_sums[label][strategy] += float(row["sum"])
-                metric_sq_sums[label][strategy] += float(row["square_sum"])
-                if wins_available and file_has_wins and label == METRIC_LABELS[0]:
-                    win_totals[strategy] += int(row["wins"])
-                    if file_has_outcomes:
-                        win_totals.attempted_exposures[strategy] += int(row["attempted_exposures"])
-                        win_totals.completed_exposures[strategy] += int(row["completed_exposures"])
-                        win_totals.safety_limit_exposures[strategy] += int(
-                            row["safety_limit_exposures"]
-                        )
-                    else:
-                        wins = int(row["wins"])
-                        win_totals.attempted_exposures[strategy] += wins
-                        win_totals.completed_exposures[strategy] += wins
+        with _open_aggregate_shard(
+            chunk_path, record, authenticate=authenticate, temp_dir=temp_dir
+        ) as parquet_file:
+            column_names = set(parquet_file.schema_arrow.names)
+            file_has_wins = "wins" in column_names
+            wins_available = wins_available and file_has_wins
+            columns = ["metric", "strategy", "sum", "square_sum"]
+            if file_has_wins:
+                columns.append("wins")
+            outcome_columns = [
+                "attempted_exposures",
+                "completed_exposures",
+                "safety_limit_exposures",
+            ]
+            file_has_outcomes = set(outcome_columns).issubset(column_names)
+            outcomes_available = outcomes_available and file_has_outcomes
+            if file_has_outcomes:
+                columns.extend(outcome_columns)
+            for batch in parquet_file.iter_batches(columns=columns):
+                for row in batch.to_pylist():
+                    label = row["metric"]
+                    strategy = row["strategy"]
+                    metric_sums[label][strategy] += float(row["sum"])
+                    metric_sq_sums[label][strategy] += float(row["square_sum"])
+                    if wins_available and file_has_wins and label == METRIC_LABELS[0]:
+                        win_totals[strategy] += int(row["wins"])
+                        if file_has_outcomes:
+                            win_totals.attempted_exposures[strategy] += int(
+                                row["attempted_exposures"]
+                            )
+                            win_totals.completed_exposures[strategy] += int(
+                                row["completed_exposures"]
+                            )
+                            win_totals.safety_limit_exposures[strategy] += int(
+                                row["safety_limit_exposures"]
+                            )
+                        else:
+                            wins = int(row["wins"])
+                            win_totals.attempted_exposures[strategy] += wins
+                            win_totals.completed_exposures[strategy] += wins
 
     if wins_available:
         win_totals.games_completed = int(sum(win_totals.values()))
@@ -1271,6 +1577,136 @@ def _reduce_metric_chunk_payloads(
                 metric_sq_sums[label][strategy] += value
 
 
+def _publish_metric_block(
+    directory: Path,
+    *,
+    chunk_index: int,
+    block_tasks: Sequence[ShuffleTask],
+    global_seed: int,
+    wins: Counter[int | str],
+    sums: dict[str, dict[int | str, float]],
+    sqs: dict[str, dict[int | str, float]],
+    sidecar: ArtifactSidecar | None,
+    oracle_game_profile: GameProfile | None,
+) -> dict[str, Any] | None:
+    """Publish the metric shard for one deterministic process block."""
+    chunk_path = directory / f"metrics_{chunk_index:06d}.parquet"
+    if sidecar is not None and sidecar_path(chunk_path).is_file():
+        raise ValueError(f"sealed metric shard has no scheduled manifest ownership: {chunk_path}")
+    rows = [
+        {
+            "metric": label,
+            "strategy": strat,
+            "sum": val,
+            "square_sum": sqs[label][strat],
+            "wins": int(wins.get(strat, 0)),
+        }
+        for label in METRIC_LABELS
+        for strat in sorted(
+            set(sums[label])
+            | set(wins.attempted_exposures if isinstance(wins, OutcomeCounter) else wins),
+            key=str,
+        )
+        for val in [sums[label].get(strat, 0.0)]
+    ]
+    for row in rows:
+        strategy = cast(int | str, row["strategy"])
+        row["attempted_exposures"] = int(
+            wins.attempted_exposures.get(strategy, 0)
+            if isinstance(wins, OutcomeCounter)
+            else wins.get(strategy, 0)
+        )
+        row["completed_exposures"] = int(
+            wins.completed_exposures.get(strategy, 0)
+            if isinstance(wins, OutcomeCounter)
+            else wins.get(strategy, 0)
+        )
+        row["safety_limit_exposures"] = int(
+            wins.safety_limit_exposures.get(strategy, 0) if isinstance(wins, OutcomeCounter) else 0
+        )
+    tbl = pa.Table.from_pylist(rows)
+    manifest_file = directory / "metrics_manifest.jsonl"
+    return run_streaming_shard(
+        out_path=str(chunk_path),
+        manifest_path=str(manifest_file),
+        schema=tbl.schema,
+        batch_iter=(tbl,),
+        manifest_extra={
+            "path": chunk_path.name,
+            "chunk_index": chunk_index,
+            "process_block_index": chunk_index,
+            "root_seed": global_seed,
+            "n_players": block_tasks[0].k,
+            "deterministic_batch_id": block_tasks[0].deterministic_batch_id,
+            "shuffle_index_start": block_tasks[0].shuffle_index,
+            "shuffle_index_end": block_tasks[-1].shuffle_index,
+            "shuffle_count": len(block_tasks),
+            "shuffle_indices": [task.shuffle_index for task in block_tasks],
+            "shuffle_seeds": [task.shuffle_seed for task in block_tasks],
+            "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+            "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
+            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+            **(
+                {"game_profile_sha256": oracle_game_profile.sha256}
+                if oracle_game_profile is not None
+                else {}
+            ),
+        },
+        sidecar=sidecar,
+    )
+
+
+def _rebuild_metric_block(
+    cfg: TournamentConfig,
+    *,
+    global_seed: int,
+    chunk_index: int,
+    rows_path: Path,
+    row_records: list[dict[str, Any]],
+    metric_dir: Path,
+    sidecar: ArtifactSidecar,
+    oracle_game_profile: GameProfile | None,
+) -> dict[str, Any] | None:
+    """Reconstruct one missing metric shard in the original shuffle grouping."""
+    start = (chunk_index - 1) * cfg.deterministic_batch_size
+    expected = set(range(start, min(start + cfg.deterministic_batch_size, cfg.num_shuffles)))
+    if _shard_coordinates(row_records, cfg, rows=True) != expected:
+        raise ValueError(f"cannot reconstruct incomplete metric block {chunk_index}")
+    wins = OutcomeCounter()
+    sums, squares = _empty_metric_aggregates()
+    tasks = []
+    for record in sorted(row_records, key=lambda item: item["shuffle_index"]):
+        shuffle_wins, shuffle_sums, shuffle_squares = _load_row_manifest_aggregates(
+            rows_path,
+            records=(record,),
+            authenticate=True,
+            temp_dir=sidecar._cfg.io.temp_dir if sidecar._cfg is not None else None,
+        )
+        wins.absorb(shuffle_wins)
+        _reduce_metric_chunk_payloads({0: (shuffle_sums, shuffle_squares)}, sums, squares)
+        tasks.append(
+            ShuffleTask(
+                root_seed=global_seed,
+                k=cfg.n_players,
+                shuffle_index=record["shuffle_index"],
+                shuffle_seed=record["shuffle_seed"],
+                deterministic_batch_id=chunk_index - 1,
+            )
+        )
+    return _publish_metric_block(
+        metric_dir,
+        chunk_index=chunk_index,
+        block_tasks=tasks,
+        global_seed=global_seed,
+        wins=wins,
+        sums=sums,
+        sqs=squares,
+        sidecar=sidecar,
+        oracle_game_profile=oracle_game_profile,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -1387,8 +1823,9 @@ def run_tournament(
         checkpoint_meta["game_profile_sha256"] = oracle_game_profile.sha256
     if checkpoint_metadata:
         checkpoint_meta.update(checkpoint_metadata)
-    # Only the final producer flush can attach authenticated aggregate coverage.
+    # Generate coverage receipts from the producer's reduced state.
     checkpoint_meta.pop("complete_aggregate", None)
+    checkpoint_meta.pop("partial_aggregate", None)
     if workload_plan is not None:
         checkpoint_meta.update(
             {
@@ -1539,6 +1976,18 @@ def run_tournament(
         )
         return payload
 
+    recovered = (
+        _restore_partial_aggregate(
+            payload,
+            meta=checkpoint_meta,
+            cfg=cfg,
+            rows_path=row_manifest_path,
+            metrics_path=metrics_manifest_path,
+            temp_dir=temp_dir,
+        )
+        if checkpoint_loader is not None and payload is not None
+        else None
+    )
     recover_from_shards = checkpoint_loader is not None and (
         (row_manifest_path is not None and row_manifest_path.is_file())
         or (metrics_manifest_path is not None and metrics_manifest_path.is_file())
@@ -1555,10 +2004,24 @@ def run_tournament(
     checkpoint_payload_meta = payload.get("meta", {}) if isinstance(payload, Mapping) else {}
     if not isinstance(checkpoint_payload_meta, Mapping):
         checkpoint_payload_meta = {}
-    if recover_from_shards and "complete_aggregate" in checkpoint_payload_meta:
+    authenticate_replay = False
+    if (
+        checkpoint_loader is not None
+        and (
+            "complete_aggregate" in checkpoint_payload_meta
+            or "partial_aggregate" in checkpoint_payload_meta
+        )
+        and (row_manifest_path is not None or metrics_manifest_path is not None)
+    ):
         # An aggregate outside the complete fast path cannot grant ownership
         # of coordinates that are absent from the durable manifests.
+        if recovered is None and "partial_aggregate" in checkpoint_payload_meta:
+            authenticate_replay = True
         checkpoint_payload_meta = {}
+        if recovered is None:
+            win_totals = OutcomeCounter()
+            games_completed = 0
+            metric_sums = metric_sq_sums = None
     completed_shuffle_indices = {
         int(value) for value in checkpoint_payload_meta.get("completed_shuffle_indices", [])
     }
@@ -1585,6 +2048,10 @@ def run_tournament(
     ):
         completed_chunk_indices |= _manifest_int_set(metrics_manifest_path, "process_block_index")
         completed_chunk_indices |= _manifest_int_set(metrics_manifest_path, "chunk_index")
+        if recovered is not None and row_manifest_path is None:
+            completed_shuffle_indices |= _shard_coordinates(
+                recovered.metrics or (), cfg, rows=False
+            )
         if completed_chunk_indices:
             total_chunks = (cfg.num_shuffles + shuffles_per_chunk - 1) // shuffles_per_chunk
             LOGGER.info(
@@ -1601,8 +2068,14 @@ def run_tournament(
     checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)
 
     recovered_metric_state = False
-    if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
-        win_totals, metric_sums, metric_sq_sums = _load_row_manifest_aggregates(row_manifest_path)
+    if recovered is not None:
+        win_totals, metric_sums, metric_sq_sums = recovered.wins, recovered.sums, recovered.squares
+        games_completed = win_totals.games_completed
+        recovered_metric_state = True
+    elif can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
+        win_totals, metric_sums, metric_sq_sums = _load_row_manifest_aggregates(
+            row_manifest_path, authenticate=authenticate_replay, temp_dir=temp_dir
+        )
         games_completed = win_totals.games_completed
         recovered_metric_state = collect_metrics or collect_rows
         LOGGER.info(
@@ -1620,7 +2093,7 @@ def run_tournament(
         and metrics_manifest_path.exists()
     ):
         recovered_wins, recovered_sums, recovered_sq_sums = _load_metric_chunk_aggregates(
-            metrics_manifest_path
+            metrics_manifest_path, authenticate=authenticate_replay, temp_dir=temp_dir
         )
         metric_sums = recovered_sums
         metric_sq_sums = recovered_sq_sums
@@ -1646,7 +2119,7 @@ def run_tournament(
             },
         )
 
-    record_coverage = (
+    record_coverage = recovered is not None or (
         checkpoint_loader is not None
         and checkpoint_sidecar is not None
         and not completed_shuffle_indices
@@ -1655,14 +2128,20 @@ def run_tournament(
         and payload is None
     )
     row_records: list[dict[str, Any]] | None = (
-        [] if record_coverage and row_sidecar is not None and collect_rows else None
+        recovered.rows
+        if recovered is not None
+        else ([] if record_coverage and row_sidecar is not None and collect_rows else None)
     )
     metric_records: list[dict[str, Any]] | None = (
-        []
-        if record_coverage
-        and metric_chunk_sidecar is not None
-        and (collect_metrics or collect_rows)
-        else None
+        recovered.metrics
+        if recovered is not None
+        else (
+            []
+            if record_coverage
+            and metric_chunk_sidecar is not None
+            and (collect_metrics or collect_rows)
+            else None
+        )
     )
     if metric_chunk_directory is None and (collect_metrics or collect_rows):
         if metric_sums is None:
@@ -1675,8 +2154,56 @@ def run_tournament(
         metric_sums = None
         metric_sq_sums = None
 
+    # Metric-chunk publication defers the ordinary final reduction. Keep a
+    # bounded running aggregate for certified periodic checkpoints only.
+    periodic_sums = periodic_squares = None
+    if record_coverage and metric_records is not None:
+        periodic_sums, periodic_squares = _empty_metric_aggregates()
+        if metric_sums is not None and metric_sq_sums is not None:
+            _reduce_metric_chunk_payloads(
+                {0: (metric_sums, metric_sq_sums)}, periodic_sums, periodic_squares
+            )
+
+    # Workers can publish the rows of a block before the parent receives its
+    # metrics. Repair just those blocks, without scheduling their durable games.
+    rows_for_metric_repair: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    if (
+        resume
+        and row_manifest_path is not None
+        and metric_chunk_directory is not None
+        and metric_chunk_sidecar is not None
+        and metrics_manifest_path is not None
+    ):
+        published_blocks = _manifest_int_set(metrics_manifest_path, "process_block_index")
+        for record in iter_manifest(row_manifest_path):
+            block = int(record["shuffle_index"]) // shuffles_per_chunk + 1
+            if block not in published_blocks:
+                rows_for_metric_repair[block].append(record)
+        for block, records in list(rows_for_metric_repair.items()):
+            start = (block - 1) * shuffles_per_chunk
+            if len(records) != min(shuffles_per_chunk, cfg.num_shuffles - start):
+                continue
+            rebuilt = _rebuild_metric_block(
+                cfg,
+                global_seed=global_seed,
+                chunk_index=block,
+                rows_path=row_manifest_path,
+                row_records=records,
+                metric_dir=metric_chunk_directory,
+                sidecar=metric_chunk_sidecar,
+                oracle_game_profile=oracle_game_profile,
+            )
+            if rebuilt is None:
+                raise ValueError(f"metric block {block} was not published")
+            if metric_records is not None:
+                metric_records.append(rebuilt)
+            completed_chunk_indices.add(block)
+            del rows_for_metric_repair[block]
+        checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)
+
     mp_context = parallel.resolve_mp_context(cfg.mp_start_method)
-    chunk_items = _iter_pending_chunk_items(
+    pending_items = partial(
+        _iter_pending_chunk_items,
         num_shuffles=cfg.num_shuffles,
         shuffles_per_chunk=shuffles_per_chunk,
         global_seed=global_seed,
@@ -1685,18 +2212,14 @@ def run_tournament(
         completed_shuffle_indices=completed_shuffle_indices,
         completed_chunk_indices=completed_chunk_indices,
     )
-    remaining_chunk_count = sum(
-        1
-        for _ in _iter_pending_chunk_items(
-            num_shuffles=cfg.num_shuffles,
-            shuffles_per_chunk=shuffles_per_chunk,
-            global_seed=global_seed,
-            k=cfg.n_players,
-            deterministic_batch_size=cfg.deterministic_batch_size,
-            completed_shuffle_indices=completed_shuffle_indices,
-            completed_chunk_indices=completed_chunk_indices,
-        )
-    )
+    remaining_chunk_count = 0
+    for block, _ in pending_items():
+        if metric_chunk_directory is not None and metric_chunk_sidecar is not None:
+            path = metric_chunk_directory / f"metrics_{block:06d}.parquet"
+            if sidecar_path(path).is_file():
+                raise ValueError(f"sealed metric shard has no scheduled manifest ownership: {path}")
+        remaining_chunk_count += 1
+    chunk_items = pending_items()
 
     resolved_n_jobs = parallel.normalize_n_jobs(n_jobs)
     if policy_metadata:
@@ -1754,9 +2277,8 @@ def run_tournament(
             Dict[str, Dict[int | str, float]],
         ],
     ] = {}
-    chunk_wrapper = partial(
-        _run_chunk_item, chunk_fn=chunk_fn, record_coverage=row_records is not None
-    )
+    capture_rows = row_records is not None or bool(rows_for_metric_repair)
+    chunk_wrapper = partial(_run_chunk_item, chunk_fn=chunk_fn, record_coverage=capture_rows)
     telemetry_started = time.monotonic()
     starting_games = win_totals.games_attempted
     starting_shuffles = len(completed_shuffle_indices)
@@ -1879,8 +2401,10 @@ def run_tournament(
             memory_guard=memory_guard,
             progress_callback=scheduler_progress,
         ):
-            if row_records is not None:
+            written_rows: list[dict[str, Any]] = []
+            if capture_rows:
                 result, written_rows = cast(tuple[object, list[dict[str, Any]]], result)
+            if row_records is not None:
                 row_records.extend(written_rows)
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
@@ -1903,77 +2427,31 @@ def run_tournament(
                 )
                 games_completed = win_totals.games_completed
                 if metric_chunk_directory is not None:
-                    chunk_path = metric_chunk_directory / f"metrics_{chunk_index:06d}.parquet"
-                    rows = [
-                        {
-                            "metric": label,
-                            "strategy": strat,
-                            "sum": val,
-                            "square_sum": sqs[label][strat],
-                            "wins": int(wins.get(strat, 0)),
-                        }
-                        for label in METRIC_LABELS
-                        for strat in sorted(
-                            set(sums[label])
-                            | set(
-                                wins.attempted_exposures
-                                if isinstance(wins, OutcomeCounter)
-                                else wins
-                            ),
-                            key=str,
+                    prior_rows = rows_for_metric_repair.pop(chunk_index, None)
+                    if prior_rows is not None:
+                        assert row_manifest_path is not None and metric_chunk_sidecar is not None
+                        metric_record = _rebuild_metric_block(
+                            cfg,
+                            global_seed=global_seed,
+                            chunk_index=chunk_index,
+                            rows_path=row_manifest_path,
+                            row_records=[*prior_rows, *written_rows],
+                            metric_dir=metric_chunk_directory,
+                            sidecar=metric_chunk_sidecar,
+                            oracle_game_profile=oracle_game_profile,
                         )
-                        for val in [sums[label].get(strat, 0.0)]
-                    ]
-                    for row in rows:
-                        strategy = cast(int | str, row["strategy"])
-                        row["attempted_exposures"] = int(
-                            wins.attempted_exposures.get(strategy, 0)
-                            if isinstance(wins, OutcomeCounter)
-                            else wins.get(strategy, 0)
+                    else:
+                        metric_record = _publish_metric_block(
+                            metric_chunk_directory,
+                            chunk_index=chunk_index,
+                            block_tasks=block_tasks,
+                            global_seed=global_seed,
+                            wins=wins,
+                            sums=sums,
+                            sqs=sqs,
+                            sidecar=metric_chunk_sidecar,
+                            oracle_game_profile=oracle_game_profile,
                         )
-                        row["completed_exposures"] = int(
-                            wins.completed_exposures.get(strategy, 0)
-                            if isinstance(wins, OutcomeCounter)
-                            else wins.get(strategy, 0)
-                        )
-                        row["safety_limit_exposures"] = int(
-                            wins.safety_limit_exposures.get(strategy, 0)
-                            if isinstance(wins, OutcomeCounter)
-                            else 0
-                        )
-                    tbl = pa.Table.from_pylist(rows)
-                    manifest_file = metrics_manifest_path or (
-                        metric_chunk_directory / "metrics_manifest.jsonl"
-                    )
-                    metric_record = run_streaming_shard(
-                        out_path=str(chunk_path),
-                        manifest_path=str(manifest_file),
-                        schema=tbl.schema,
-                        batch_iter=(tbl,),
-                        manifest_extra={
-                            "path": chunk_path.name,
-                            "chunk_index": chunk_index,
-                            "process_block_index": chunk_index,
-                            "root_seed": global_seed,
-                            "n_players": cfg.n_players,
-                            "deterministic_batch_id": block_tasks[0].deterministic_batch_id,
-                            "shuffle_index_start": block_tasks[0].shuffle_index,
-                            "shuffle_index_end": block_tasks[-1].shuffle_index,
-                            "shuffle_count": len(block_tasks),
-                            "shuffle_indices": [task.shuffle_index for task in block_tasks],
-                            "shuffle_seeds": [task.shuffle_seed for task in block_tasks],
-                            "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
-                            "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
-                            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-                            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
-                            **(
-                                {"game_profile_sha256": oracle_game_profile.sha256}
-                                if oracle_game_profile is not None
-                                else {}
-                            ),
-                        },
-                        sidecar=metric_chunk_sidecar,
-                    )
                     if metric_records is not None and metric_record is not None:
                         metric_records.append(metric_record)
                     LOGGER.info(
@@ -1981,11 +2459,21 @@ def run_tournament(
                         extra={
                             "stage": "simulation",
                             "chunk_index": chunk_index,
-                            "rows": len(rows),
-                            "path": str(chunk_path),
+                            "rows": metric_record["rows"] if metric_record is not None else None,
+                            "path": str(
+                                metric_chunk_directory / f"metrics_{chunk_index:06d}.parquet"
+                            ),
                         },
                     )
                     collected_metric_chunks[chunk_index] = (sums, sqs)
+                    if (
+                        record_coverage
+                        and periodic_sums is not None
+                        and periodic_squares is not None
+                    ):
+                        _reduce_metric_chunk_payloads(
+                            {chunk_index: (sums, sqs)}, periodic_sums, periodic_squares
+                        )
                 else:
                     if metric_sums is None or metric_sq_sums is None:
                         raise RuntimeError("Metric-only checkpoint aggregates are unavailable")
@@ -2029,11 +2517,30 @@ def run_tournament(
             last_progress_at = time.monotonic()
             last_progress_games = win_totals.games_attempted
             if now - last_ckpt >= cfg.ckpt_every_sec:
+                checkpoint_meta.pop("partial_aggregate", None)
+                saved_sums, saved_squares = metric_sums, metric_sq_sums
+                if record_coverage:
+                    coverage_sums = periodic_sums if periodic_sums is not None else metric_sums
+                    coverage_squares = (
+                        periodic_squares if periodic_squares is not None else metric_sq_sums
+                    )
+                    receipt = _partial_aggregate_receipt(
+                        cfg,
+                        covered=completed_shuffle_indices,
+                        wins=win_totals,
+                        sums=coverage_sums,
+                        squares=coverage_squares,
+                        rows=row_records,
+                        metrics=metric_records,
+                    )
+                    if receipt is not None:
+                        checkpoint_meta["partial_aggregate"] = receipt
+                        saved_sums, saved_squares = coverage_sums, coverage_squares
                 _save_checkpoint(
                     ckpt_path,
                     win_totals,
-                    (metric_sums if (collect_metrics or collect_rows) else None),
-                    (metric_sq_sums if (collect_metrics or collect_rows) else None),
+                    saved_sums,
+                    saved_squares,
                     meta=checkpoint_meta,
                     sidecar=checkpoint_sidecar,
                     temp_dir=temp_dir,
@@ -2116,6 +2623,24 @@ def run_tournament(
             recorder.close_worker_progress_endpoint(progress_endpoint)
         install_worker_progress_endpoint(None)
 
+    checkpoint_meta.pop("partial_aggregate", None)
+    if recovered is not None and metric_records is not None and record_coverage:
+        # The uninterrupted metric-chunk reader emits an explicit zero for
+        # every supported strategy. Preserve that representation on recovery.
+        strategy_order = sorted(win_totals.attempted_exposures, key=str)
+        counts = win_totals.outcome_payload()
+        for key in ("attempted_exposures", "completed_exposures", "safety_limit_exposures"):
+            counts[key] = {strategy: counts[key].get(strategy, 0) for strategy in strategy_order}
+        win_totals = _coerce_counter(
+            {strategy: win_totals[strategy] for strategy in strategy_order}, counts
+        )
+        for values in (metric_sums, metric_sq_sums):
+            if values is not None:
+                for label in METRIC_LABELS:
+                    values[label] = defaultdict(
+                        float,
+                        {strategy: values[label].get(strategy, 0.0) for strategy in strategy_order},
+                    )
     coverage = (
         _complete_aggregate_coverage(
             cfg,
