@@ -125,6 +125,14 @@ required output inventory. This also applies on OneDrive. The process-local
 snapshot generation governs ownership of captured evidence and provides no
 filesystem lock. The final release audit independently reads the live graph.
 
+A final simulation checkpoint can certify its aggregate after merging all
+deterministic shuffle blocks. The certificate binds the exact shard inventory
+and requires integer metric totals within the exact binary64 range so block
+completion order cannot change the sums. On recovery the runner verifies the
+checkpoint and shard bytes and skips decoding the Parquet rows when the
+certificate matches. Periodic and legacy checkpoints use the existing replay
+path on shard-backed runs.
+
 `Pipeline progress summary` records completed work for a simulation or an
 analysis partition phase. The JSON fields after ` | ` identify its `stage` and
 `scope`, completed/reused units, and worker counts. A stage can have several

@@ -61,10 +61,12 @@ from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_
 from farkle.utils.authenticated_contract import (
     ArtifactMismatchError,
     AuthenticatedContractError,
+    AuthenticatedSidecar,
     ManifestEntry,
     canonical_json_bytes,
     compute_manifest_root,
     load_immutable_manifest_sidecar,
+    stage_config_identity,
     validate_authenticated_artifact_metadata,
 )
 from farkle.utils.manifest import iter_manifest
@@ -76,6 +78,8 @@ from farkle.utils.parallel import (
     resolve_stage_parallel_policy,
 )
 from farkle.utils.release_identity import (
+    _stage_field_paths,
+    capture_v3_inputs,
     is_v3_config,
     publish_native_manifest_v3,
 )
@@ -959,6 +963,7 @@ def _has_unsealed_simulation_outputs(
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
     strategy_manifest_path: Path,
+    recoverable_checkpoint: Path | None = None,
 ) -> bool:
     """Detect pre-v3 bytes that must never be blessed by a later completion."""
 
@@ -980,6 +985,8 @@ def _has_unsealed_simulation_outputs(
             )
 
     def _requires_preexisting_seal(path: Path) -> bool:
+        if recoverable_checkpoint is not None and path.resolve() == recoverable_checkpoint:
+            return False
         if not path.is_file() or sidecar_path(path).is_file():
             return False
         if path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
@@ -996,7 +1003,7 @@ def _validate_manifest_record_identity_v3(
     cfg: AppConfig,
     manifest_path: Path,
     record: Mapping[str, Any],
-) -> None:
+) -> AuthenticatedSidecar:
     """Reject a partial manifest record not backed by one exact sealed shard."""
 
     raw_path = record.get("path")
@@ -1015,6 +1022,7 @@ def _validate_manifest_record_identity_v3(
     }
     if schema is None or any(record.get(key) != value for key, value in expected.items()):
         raise ValueError(f"simulation manifest shard identity mismatch: {shard}")
+    return metadata
 
 
 def _validate_resume_outputs(
@@ -1026,7 +1034,8 @@ def _validate_resume_outputs(
     ckpt_path: Path,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
-) -> None:
+    require_authenticated_checkpoint: bool = False,
+) -> dict[str, Any] | None:
     """Validate resume-mode artifacts against the expected run metadata.
 
     Args:
@@ -1071,35 +1080,101 @@ def _validate_resume_outputs(
     has_metrics_manifest = (
         metric_chunk_dir is not None and (metric_chunk_dir / "metrics_manifest.jsonl").exists()
     )
+    payload: dict[str, Any] | None = None
+    checkpoint_error: Exception | None = None
     if ckpt_path.exists():
-        if is_v3_config(cfg) and sidecar_path(ckpt_path).is_file():
-            try:
-                validate_authenticated_artifact_metadata(ckpt_path, cfg=cfg)
-            except AuthenticatedContractError as exc:
-                raise ValueError(
-                    f"Checkpoint metadata mismatch at {ckpt_path}; rerun with --force."
-                ) from exc
-        payload = pickle.loads(ckpt_path.read_bytes())
-        meta = payload.get("meta")
-        if not isinstance(meta, Mapping):
-            raise ValueError(f"Checkpoint metadata missing at {ckpt_path}; rerun with --force.")
-        for key, expected in expected_meta.items():
-            if meta.get(key) != expected:
-                raise ValueError(
-                    f"Checkpoint metadata mismatch for {key} at {ckpt_path}; rerun with --force."
-                )
-    elif not has_row_manifest:
-        if not has_metrics_manifest:
-            if root_manifest_path.exists():
-                return
-            raise ValueError(
-                "Existing outputs found without a checkpoint manifest; rerun with --force."
+        try:
+            candidate = tournament_mod._read_checkpoint(
+                ckpt_path,
+                cfg=(
+                    cfg
+                    if require_authenticated_checkpoint or sidecar_path(ckpt_path).is_file()
+                    else None
+                ),
+                validate_sources=require_authenticated_checkpoint,
             )
+            meta = candidate.get("meta")
+            if not isinstance(meta, Mapping):
+                raise ValueError(f"Checkpoint metadata missing at {ckpt_path}; rerun with --force.")
+            current = dict(expected_meta)
+            if "simulation_stage_config_sha" in meta:
+                current["simulation_stage_config_sha"] = _simulation_stage_config_sha(
+                    cfg, n_players
+                )
+            for key, expected in current.items():
+                if meta.get(key) != expected:
+                    raise ValueError(
+                        f"Checkpoint metadata mismatch for {key} at {ckpt_path}; rerun with --force."
+                    )
+            if require_authenticated_checkpoint:
+                tournament_mod._coerce_counter(
+                    candidate.get("win_totals", candidate), candidate.get("outcome_counts")
+                )
+            payload = candidate
+        except (
+            AuthenticatedContractError,
+            OSError,
+            pickle.UnpicklingError,
+            EOFError,
+            AttributeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            checkpoint_error = exc
+    elif not (has_row_manifest or has_metrics_manifest):
+        return None
+
+    if checkpoint_error is not None and not require_authenticated_checkpoint:
+        raise checkpoint_error
+    if checkpoint_error is not None and not (has_row_manifest or has_metrics_manifest):
+        raise ValueError(
+            f"Checkpoint metadata mismatch at {ckpt_path}; no authenticated replay inventory."
+        ) from checkpoint_error
+
+    def require_replay_context() -> Callable[[Path, Mapping[str, Any], AuthenticatedSidecar], None]:
+        stage_config = stage_config_identity(
+            cfg,
+            stage_key="simulation",
+            field_paths=_stage_field_paths(cfg, "simulation"),
+        )
+        template = _simulation_output_sidecar(
+            cfg,
+            ckpt_path,
+            n_players=n_players,
+            operation="publish_simulation_checkpoint",
+            sources=[root_manifest_path, ckpt_path.parent / "simulation_workload_plan.json"],
+        )
+        inputs = capture_v3_inputs(template)
+        source_identities = {item.sha256 for item in inputs.sources}
+
+        def check(path: Path, record: Mapping[str, Any], metadata: AuthenticatedSidecar) -> None:
+            shard = tournament_mod._resolve_manifest_record_path(path, record)
+            stage = metadata.stage_identity
+            if (
+                stage.stage_config.sha256 != stage_config.sha256
+                or (cfg._code_identity is not None and stage.code != cfg._code_identity)
+                or {item.sha256 for item in metadata.source_artifacts} != source_identities
+                or sha256_file(shard) != record["data_sha256"]
+            ):
+                raise ValueError(f"simulation shard recovery identity mismatch: {shard}")
+
+        return check
+
+    verify_replay_shard = require_replay_context() if checkpoint_error is not None else None
+
+    def require_manifest_seal(path: Path) -> None:
+        if require_authenticated_checkpoint and sidecar_path(path).is_file():
+            manifest = load_immutable_manifest_sidecar(path)
+            manifest.location.require_path(cfg, path)
+            if sha256_file(path) != manifest.manifest_sha256:
+                raise ValueError(f"sealed simulation manifest bytes differ: {path}")
 
     expected_seeds = None
+    replay_has_sealed_shards = False
     if row_dir is not None:
         manifest_path = row_dir / "manifest.jsonl"
         if manifest_path.exists():
+            require_manifest_seal(manifest_path)
             expected_seed_by_index = {
                 index: urandom.coordinate_seed(
                     urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
@@ -1115,12 +1190,17 @@ def _validate_resume_outputs(
             duplicates = 0
             unexpected = 0
             coordinate_errors = 0
+            all_sealed = True
             for record in iter_manifest(manifest_path):
                 record_path = manifest_path.parent / str(record.get("path", ""))
                 if is_v3_config(cfg) and (
                     "data_sha256" in record or sidecar_path(record_path).is_file()
                 ):
-                    _validate_manifest_record_identity_v3(cfg, manifest_path, record)
+                    metadata = _validate_manifest_record_identity_v3(cfg, manifest_path, record)
+                    if verify_replay_shard is not None:
+                        verify_replay_shard(manifest_path, record, metadata)
+                else:
+                    all_sealed = False
                 seed_val = record.get("shuffle_seed")
                 index_val = record.get("shuffle_index")
                 if seed_val is None or index_val is None:
@@ -1159,20 +1239,27 @@ def _validate_resume_outputs(
                 )
             if unexpected or coordinate_errors:
                 raise ValueError(f"Row manifest mismatch at {manifest_path}; rerun with --force.")
+            replay_has_sealed_shards = all_sealed and bool(seen_indices)
 
     if metric_chunk_dir is not None:
         metrics_manifest = metric_chunk_dir / "metrics_manifest.jsonl"
         if metrics_manifest.exists():
+            require_manifest_seal(metrics_manifest)
             coordinate_errors = 0
             seen_batches: set[int] = set()
             seen_shuffle_indices: set[int] = set()
             duplicates = 0
+            all_sealed = True
             for record in iter_manifest(metrics_manifest):
                 record_path = metrics_manifest.parent / str(record.get("path", ""))
                 if is_v3_config(cfg) and (
                     "data_sha256" in record or sidecar_path(record_path).is_file()
                 ):
-                    _validate_manifest_record_identity_v3(cfg, metrics_manifest, record)
+                    metadata = _validate_manifest_record_identity_v3(cfg, metrics_manifest, record)
+                    if verify_replay_shard is not None:
+                        verify_replay_shard(metrics_manifest, record, metadata)
+                else:
+                    all_sealed = False
                 batch_value = record.get("deterministic_batch_id")
                 block_value = record.get("process_block_index")
                 start_value = record.get("shuffle_index_start")
@@ -1250,6 +1337,18 @@ def _validate_resume_outputs(
                 raise ValueError(
                     f"Metrics manifest mismatch at {metrics_manifest}; rerun with --force."
                 )
+            if not has_row_manifest:
+                replay_has_sealed_shards = all_sealed and bool(seen_batches)
+
+    if checkpoint_error is not None:
+        if not replay_has_sealed_shards:
+            raise ValueError(
+                f"Checkpoint metadata mismatch at {ckpt_path}; no authenticated replay inventory."
+            ) from checkpoint_error
+        LOGGER.warning(
+            "Ignoring checkpoint %s and replaying sealed shards: %s", ckpt_path, checkpoint_error
+        )
+    return payload
 
 
 def run_tournament(
@@ -1354,6 +1453,7 @@ def run_single_n(
     workload_plan_path = n_dir / "simulation_workload_plan.json"
     row_dir = _resolve_row_output_dir(cfg, n)
     metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
+    ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
     if not force:
         _cleanup_interrupted_simulation_staging_files(
             n_dir=n_dir,
@@ -1366,6 +1466,17 @@ def run_single_n(
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
         strategy_manifest_path=cfg.strategy_manifest_root_path(),
+        recoverable_checkpoint=(
+            ckpt_path.resolve()
+            if (
+                (row_dir is not None and (row_dir / "manifest.jsonl").is_file())
+                or (
+                    metric_chunk_dir is not None
+                    and (metric_chunk_dir / "metrics_manifest.jsonl").is_file()
+                )
+            )
+            else None
+        ),
     )
     LOGGER.info(
         "Tournament workload plan resolved",
@@ -1379,8 +1490,8 @@ def run_single_n(
         )
         raise WorkloadCapExceeded(workload_plan)
 
-    ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
     resume = not force
+    recovery_checkpoint = None
     checkpoint_exists = ckpt_path.exists()
     LOGGER.info(
         "Preparing tournament outputs",
@@ -1415,7 +1526,7 @@ def run_single_n(
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
     ):
-        _validate_resume_outputs(
+        recovery_checkpoint = _validate_resume_outputs(
             cfg=cfg,
             n_players=n,
             n_shuffles=n_shuffles,
@@ -1423,6 +1534,7 @@ def run_single_n(
             ckpt_path=ckpt_path,
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
+            require_authenticated_checkpoint=True,
         )
     manifest_path = cfg.strategy_manifest_root_path()
     if not manifest.empty:
@@ -1550,7 +1662,7 @@ def run_single_n(
     apply_native_thread_limits(resource_policy)
     memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
-    tournament_mod.run_tournament(
+    restored_checkpoint = tournament_mod.run_tournament(
         global_seed=cfg.sim.seed,
         n_jobs=resource_policy.process_workers,
         checkpoint_path=ckpt_path,
@@ -1562,6 +1674,7 @@ def run_single_n(
         strategies=strategies,
         resume=resume,
         checkpoint_metadata={
+            "simulation_stage_config_sha": _simulation_stage_config_sha(cfg, n),
             "strategy_manifest_sha": _strategy_manifest_digest(manifest),
             "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
@@ -1581,6 +1694,7 @@ def run_single_n(
         row_sidecar=row_sidecar,
         metric_chunk_sidecar=metric_chunk_sidecar,
         checkpoint_sidecar=checkpoint_sidecar,
+        checkpoint_loader=lambda: recovery_checkpoint,
         write_final_metrics_artifact=not is_v3_config(cfg),
         write_workload_plan_artifact=not is_v3_config(cfg),
         execution_policy={
@@ -1595,7 +1709,9 @@ def run_single_n(
     )
 
     # --- Final checkpoint post-processing ---
-    payload = pickle.loads(ckpt_path.read_bytes())
+    payload = tournament_mod._read_checkpoint(ckpt_path, cfg=cfg if is_v3_config(cfg) else None)
+    if restored_checkpoint is not None and payload != restored_checkpoint:
+        raise ValueError(f"authenticated checkpoint changed during aggregate recovery: {ckpt_path}")
     raw_counts = payload.get("win_totals", payload)
     outcome_payload = payload.get("outcome_counts")
     win_totals = tournament_mod._coerce_counter(

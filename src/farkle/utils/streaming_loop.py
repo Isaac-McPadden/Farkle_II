@@ -41,7 +41,7 @@ def run_streaming_shard(
     manifest_extra: Dict[str, Any] | None = None,
     sidecar: ArtifactSidecar | None = None,
     manifest_sidecar: ArtifactSidecar | None = None,
-):
+) -> dict[str, Any] | None:
     """Stream batches to Parquet and publish its manifest entry on success.
 
     ``manifest_sidecar`` selects a completed single-entry manifest publication:
@@ -63,7 +63,7 @@ def run_streaming_shard(
         w.write_batches(batch_iter)
     rows = getattr(w, "rows_written", None)
     if not _output_ready(out_path, manifest_path, manifest_extra):
-        return
+        return None
     # On success, append a manifest line
     manifest_dir = os.path.dirname(manifest_path)
     manifest_dir = os.path.abspath(manifest_dir) if manifest_dir else os.path.abspath(os.curdir)
@@ -93,7 +93,7 @@ def run_streaming_shard(
             rel_path = os.path.abspath(out_path)
         else:
             LOGGER.error("Skipping manifest append because output path %s is missing.", out_path)
-            return
+            return None
 
     record = {
         "path": rel_path,
@@ -115,7 +115,7 @@ def run_streaming_shard(
         )
     if manifest_sidecar is None:
         append_manifest_line(manifest_path, record)
-        return
+        return record
 
     manifest = Path(manifest_path)
 
@@ -127,6 +127,7 @@ def run_streaming_shard(
         manifest_sidecar,
         _write_completed_manifest,
     )
+    return record
 
 
 def _output_ready(out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None) -> bool:

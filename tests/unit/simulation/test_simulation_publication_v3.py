@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,11 @@ from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.config import AppConfig, assign_config_sha
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.simulation.workload_planner import TournamentWorkloadPlan
-from farkle.utils.artifact_contract import sha256_file, sidecar_path
+from farkle.utils.artifact_contract import (
+    sha256_file,
+    sidecar_path,
+    write_artifact_with_sidecar_atomic,
+)
 from farkle.utils.authenticated_contract import (
     canonical_json_bytes,
     load_immutable_manifest_sidecar,
@@ -421,3 +426,221 @@ def test_real_two_worker_tournament_uses_producer_owned_publication(tmp_path: Pa
         }
 
     assert _published_bytes(sequential) == _published_bytes(parallel)
+
+
+@pytest.fixture
+def aggregate_run(tmp_path: Path) -> tuple[AppConfig, list[ThresholdStrategy]]:
+    cfg = make_authenticated_v3_config(tmp_path, name="aggregate", root_seed=42)
+    cfg.sim.row_dir = Path("rows")
+    cfg.sim.metric_chunk_dir = Path("chunks")
+    cfg.sim.expanded_metrics = True
+    cfg.sim.n_jobs = 1
+    cfg.sim.ckpt_every_sec = 0
+    cfg.screening.resolution_delta = 0.9
+    cfg.batching.target_batches = 2
+    cfg.batching.min_shuffles_per_batch = 1
+    assign_config_sha(cfg)
+    return cfg, [
+        ThresholdStrategy(300, 3, strategy_id=1),
+        ThresholdStrategy(500, 2, strategy_id=2),
+    ]
+
+
+@pytest.mark.parametrize("storage", ["rows_and_chunks", "rows_only", "chunks_only"])
+def test_complete_aggregate_restores_without_replaying_or_scheduling(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    storage: str,
+) -> None:
+    cfg, strategies = aggregate_run
+    if storage == "chunks_only":
+        cfg.sim.row_dir = None
+    if storage == "rows_only":
+        cfg.sim.metric_chunk_dir = None
+    assign_config_sha(cfg)
+    games = runner.run_single_n(cfg, 2, strategies=strategies)
+    done = runner.simulation_done_path(cfg, 2)
+    paths = [
+        cfg.n_dir(2) / name
+        for name in ("2p_checkpoint.pkl", "2p_checkpoint.parquet", "2p_metrics.parquet")
+    ]
+    original = {path: path.read_bytes() for path in [done, *paths]}
+    checkpoint = pickle.loads(original[paths[0]])
+    assert checkpoint["meta"]["complete_aggregate"]["version"] == 1
+    assert checkpoint["outcome_counts"]["games_attempted"] == games
+    done.unlink()
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("complete aggregate attempted a replay or executor submission")
+
+    tournament = runner.tournament_mod
+    monkeypatch.setattr(tournament, "_load_row_manifest_aggregates", unexpected)
+    monkeypatch.setattr(tournament, "_load_metric_chunk_aggregates", unexpected)
+    monkeypatch.setattr(tournament.parallel, "process_map", unexpected)
+    assert runner.run_single_n(cfg, 2, strategies=strategies) == games
+    assert {path: path.read_bytes() for path in original} == original
+    assert runner.simulation_is_complete(cfg, 2)
+
+
+def test_complete_aggregate_refuses_corrupt_shard_bytes(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+) -> None:
+    cfg, strategies = aggregate_run
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    done = runner.simulation_done_path(cfg, 2)
+    done.unlink()
+    row_dir = cfg.simulation_row_dir(2)
+    assert row_dir is not None
+    shard = next(row_dir.glob("rows_*.parquet"))
+    with shard.open("r+b") as handle:
+        handle.write(b"FAIL")
+    with pytest.raises(ValueError, match="aggregate checkpoint shard authentication failed"):
+        runner.run_single_n(cfg, 2, strategies=strategies)
+    assert not done.exists()
+
+
+def test_complete_aggregate_cannot_cover_missing_manifest_member(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, strategies = aggregate_run
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    runner.simulation_done_path(cfg, 2).unlink()
+    row_dir = cfg.simulation_row_dir(2)
+    assert row_dir is not None
+    manifest = row_dir / "manifest.jsonl"
+    manifest.write_bytes(manifest.read_bytes().splitlines(keepends=True)[0])
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("damaged sealed inventory was used to schedule a shuffle")
+
+    monkeypatch.setattr(runner.tournament_mod.parallel, "process_map", unexpected)
+    with pytest.raises(ValueError, match="sealed simulation manifest bytes differ"):
+        runner.run_single_n(cfg, 2, strategies=strategies)
+
+
+@pytest.mark.parametrize("case", ["missing", "corrupt", "unsealed", "legacy", "incompatible"])
+def test_unusable_aggregate_checkpoint_replays_existing_rows(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    cfg, strategies = aggregate_run
+    games = runner.run_single_n(cfg, 2, strategies=strategies)
+    runner.simulation_done_path(cfg, 2).unlink()
+    checkpoint = cfg.n_dir(2) / "2p_checkpoint.pkl"
+    if case == "missing":
+        checkpoint.unlink()
+        sidecar_path(checkpoint).unlink()
+    elif case == "corrupt":
+        # Change contents without changing the byte length or producer sidecar.
+        with checkpoint.open("r+b") as handle:
+            handle.write(b"broken")
+        corrupt = checkpoint.read_bytes()
+        loads = pickle.loads
+
+        def authenticated_only(contents: bytes) -> Any:
+            assert contents != corrupt
+            return loads(contents)
+
+        monkeypatch.setattr(pickle, "loads", authenticated_only)
+    elif case == "unsealed":
+        sidecar_path(checkpoint).unlink()
+    else:
+        payload = pickle.loads(checkpoint.read_bytes())
+        if case == "legacy":
+            del payload["meta"]["complete_aggregate"]
+            del payload["meta"]["simulation_stage_config_sha"]
+        else:
+            payload["meta"]["complete_aggregate"]["reduction"] = "unknown"
+        sidecar = runner._simulation_output_sidecar(
+            cfg,
+            checkpoint,
+            n_players=2,
+            operation="publish_simulation_checkpoint",
+            sources=[
+                cfg.strategy_manifest_root_path(),
+                cfg.n_dir(2) / "simulation_workload_plan.json",
+            ],
+        )
+
+        def write(staged: Path) -> None:
+            staged.write_bytes(pickle.dumps(payload))
+
+        write_artifact_with_sidecar_atomic(checkpoint, sidecar, write)
+
+    replayed: list[int] = []
+    tournament = runner.tournament_mod
+    replay = tournament._load_row_manifest_aggregates
+
+    def count_replay(path: Path) -> Any:
+        aggregate = replay(path)
+        replayed.append(aggregate[0].games_attempted)
+        return aggregate
+
+    def unexpected_game(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("durable shuffle was simulated again")
+
+    monkeypatch.setattr(tournament, "_load_row_manifest_aggregates", count_replay)
+    monkeypatch.setattr(tournament, "_play_one_shuffle", unexpected_game)
+    assert runner.run_single_n(cfg, 2, strategies=strategies) == games
+    assert replayed == [games]
+    assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
+
+
+def test_periodic_checkpoint_cannot_certify_unreduced_coverage(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, strategies = aggregate_run
+    tournament = runner.tournament_mod
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> Any:
+        raise InterruptedError("before final reduction")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tournament, "_load_metric_chunk_aggregates", interrupt)
+        with pytest.raises(InterruptedError, match="before final reduction"):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+    checkpoint = cfg.n_dir(2) / "2p_checkpoint.pkl"
+    payload = pickle.loads(checkpoint.read_bytes())
+    assert payload["meta"]["completed_shuffle_indices"] == list(
+        range(payload["meta"]["num_shuffles"])
+    )
+    assert "complete_aggregate" not in payload["meta"]
+    assert not runner.simulation_done_path(cfg, 2).exists()
+    assert (
+        runner.run_single_n(cfg, 2, strategies=strategies)
+        == payload["outcome_counts"]["games_attempted"]
+    )
+    assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
+
+
+def test_interrupted_final_checkpoint_publication_requires_replay(
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, strategies = aggregate_run
+    tournament = runner.tournament_mod
+    checkpoint = cfg.n_dir(2) / "2p_checkpoint.pkl"
+    replace_file = authenticated_contract.replace_file_atomic
+
+    def interrupt(source: Path | str, destination: Path | str) -> None:
+        if (
+            Path(destination) == sidecar_path(checkpoint)
+            and b"complete_aggregate" in checkpoint.read_bytes()
+        ):
+            raise InterruptedError("before sealing final checkpoint")
+        replace_file(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(authenticated_contract, "replace_file_atomic", interrupt)
+        with pytest.raises(InterruptedError, match="before sealing final checkpoint"):
+            runner.run_single_n(cfg, 2, strategies=strategies)
+    assert checkpoint.is_file() and not sidecar_path(checkpoint).exists()
+    assert not runner.simulation_done_path(cfg, 2).exists()
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("unsealed checkpoint was restored or a durable game was simulated again")
+
+    monkeypatch.setattr(tournament, "_restore_complete_aggregate", unexpected)
+    monkeypatch.setattr(tournament, "_play_one_shuffle", unexpected)
+    runner.run_single_n(cfg, 2, strategies=strategies)
+    assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
