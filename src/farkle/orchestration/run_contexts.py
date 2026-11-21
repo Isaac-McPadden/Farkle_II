@@ -182,6 +182,14 @@ class RootPairRunContext:
             seed_list=list(root_pair),
         )
         pair_base = replace(first.config, sim=pair_sim)
+        second = root_contexts[1].config
+        if first.config._code_identity != second._code_identity:
+            raise ValueError("Pair inputs have different producer Git identities")
+        if first.config._game_profile_sha256 != second._game_profile_sha256:
+            raise ValueError("Pair inputs have different scientific game profiles")
+        pair_base._code_identity = first.config._code_identity
+        pair_base._game_profile_sha256 = first.config._game_profile_sha256
+        pair_base.set_resource_limiter_mode(first.config.resource_limiter_mode)
         assign_config_sha(pair_base)
         run_cfg = RunContextConfig.from_base(
             pair_base,

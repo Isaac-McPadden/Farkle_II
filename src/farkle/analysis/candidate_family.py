@@ -23,8 +23,6 @@ from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
     make_artifact_sidecar,
-    sha256_file,
-    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -32,6 +30,10 @@ from farkle.utils.artifacts import (
     write_parquet_artifact_atomic,
 )
 from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.frozen_h2h import contribution_science
+from farkle.utils.release_identity import exact_direct_sources
+from farkle.utils.scientific_identity import require_input_roles
+from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import (
     stage_done_path,
     stage_is_up_to_date,
@@ -440,6 +442,7 @@ def _default_win_rate_path(cfg: AppConfig, roots: tuple[int, ...]) -> Path:
     return cfg.performance_across_k_path()
 
 
+@numerical_observation()
 def freeze_h2h_candidate_family(
     cfg: AppConfig,
     *,
@@ -461,13 +464,18 @@ def freeze_h2h_candidate_family(
         manifest=cfg.h2h_candidate_family_manifest_path(),
     )
     done = stage_done_path(cfg.stage_dir("candidate_freeze"), "candidate_freeze")
-    if not force and stage_is_up_to_date(
-        done,
-        inputs=sources,
-        outputs=list(artifacts.all_paths),
-        cfg=cfg,
-        stage="candidate_freeze",
-        sidecar_artifacts=list(artifacts.all_paths),
+    if (
+        not force
+        and stage_is_up_to_date(
+            done,
+            inputs=sources,
+            outputs=list(artifacts.all_paths),
+            cfg=cfg,
+            stage="candidate_freeze",
+            sidecar_artifacts=list(artifacts.all_paths),
+        )
+        and exact_direct_sources(artifacts.membership, sources)
+        and exact_direct_sources(artifacts.manifest, sources)
     ):
         return artifacts
 
@@ -497,29 +505,16 @@ def freeze_h2h_candidate_family(
     final_ts = _top_set(trueskill, final_cutoffs["trueskill"])
     candidates = sorted(family)
     pair_count = len(candidates) * (len(candidates) - 1) // 2
-    trueskill_authenticated = load_authenticated_sidecar(ts_path)
-    source_identity = {
-        "win_rate": {
-            "artifact_name": win_rate.sidecar.artifact_name,
-            "sha256": win_rate.sidecar.artifact_sha256,
-        },
-        "trueskill": {
-            "artifact_name": trueskill.sidecar.artifact_name,
-            "sha256": trueskill.sidecar.artifact_sha256,
-            "sidecar_sha256": sha256_file(sidecar_path(ts_path)),
-            "artifact_contract_version": trueskill.sidecar.artifact_contract_version,
-            "estimand_version": trueskill.sidecar.estimand_version,
-            "schema_version": trueskill.sidecar.schema_version,
-            "rng_scheme_version": trueskill.sidecar.rng_scheme_version,
-            "outcome_schema_version": trueskill_authenticated.versions.outcome_schema_version,
-            "conditioning_version": (trueskill_authenticated.versions.conditioning_version),
-            "method_contract_sha256": trueskill_authenticated.method_contract.sha256,
-            "stage_identity_sha256": trueskill_authenticated.stage_identity.sha256,
-            "conditioning": trueskill.sidecar.conditioning,
-        },
-    }
+    source_identity = {}
+    for role, path in (("win_rate", win_path), ("trueskill", ts_path)):
+        authenticated = load_authenticated_sidecar(path)
+        source_identity[role] = contribution_science(path, authenticated)
+    require_input_roles(
+        cfg, "candidate_freeze", {f"{role}_contribution" for role in source_identity}
+    )
     identity = {
         "candidate_family_version": CANDIDATE_FAMILY_VERSION,
+        "source_identity_version": 2,
         "candidates": candidates,
         "source_identity": source_identity,
         "contribution_size": cfg.screening.candidate_contribution_size,

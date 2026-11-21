@@ -66,7 +66,7 @@ from farkle.utils.authenticated_contract import (
     canonical_json_bytes,
     compute_manifest_root,
     load_immutable_manifest_sidecar,
-    stage_config_identity,
+    producer_code_identity,
     validate_authenticated_artifact_metadata,
 )
 from farkle.utils.manifest import iter_manifest
@@ -78,12 +78,14 @@ from farkle.utils.parallel import (
     resolve_stage_parallel_policy,
 )
 from farkle.utils.release_identity import (
-    _stage_field_paths,
     capture_v3_inputs,
     is_v3_config,
     publish_native_manifest_v3,
+    scientific_artifact_binding,
 )
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
+from farkle.utils.scientific_identity import producer_scope
+from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import (
     CompletionState,
     freshness_sha256,
@@ -276,6 +278,7 @@ def simulation_done_path(cfg: AppConfig, n_players: int) -> Path:
     return n_dir / "simulation.done.json"
 
 
+@numerical_observation()
 def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
     """Return whether the per-N completion authenticates current work exactly."""
 
@@ -331,7 +334,8 @@ def _simulation_stage_config_sha(cfg: AppConfig, n_players: int) -> str:
     """Bind the shared simulation scope to one concrete root/k cell."""
 
     identity: dict[str, object] = {
-        "base_stage_config_sha": cfg.stage_config_sha("simulation"),
+        "player_count_dependencies_v1": cfg.partition_dependency_sha("simulation", "player_count"),
+        "shuffle_dependencies_v1": cfg.partition_dependency_sha("simulation", "shuffle"),
         "root_seed": int(cfg.sim.seed),
         "n_players": int(n_players),
     }
@@ -548,6 +552,8 @@ def _publish_simulation_manifest_v3(
     records = list(iter_manifest(path))
     entries: list[ManifestEntry] = []
     canonical_records: list[tuple[tuple[int, ...], dict[str, Any]]] = []
+    member_science: dict[tuple[int | str, ...], str] = {}
+    code = producer_code_identity(cfg)
     reference_metadata = None
     for index, record in enumerate(records):
         raw_path = record.get("path")
@@ -590,12 +596,25 @@ def _publish_simulation_manifest_v3(
         )
         canonical_record = {key: value for key, value in record.items() if key not in {"pid", "ts"}}
         canonical_record.update(declared_identity)
+        member_science[coordinate] = freshness_sha256(
+            {
+                "shard": scientific_artifact_binding(metadata, code),
+                "coordinates_and_counts": {
+                    key: value
+                    for key, value in canonical_record.items()
+                    if key not in {"path", "sidecar_sha256"}
+                },
+            }
+        )
         canonical_records.append((coordinate, canonical_record))
     paired = sorted(
         zip(entries, canonical_records, strict=True), key=lambda item: item[0].coordinate
     )
     entries = [item[0] for item in paired]
     ordered_records = [item[1][1] for item in paired]
+    inventory_science = freshness_sha256(
+        {"ordered_members_v1": [member_science[e.coordinate] for e in entries]}
+    )
     if not entries:
         raise ValueError(f"simulation manifest has no authenticated entries: {path}")
     if expected_entry_count is not None and len(entries) != expected_entry_count:
@@ -611,6 +630,8 @@ def _publish_simulation_manifest_v3(
         existing = load_immutable_manifest_sidecar(path)
         if (
             existing.summary == expected_summary
+            and existing.stage_identity.immutable_design_identities.get("manifest_members_v1")
+            == inventory_science
             and existing.manifest_sha256 == expected_native_sha.hexdigest()
             and sha256_file(path) == existing.manifest_sha256
             and reference_metadata is not None
@@ -629,6 +650,7 @@ def _publish_simulation_manifest_v3(
         operation="publish_simulation_shard_manifest",
         player_counts=[n_players],
         native_records=ordered_records,
+        member_science=inventory_science,
     )
 
 
@@ -818,12 +840,10 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
 
     existing = pd.read_parquet(path)
     if set(existing.columns) != set(manifest.columns):
-        raise ValueError(
-            f"{label} manifest schema mismatch at {path}; re-run with --force to regenerate."
-        )
+        raise ValueError(f"{label} manifest schema mismatch at {path}; use a new output root.")
     existing = existing[manifest.columns]
     if not existing.equals(manifest):
-        raise ValueError(f"{label} manifest mismatch at {path}; re-run with --force to regenerate.")
+        raise ValueError(f"{label} manifest mismatch at {path}; use a new output root.")
 
 
 def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
@@ -870,7 +890,6 @@ def _purge_simulation_outputs(
     ckpt_path: Path,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
-    strategy_manifest_path: Path,
 ) -> None:
     """Remove simulation outputs that would conflict with a forced rerun.
 
@@ -880,7 +899,6 @@ def _purge_simulation_outputs(
         ckpt_path: Checkpoint path to remove.
         row_dir: Optional row-shard directory.
         metric_chunk_dir: Optional metric-chunk directory.
-        strategy_manifest_path: Strategy manifest path to remove.
     """
     done_path = n_dir / "simulation.done.json"
     ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
@@ -889,7 +907,6 @@ def _purge_simulation_outputs(
         ckpt_path,
         ckpt_parquet,
         metrics_parquet,
-        strategy_manifest_path,
         n_dir / "simulation_workload_plan.json",
     ]
     _remove_paths([*ordinary, *(sidecar_path(path) for path in ordinary), done_path])
@@ -1099,7 +1116,7 @@ def _validate_resume_outputs(
             if not isinstance(meta, Mapping):
                 raise ValueError(f"Checkpoint metadata missing at {ckpt_path}; rerun with --force.")
             current = dict(expected_meta)
-            if "simulation_stage_config_sha" in meta:
+            if require_authenticated_checkpoint or "simulation_stage_config_sha" in meta:
                 current["simulation_stage_config_sha"] = _simulation_stage_config_sha(
                     cfg, n_players
                 )
@@ -1134,11 +1151,11 @@ def _validate_resume_outputs(
         ) from checkpoint_error
 
     def require_replay_context() -> Callable[[Path, Mapping[str, Any], AuthenticatedSidecar], None]:
-        stage_config = stage_config_identity(
-            cfg,
-            stage_key="simulation",
-            field_paths=_stage_field_paths(cfg, "simulation"),
-        )
+        from farkle.utils.scientific_identity import producer_config_identity
+
+        stage_config = producer_config_identity(cfg, "simulation")
+        dependencies = cfg.stage_config_sha("simulation")
+        code = producer_code_identity(cfg)
         if payload is not None and checkpoint_sources:
             source_identities = checkpoint_sources
         else:
@@ -1156,7 +1173,8 @@ def _validate_resume_outputs(
             stage = metadata.stage_identity
             if (
                 stage.stage_config.sha256 != stage_config.sha256
-                or (cfg._code_identity is not None and stage.code != cfg._code_identity)
+                or stage.immutable_design_identities.get("stage_dependencies_v1") != dependencies
+                or stage.code != code
                 or {item.sha256 for item in metadata.source_artifacts} != source_identities
                 or (checkpoint_error is not None and sha256_file(shard) != record["data_sha256"])
             ):
@@ -1449,6 +1467,7 @@ def run_tournament(
     return int(sum(totals.values()))
 
 
+@numerical_observation()
 def run_single_n(
     cfg: AppConfig,
     n: int,
@@ -1471,6 +1490,19 @@ def run_single_n(
 
     # --- Output paths and pre-scheduling plan publication ---
     results_dir = cfg.results_root
+    manifest = build_strategy_manifest(strategies)
+    manifest_path = cfg.strategy_manifest_root_path()
+    if manifest_path.exists() or sidecar_path(manifest_path).exists():
+        from farkle.utils.frozen_h2h import validated_root_strategy_manifest
+
+        original = validated_root_strategy_manifest(cfg)
+        if original.stage_identity.immutable_design_identities.get(
+            "stage_dependencies_v1"
+        ) != cfg.stage_config_sha("simulation"):
+            raise ValueError(
+                f"Incompatible strategy manifest producer at {manifest_path}; use a new output root"
+            )
+        _validate_manifest_matches(manifest, manifest_path, label="Strategy")
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     if not force and simulation_is_complete(cfg, n):
@@ -1535,7 +1567,6 @@ def run_single_n(
             "artifact contract v3 found pre-existing simulation bytes without "
             "authenticated sidecars; use --force or a new configured output root"
         )
-    manifest = build_strategy_manifest(strategies)
     if force:
         _purge_simulation_outputs(
             n_dir=n_dir,
@@ -1543,7 +1574,6 @@ def run_single_n(
             ckpt_path=ckpt_path,
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
-            strategy_manifest_path=cfg.strategy_manifest_root_path(),
         )
     elif resume and _has_existing_outputs(
         n_dir=n_dir,
@@ -1562,7 +1592,6 @@ def run_single_n(
             metric_chunk_dir=metric_chunk_dir,
             require_authenticated_checkpoint=True,
         )
-    manifest_path = cfg.strategy_manifest_root_path()
     if not manifest.empty:
         if not manifest_path.exists():
             manifest_table = pa.Table.from_pandas(manifest, preserve_index=False)
@@ -1688,51 +1717,52 @@ def run_single_n(
     apply_native_thread_limits(resource_policy)
     memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
-    restored_checkpoint = tournament_mod.run_tournament(
-        global_seed=cfg.sim.seed,
-        n_jobs=resource_policy.process_workers,
-        checkpoint_path=ckpt_path,
-        collect_metrics=cfg.sim.expanded_metrics,
-        row_output_directory=row_dir,
-        metric_chunk_directory=metric_chunk_dir,
-        num_shuffles=n_shuffles,
-        config=tourn_cfg,
-        strategies=strategies,
-        resume=resume,
-        checkpoint_metadata={
-            "simulation_stage_config_sha": _simulation_stage_config_sha(cfg, n),
-            "strategy_manifest_sha": _strategy_manifest_digest(manifest),
-            "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
-            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
-            "rng_bit_generator": "PCG64DXSM",
-            **(
-                {"game_profile_sha256": oracle_game_profile.sha256}
-                if oracle_game_profile is not None
-                else {}
-            ),
-            **_workload_checkpoint_metadata(workload_plan),
-        },
-        workload_plan=workload_plan,
-        workload_plan_path=workload_plan_path,
-        oracle_game_profile=oracle_game_profile,
-        memory_guard=memory_guard,
-        row_sidecar=row_sidecar,
-        metric_chunk_sidecar=metric_chunk_sidecar,
-        checkpoint_sidecar=checkpoint_sidecar,
-        checkpoint_loader=lambda: recovery_checkpoint,
-        write_final_metrics_artifact=not is_v3_config(cfg),
-        write_workload_plan_artifact=not is_v3_config(cfg),
-        execution_policy={
-            "requested_workers": requested_workers,
-            "resolved_workers": resolved_workers,
-            "effective_workers": resource_policy.process_workers,
-            "nested_process_pool_suppressed": nested_process_pool_suppressed,
-            "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
-            "runner_parent_pid": os.getpid(),
-        },
-        temp_dir=cfg.io.temp_dir,
-    )
+    with producer_scope(cfg, "simulation"):
+        restored_checkpoint = tournament_mod.run_tournament(
+            global_seed=cfg.sim.seed,
+            n_jobs=resource_policy.process_workers,
+            checkpoint_path=ckpt_path,
+            collect_metrics=cfg.sim.expanded_metrics,
+            row_output_directory=row_dir,
+            metric_chunk_directory=metric_chunk_dir,
+            num_shuffles=n_shuffles,
+            config=tourn_cfg,
+            strategies=strategies,
+            resume=resume,
+            checkpoint_metadata={
+                "simulation_stage_config_sha": _simulation_stage_config_sha(cfg, n),
+                "strategy_manifest_sha": _strategy_manifest_digest(manifest),
+                "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+                "rng_bit_generator": "PCG64DXSM",
+                **(
+                    {"game_profile_sha256": oracle_game_profile.sha256}
+                    if oracle_game_profile is not None
+                    else {}
+                ),
+                **_workload_checkpoint_metadata(workload_plan),
+            },
+            workload_plan=workload_plan,
+            workload_plan_path=workload_plan_path,
+            oracle_game_profile=oracle_game_profile,
+            memory_guard=memory_guard,
+            row_sidecar=row_sidecar,
+            metric_chunk_sidecar=metric_chunk_sidecar,
+            checkpoint_sidecar=checkpoint_sidecar,
+            checkpoint_loader=lambda: recovery_checkpoint,
+            write_final_metrics_artifact=not is_v3_config(cfg),
+            write_workload_plan_artifact=not is_v3_config(cfg),
+            execution_policy={
+                "requested_workers": requested_workers,
+                "resolved_workers": resolved_workers,
+                "effective_workers": resource_policy.process_workers,
+                "nested_process_pool_suppressed": nested_process_pool_suppressed,
+                "process_pool_marker": os.environ.get("FARKLE_PROCESS_POOL_ACTIVE"),
+                "runner_parent_pid": os.getpid(),
+            },
+            temp_dir=cfg.io.temp_dir,
+        )
 
     # --- Final checkpoint post-processing ---
     payload = tournament_mod._read_checkpoint(ckpt_path, cfg=cfg if is_v3_config(cfg) else None)

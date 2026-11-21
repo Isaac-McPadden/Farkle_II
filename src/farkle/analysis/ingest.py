@@ -39,6 +39,8 @@ from farkle.utils.artifact_contract import (
 from farkle.utils.authenticated_contract import (
     ManifestEntry,
     ManifestRootIdentity,
+    SourceArtifactIdentity,
+    capture_source_artifact_unbound,
     compute_manifest_root,
     load_immutable_manifest_sidecar,
     validate_authenticated_artifact_metadata,
@@ -56,7 +58,7 @@ from farkle.utils.partitioned_stage import (
     run_partitioned_stage,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
-from farkle.utils.release_identity import CapturedV3Inputs, is_v3_config
+from farkle.utils.release_identity import CapturedV3Inputs, _source_role, is_v3_config
 from farkle.utils.schema_helpers import (
     OUTCOME_SCHEMA_VERSION,
     TOURNAMENT_METHOD_VERSION,
@@ -97,6 +99,7 @@ class _SimulationSourceSnapshot:
     manifest_sha256: str
     manifest_sidecar_sha256: str
     manifest_root: ManifestRootIdentity
+    workload: SourceArtifactIdentity
     completion_path: Path
     completion_sha256: str
     shards: tuple[_RowShard, ...]
@@ -108,6 +111,7 @@ class _SimulationSourceSnapshot:
             "manifest_sha256": self.manifest_sha256,
             "manifest_sidecar_sha256": self.manifest_sidecar_sha256,
             "completion_sha256": self.completion_sha256,
+            "workload": self.workload.sha256,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -117,9 +121,11 @@ class _SimulationSourceSnapshot:
     def captured_inputs(self) -> CapturedV3Inputs:
         role = f"control:{self.completion_path.name}:0000"
         return CapturedV3Inputs(
-            sources=(),
+            sources=(self.workload,),
             manifests=(self.manifest_root,),
-            source_paths=(),
+            source_paths=(
+                (self.workload.logical_role, str(self.block / "simulation_workload_plan.json")),
+            ),
             manifest_paths=(
                 (
                     self.manifest_root.logical_role,
@@ -155,7 +161,7 @@ def _ingested_rows_sidecar(
         replication_unit="game",
         conditioning="unconditional",
         consistency_columns=schema.names,
-        source_artifacts=[source_manifest, completion],
+        source_artifacts=[source_manifest, block / "simulation_workload_plan.json", completion],
         grouping_keys=["root_seed", "k", "shuffle_index", "game_index"],
         player_counts=[n_players],
         required_player_counts=[n_players],
@@ -336,6 +342,14 @@ def _canonical_row_shards(
         manifest_sha256=manifest_sha256,
         manifest_sidecar_sha256=manifest_adjacent_sha256,
         manifest_root=manifest_root,
+        workload=capture_source_artifact_unbound(
+            block / "simulation_workload_plan.json",
+            logical_role=_source_role(
+                validate_authenticated_artifact_metadata(
+                    block / "simulation_workload_plan.json", cfg=cfg
+                )
+            ),
+        ),
         completion_path=completion_path,
         completion_sha256=sha256_file(completion_path),
         shards=tuple(records_by_index[index] for index in range(start, end + 1)),
@@ -806,6 +820,7 @@ class _IngestUnitPublisher:
             }
             and captured is not None
             and loaded_output.manifest_roots == captured.manifests
+            and loaded_output.source_artifacts == captured.sources
             and all(
                 loaded_output.stage_identity.immutable_design_identities.get(role) == digest
                 for role, digest in captured.designs.items()
@@ -826,7 +841,7 @@ def _ingest_partition_identity(
         stage_name="ingest",
         root_seed=int(cfg.sim.seed),
         input_identities=tuple(sorted(inputs)),
-        statistical_config_sha256=cfg.stage_config_sha("ingest"),
+        statistical_config_sha256=cfg.partition_dependency_sha("ingest", "ingest"),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=2,
         method_version=INGEST_PHYSICAL_LAYOUT_VERSION,

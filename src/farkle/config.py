@@ -530,14 +530,22 @@ class AppConfig:
     def stage_cache_key_version(self, stage_key: str) -> int:
         """Return the cache schema version for ``stage_key``."""
 
-        from farkle.analysis.stage_registry import resolve_stage_definition
+        from farkle.analysis.stage_registry import resolve_scoped_stage_definition
+        from farkle.utils.scientific_dependencies import stage_producer
 
-        return int(resolve_stage_definition(stage_key).cache_key_version)
+        producer = stage_producer(self, stage_key)
+        return int(resolve_scoped_stage_definition(producer.scope, stage_key).cache_key_version)
 
     def stage_config_sha(self, stage_key: str) -> str:
         """Return the stage-scoped cache hash for ``stage_key``."""
 
         return compute_stage_config_sha(self, stage_key)
+
+    def partition_dependency_sha(self, stage: str, family: str) -> str:
+        """Resolve one classified durable unit family in the owning stage layout."""
+        from farkle.utils.scientific_identity import stage_dependency_sha256
+
+        return stage_dependency_sha256(self, stage, partition=family)
 
     def stage_cache_meta(self, stage_key: str) -> tuple[str, int]:
         """Return ``(stage_config_sha, cache_key_version)`` for ``stage_key``."""
@@ -1899,44 +1907,6 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
     return resolved
 
 
-def _assign_nested_path(target: MutableMapping[str, Any], path: str, value: Any) -> None:
-    """Assign ``value`` to a dotted nested key, creating intermediate mappings."""
-
-    parts = path.split(".")
-    cursor = target
-    for part in parts[:-1]:
-        existing = cursor.get(part)
-        if not isinstance(existing, MutableMapping):
-            existing = {}
-            cursor[part] = existing
-        cursor = existing
-    cursor[parts[-1]] = value
-
-
-def _extract_scope_value(payload: Mapping[str, Any], path: str) -> tuple[bool, Any]:
-    """Return ``(present, value)`` for a dotted nested key lookup."""
-
-    cursor: Any = payload
-    for part in path.split("."):
-        if not isinstance(cursor, Mapping) or part not in cursor:
-            return False, None
-        cursor = cursor[part]
-    return True, cursor
-
-
-def _project_effective_config(
-    payload: Mapping[str, Any], scope_paths: Sequence[str]
-) -> dict[str, Any]:
-    """Project a config payload down to the dotted paths used by a stage cache scope."""
-
-    projected: dict[str, Any] = {}
-    for path in scope_paths:
-        present, value = _extract_scope_value(payload, path)
-        if present:
-            _assign_nested_path(projected, path, value)
-    return projected
-
-
 def _validate_io_contract(io: IOConfig) -> None:
     """Validate the optional provider-neutral temporary directory."""
 
@@ -2183,26 +2153,9 @@ def compute_config_sha(cfg: AppConfig) -> str:
 def compute_stage_config_sha(cfg: AppConfig, stage_key: str) -> str:
     """Return a deterministic cache hash for ``stage_key`` based on its config scope."""
 
-    from farkle.analysis.stage_registry import resolve_stage_definition
+    from farkle.utils.scientific_identity import stage_dependency_sha256
 
-    definition = resolve_stage_definition(stage_key)
-    stage_hashable = _hashable_config_dict(cfg)
-    # Run-purpose labels do not alter statistical compute identity, but stages
-    # that publish those labels may opt into their authenticated cache scope.
-    stage_hashable["profile"] = dataclasses.asdict(cfg.profile)
-    stage_scope = _project_effective_config(stage_hashable, definition.cache_scope)
-    canonical_json = json.dumps(
-        {
-            "stage": stage_key,
-            "cache_key_version": definition.cache_key_version,
-            "freshness": cfg.freshness_key(),
-            "config": stage_scope,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    return stage_dependency_sha256(cfg, stage_key)
 
 
 def assign_config_sha(cfg: AppConfig) -> str:

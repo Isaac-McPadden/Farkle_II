@@ -852,12 +852,14 @@ def apply_native_thread_limits(policy: StageParallelPolicy) -> None:
             _NATIVE_LIMITER_CAP = resolved_cap
 
 
-def _initialize_process_worker(initializer, initargs: tuple[Any, ...]) -> None:
+def _initialize_process_worker(initializer, initargs: tuple[Any, ...], dependencies=None) -> None:
     """Mark executor children so nested stage policies collapse to one process."""
 
     os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
     if initializer is not None:
         initializer(*initargs)
+    if dependencies is not None:
+        dependencies.verify()
 
 
 def is_process_pool_worker() -> bool:
@@ -955,6 +957,9 @@ def process_map(
 
     if initargs is None:
         initargs = ()
+    from farkle.utils.scientific_identity import worker_dependencies
+
+    dependencies = worker_dependencies()
     resolved_jobs = normalize_n_jobs(n_jobs, default=1)
     submitted = 0
     completed = 0
@@ -981,6 +986,8 @@ def process_map(
         # per-process globals (e.g., run_tournament._STATE) are set up.
         if initializer is not None:
             initializer(*tuple(initargs))
+        if dependencies is not None:
+            dependencies.verify()
         for it in items:
             if memory_guard is not None:
                 report("schedule_check", submitted=submitted, completed=completed, pending=0)
@@ -1026,7 +1033,7 @@ def process_map(
         executor = ProcessPoolExecutor(
             max_workers=resolved_jobs,
             initializer=_initialize_process_worker,
-            initargs=(initializer, tuple(initargs)),
+            initargs=(initializer, tuple(initargs), dependencies),
             mp_context=mp_context,
         )
     except BaseException as exc:

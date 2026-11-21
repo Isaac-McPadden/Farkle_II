@@ -783,7 +783,9 @@ def _root_bootstrap_identity(
         stage_name=f"root_stability_{family}",
         root_seed=roots[0],
         input_identities=inputs,
-        statistical_config_sha256=cfg.stage_config_sha("root_stability"),
+        statistical_config_sha256=cfg.partition_dependency_sha(
+            "root_stability", f"root_stability_{family}"
+        ),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=1,
         method_version=ROOT_STABILITY_METHOD_VERSION,

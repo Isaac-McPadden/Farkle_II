@@ -66,6 +66,7 @@ from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.stage_completion import (
     CompletionState,
+    freshness_sha256,
     resolve_stage_state,
     stage_done_path,
     write_stage_done,
@@ -805,6 +806,7 @@ def run(
     count_route = run_partitioned_stage(
         root=count_route_root,
         identity=_partition_identity(
+            cfg,
             "rng_diagnostics_count_route",
             root_seed,
             (("curated_rows", source_sha), ("route_layout", route_layout_sha)),
@@ -841,6 +843,7 @@ def run(
     eligibility = run_partitioned_stage(
         root=eligibility_root,
         identity=_partition_identity(
+            cfg,
             "rng_diagnostics_eligibility",
             root_seed,
             (("count_route_manifest", count_route.manifest_sha256),),
@@ -925,6 +928,7 @@ def run(
     stats_route = run_partitioned_stage(
         root=stats_route_root,
         identity=_partition_identity(
+            cfg,
             "rng_diagnostics_stats_route",
             root_seed,
             (
@@ -973,6 +977,7 @@ def run(
     stats = run_partitioned_stage(
         root=stats_root,
         identity=_partition_identity(
+            cfg,
             "rng_diagnostics_stats",
             root_seed,
             (("stats_route_manifest", stats_route.manifest_sha256),),
@@ -1081,6 +1086,7 @@ def run(
 
 
 def _partition_identity(
+    cfg: AppConfig,
     stage_name: str,
     root_seed: int,
     inputs: tuple[tuple[str, str], ...],
@@ -1091,7 +1097,14 @@ def _partition_identity(
         stage_name=stage_name,
         root_seed=root_seed,
         input_identities=tuple(sorted(inputs)),
-        statistical_config_sha256=config_sha,
+        statistical_config_sha256=freshness_sha256(
+            {
+                "partition_dependencies_v1": cfg.partition_dependency_sha(
+                    "rng_diagnostics", stage_name
+                ),
+                "effective_lags_and_mode": config_sha,
+            }
+        ),
         code_identity_sha256=code_sha,
         schema_version=_PARTITION_SCHEMA_VERSION,
         method_version=_DIAGNOSTIC_METHOD_VERSION,

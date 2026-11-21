@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from farkle.config import AppConfig, ArtifactScope, effective_config_dict
+from farkle.config import AppConfig, ArtifactScope
 from farkle.protocols import (
     ARTIFACT_CONTRACT_VERSION,
     CANDIDATE_FAMILY_VERSION,
@@ -42,6 +42,7 @@ from farkle.utils.authenticated_contract import (
     AuthenticatedCompletion,
     AuthenticatedSidecar,
     CanonicalArtifactLocation,
+    CodeIdentity,
     CodeIdentityPolicy,
     CompletionOutputIdentity,
     ImmutableManifestSidecar,
@@ -59,17 +60,19 @@ from farkle.utils.authenticated_contract import (
     derive_canonical_location,
     identity_sha256,
     load_authenticated_completion,
+    load_authenticated_sidecar,
     load_immutable_manifest_sidecar,
     make_stage_identity,
     publish_immutable_manifest_bytes_atomic,
     publish_staged_authenticated_artifact_atomic,
     resolve_code_identity,
-    stage_config_identity,
     validate_authenticated_artifact_metadata,
     validate_authenticated_artifact_unbound,
     write_authenticated_completion_atomic,
 )
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
+from farkle.utils.scientific_identity import producer_config_identity
+from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import CompletionState
 
 _GLOBAL_VERSION_KEYS = {
@@ -102,41 +105,6 @@ def is_v3_config(cfg: AppConfig | None) -> bool:
     """Return whether a current application config owns this publication."""
 
     return cfg is not None
-
-
-def _flatten_field_paths(value: Mapping[str, Any], prefix: str = "") -> tuple[str, ...]:
-    paths: list[str] = []
-    for key, item in sorted(value.items()):
-        path = f"{prefix}.{key}" if prefix else key
-        if isinstance(item, Mapping):
-            paths.extend(_flatten_field_paths(item, path))
-        else:
-            paths.append(path)
-    return tuple(paths)
-
-
-def _stage_field_paths(cfg: AppConfig, stage_key: str) -> tuple[str, ...]:
-    """Expand the registry-owned cache scope into explicit public fields."""
-
-    from farkle.analysis.stage_registry import resolve_stage_definition
-
-    public = effective_config_dict(cfg)
-    paths: list[str] = []
-    for scoped in resolve_stage_definition(stage_key).cache_scope:
-        cursor: Any = public
-        for part in scoped.split("."):
-            if not isinstance(cursor, Mapping) or part not in cursor:
-                raise ArtifactContractError(
-                    f"stage cache scope {scoped!r} is absent for {stage_key}"
-                )
-            cursor = cursor[part]
-        if isinstance(cursor, Mapping):
-            paths.extend(_flatten_field_paths(cursor, scoped))
-        else:
-            paths.append(scoped)
-    if not paths:
-        paths = list(_flatten_field_paths(public))
-    return tuple(sorted(set(paths)))
 
 
 def _stage_key_for_path(cfg: AppConfig, path: Path, producer: str) -> str:
@@ -393,6 +361,20 @@ def _manifest_role(source: Any) -> str:
     return f"manifest.{location.stage_key}.{location.scope}.k_{k}.{relative}"
 
 
+def exact_direct_sources(output: Path, sources: Sequence[Path]) -> bool:
+    """Check the caller's complete input inventory, including cross-root rating cells."""
+    metadata = load_authenticated_sidecar(output)
+    expected = {_source_role(load_authenticated_sidecar(path)): path for path in sources}
+    if len(expected) != len(sources) or set(expected) != {
+        source.logical_role for source in metadata.source_artifacts
+    }:
+        return False
+    return all(
+        sha256_file(sidecar_path(expected[source.logical_role])) == source.sidecar_sha256
+        for source in metadata.source_artifacts
+    )
+
+
 def _capture_inputs(
     metadata: ArtifactSidecar,
 ) -> tuple[
@@ -586,6 +568,92 @@ def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
     )
 
 
+def scientific_artifact_binding(source: AuthenticatedSidecar, code: CodeIdentity) -> str:
+    origin = source.stage_identity.immutable_design_identities.get("publication_science_v1")
+    if origin is None or source.stage_identity.code != code:
+        raise ArtifactContractError(
+            f"Unclassified or incompatible upstream producer science at {source.artifact.location}"
+        )
+    return identity_sha256({"artifact": source.artifact, "producer": origin})
+
+
+def _scientific_source_bindings(
+    code: CodeIdentity,
+    sources: Sequence[SourceArtifactIdentity],
+    manifests: Sequence[ManifestRootIdentity],
+    source_paths: Mapping[str, Path],
+    manifest_paths: Mapping[str, tuple[Path, Path]],
+) -> dict[str, str]:
+    """Propagate producer science separately from the exact v3 provenance edges."""
+    bindings: dict[str, str] = {}
+    for source in sources:
+        metadata = load_authenticated_sidecar(source_paths[source.logical_role])
+        if metadata.sidecar_contract_sha256 != source.sidecar_contract_sha256:
+            raise ArtifactContractError(
+                f"scientific input changed during capture: {source.logical_role}"
+            )
+        bindings[source.logical_role] = scientific_artifact_binding(metadata, code)
+    for manifest in manifests:
+        path, _ = manifest_paths[manifest.logical_role]
+        upstream = load_immutable_manifest_sidecar(path)
+        origin = upstream.stage_identity.immutable_design_identities.get("publication_science_v1")
+        if (
+            origin is None
+            or upstream.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
+            or upstream.stage_identity.code != code
+        ):
+            raise ArtifactContractError(
+                f"Missing or incompatible scientific manifest identity at {path}"
+            )
+        members = upstream.stage_identity.immutable_design_identities.get("manifest_members_v1")
+        if members is None:
+            raise ArtifactContractError(f"Unclassified scientific manifest members at {path}")
+        bindings[manifest.logical_role] = identity_sha256(
+            {"producer": origin, "location": manifest.location, "members": members}
+        )
+    return bindings
+
+
+def _bind_publication_science(
+    cfg: AppConfig,
+    stage: str,
+    designs: dict[str, str],
+    method: MethodContract,
+    versions: VersionIdentity,
+    code: CodeIdentity,
+    sources: Sequence[SourceArtifactIdentity],
+    manifests: Sequence[ManifestRootIdentity],
+    source_paths: Mapping[str, Path],
+    manifest_paths: Mapping[str, tuple[Path, Path]],
+) -> None:
+    components = cfg.stage_config_sha(stage)
+    designs["stage_dependencies_v1"] = components
+    designs["publication_science_v1"] = identity_sha256(
+        {
+            "version": 1,
+            "stage_dependencies": components,
+            "method": method,
+            "versions": versions,
+            "sources": _scientific_source_bindings(
+                code, sources, manifests, source_paths, manifest_paths
+            ),
+            "controls": {
+                key: value
+                for key, value in designs.items()
+                if key.startswith("control:")
+                and not (
+                    ".done.json:" in key
+                    and sources
+                    and (
+                        (stage == "metrics" and method.procedure.startswith("outcome_"))
+                        or (method.procedure == "ingest_simulation_rows" and manifests)
+                    )
+                )
+            },
+        }
+    )
+
+
 def _format_identity(path: Path, staged_path: Path) -> ArtifactFormatIdentity | None:
     if path.suffix.lower() == ".parquet":
         return None
@@ -653,6 +721,7 @@ def _json_shape(value: Any) -> Any:
     raise ArtifactContractError(f"unsupported JSON value {type(value).__name__}")
 
 
+@numerical_observation()
 def publish_staged_v3_from_metadata(
     staged_path: Path,
     final_path: Path,
@@ -688,18 +757,25 @@ def publish_staged_v3_from_metadata(
         value = getattr(method, name)
         if value is not None:
             designs[name] = value
-    effective_config_dict(cfg)
-    config_identity = stage_config_identity(
-        cfg,
-        stage_key=stage_key,
-        field_paths=_stage_field_paths(cfg, stage_key),
-    )
+    config_identity = producer_config_identity(cfg, stage_key)
     code = cfg._code_identity
     if code is None:
         code = resolve_code_identity(
             Path(__file__).resolve().parents[3],
             policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
         )
+    _bind_publication_science(
+        cfg,
+        stage_key,
+        designs,
+        method,
+        versions,
+        code,
+        sources,
+        manifests,
+        source_paths,
+        manifest_paths,
+    )
     upstream = tuple(item.sha256 for item in sources) + tuple(item.sha256 for item in manifests)
     stage_identity = make_stage_identity(
         stage_key=stage_key,
@@ -728,6 +804,7 @@ def publish_staged_v3_from_metadata(
     return _compatibility_view(final_path, metadata=metadata, authenticated=authenticated)
 
 
+@numerical_observation()
 def publish_native_manifest_v3(
     path: Path,
     *,
@@ -738,6 +815,7 @@ def publish_native_manifest_v3(
     operation: str,
     player_counts: list[int],
     native_records: Sequence[Mapping[str, Any]] | None = None,
+    member_science: str | None = None,
 ) -> None:
     """Publish native manifest bytes with a coordinate-sorted immutable root."""
 
@@ -782,22 +860,48 @@ def publish_native_manifest_v3(
         metadata=synthetic,
     )
     method = _typed_method(cfg, synthetic, method_version=method_version)
-    sources, manifests, _, _, designs = _capture_inputs(synthetic)
+    sources, manifests, captured_source_paths, _, designs = _capture_inputs(synthetic)
     if cfg._run_lineage_sha256 is not None:
         designs["run_lineage_sha256"] = cfg._run_lineage_sha256
     if cfg._game_profile_sha256 is not None:
         designs["game_profile_sha256"] = cfg._game_profile_sha256
     if manifests:
         raise ArtifactContractError("native shard manifest sources must be ordinary artifacts")
-    config_identity = stage_config_identity(
-        cfg,
-        stage_key=stage_key,
-        field_paths=_stage_field_paths(cfg, stage_key),
-    )
+    config_identity = producer_config_identity(cfg, stage_key)
     code = cfg._code_identity or resolve_code_identity(
         Path(__file__).resolve().parents[3],
         policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
     )
+    _bind_publication_science(
+        cfg,
+        stage_key,
+        designs,
+        method,
+        versions,
+        code,
+        sources,
+        manifests,
+        captured_source_paths,
+        {},
+    )
+    if member_science is None:
+        # Generic callers supply authenticated member artifacts directly.
+        by_content = {source.artifact.content_sha256: source for source in sources}
+        if len(by_content) != len(sources) or any(
+            entry.data_sha256 not in by_content
+            or entry.sidecar_sha256 != by_content[entry.data_sha256].sidecar_sha256
+            for entry in entries
+        ):
+            raise ArtifactContractError(
+                "Missing scientific producer for immutable manifest members"
+            )
+        member_science = identity_sha256(
+            [
+                (e.coordinate, e.data_sha256, e.schema_fingerprint_sha256)
+                for e in sorted(entries, key=lambda e: e.coordinate)
+            ]
+        )
+    designs["manifest_members_v1"] = member_science
     stage_identity = make_stage_identity(
         stage_key=stage_key,
         stage_cache_key_version=cfg.stage_cache_key_version(stage_key),
@@ -1079,8 +1183,10 @@ def _completion_contract(
     # stage-health consumers intentionally do not rediscover ad-hoc input
     # lists.
     designs: dict[str, str] = {}
-    if cfg._run_lineage_sha256 is not None:
-        designs["run_lineage_sha256"] = cfg._run_lineage_sha256
+    # Exact output-sidecar hashes retain their original producer lineages.
+    # A later invocation may validate those publications under a new lifecycle.
+    if stage_key == "reporting":
+        designs["release_profile_v1"] = identity_sha256(cfg.profile)
     if cfg._game_profile_sha256 is not None:
         designs["game_profile_sha256"] = cfg._game_profile_sha256
     for path in output_files:
@@ -1144,11 +1250,8 @@ def _completion_contract(
 
     versions = sidecars[0].versions if sidecars else first_manifest_versions
     assert versions is not None
-    config_identity = stage_config_identity(
-        cfg,
-        stage_key=stage_key,
-        field_paths=_stage_field_paths(cfg, stage_key),
-    )
+    config_identity = producer_config_identity(cfg, stage_key)
+    designs["stage_dependencies_v1"] = cfg.stage_config_sha(stage_key)
     code = cfg._code_identity
     if code is None:
         code = resolve_code_identity(
@@ -1258,6 +1361,7 @@ def _completion_contract(
     )
 
 
+@numerical_observation()
 def write_v3_stage_completion(
     done_path: Path,
     *,
@@ -1332,6 +1436,7 @@ def write_v3_stage_completion(
     )
 
 
+@numerical_observation()
 def resolve_v3_stage_state(
     done_path: Path,
     *,

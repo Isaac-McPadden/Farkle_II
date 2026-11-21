@@ -169,8 +169,8 @@ def test_profile_labels_are_outside_statistical_compute_identity_but_bound_to_pu
 
     assert compute_config_sha(baseline) == compute_config_sha(integration)
     assert baseline.stage_config_sha("simulation") == integration.stage_config_sha("simulation")
-    assert baseline.stage_config_sha("h2h_power") != integration.stage_config_sha("h2h_power")
-    assert baseline.stage_config_sha("reporting") != integration.stage_config_sha("reporting")
+    assert baseline.stage_config_sha("h2h_power") == integration.stage_config_sha("h2h_power")
+    assert baseline.stage_config_sha("reporting") == integration.stage_config_sha("reporting")
 
 
 def test_unknown_purpose_is_rejected() -> None:

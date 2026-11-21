@@ -39,7 +39,11 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
-from farkle.utils.authenticated_contract import identity_sha256
+from farkle.utils.authenticated_contract import (
+    identity_sha256,
+    producer_code_identity,
+    validate_authenticated_artifact_unbound,
+)
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -276,6 +280,36 @@ def _resolve_design(cfg: AppConfig, k: int) -> _Design:
         tuple(map(str, inputs)),
         sha256_file(source),
         sha256_file(roster_path),
+    )
+
+
+def _partition_design(
+    cfg: AppConfig,
+    d: _Design,
+    family: str,
+    inputs: list[Path],
+    *,
+    specification: dict[str, Any] | None = None,
+) -> str:
+    """Bind ordered data inputs; the caller independently requires the completion stamps."""
+    from farkle.utils.release_identity import scientific_artifact_binding
+
+    code = producer_code_identity(cfg)
+    return identity_sha256(
+        {
+            "partition_dependencies_v1": cfg.partition_dependency_sha("metrics", family),
+            "design": {
+                name: value for name, value in asdict(d).items() if name not in ("source", "inputs")
+            },
+            "inputs": [
+                scientific_artifact_binding(
+                    validate_authenticated_artifact_unbound(path, validate_provenance=False), code
+                )
+                for path in inputs
+                if not path.name.endswith(".done.json")
+            ],
+            "specification": specification,
+        }
     )
 
 
@@ -807,7 +841,7 @@ class _Stages:
             "analysis",
             d.root,
             (("plan", sha256_file(plan)),),
-            identity_sha256(asdict(d)),
+            str(json.loads(plan.read_bytes())["design_hash"]),
             resolved_code_identity_sha256(cfg),
             1,
             OUTCOME_METHOD_VERSION,
@@ -1098,18 +1132,8 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
     budget = _budget(cfg)
     _slice_row_limit(k, budget)  # Fail before publication if even one row cannot be admitted.
     plan_path = cfg.outcome_units_dir(k) / "plan.json"
-    design_hash = identity_sha256(
-        {
-            "design": asdict(d),
-            "inputs": [
-                (
-                    p,
-                    sha256_file(Path(p)),
-                    sha256_file(sidecar_path(p)) if sidecar_path(p).exists() else None,
-                )
-                for p in d.inputs
-            ],
-        }
+    design_hash = _partition_design(
+        cfg, d, "outcome_publication", [Path(path) for path in d.inputs]
     )
     code_hash = resolved_code_identity_sha256(cfg)
     plan: dict[str, Any] | None = None
@@ -1135,7 +1159,11 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
             raise ValueError("outcome checkpoint path escaped its configured owner")
         # A changed source/method/code cannot reuse old checkpoints. Remove only
         # this producer's generated state so stale graph members cannot survive.
-        if checkpoint_root.exists():
+        if checkpoint_root.exists() and any(checkpoint_root.iterdir()):
+            if not force:
+                raise ValueError(
+                    f"Incompatible partition evidence at {checkpoint_root}; preserve it and use a new output root"
+                )
             shutil.rmtree(checkpoint_root)
         rows_per_unit = max(1, budget // (16 * _RUN_DTYPE.itemsize * (12 * k + 2)))
         plan = {

@@ -21,6 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
+from threadpoolctl import threadpool_limits
 
 from farkle.analysis.h2h_authorization import resolve_cap_authorization
 from farkle.config import AppConfig, ArtifactScope
@@ -46,9 +47,16 @@ from farkle.utils.authenticated_contract import (
     AuthenticatedContractError,
     load_authenticated_sidecar,
 )
-from farkle.utils.frozen_h2h import frozen_family_inputs
+from farkle.utils.frozen_h2h import (
+    BUILTIN_ENGINE,
+    SYNTHETIC_ENGINE,
+    authenticated_strategy_design,
+    canonical_strategy_mapping,
+    frozen_family_inputs,
+)
 from farkle.utils.parallel import (
     apply_native_thread_limits,
+    is_process_pool_worker,
     make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
@@ -56,6 +64,7 @@ from farkle.utils.parallel import (
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
+from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import (
     CompletionState,
     stage_done_path,
@@ -518,6 +527,7 @@ def _schedule_hash(
     max_attempt_multiplier: float,
     min_candidate_completion_rate: float,
     game_profile_sha256: str | None,
+    frozen_design: Mapping[str, Any] | None = None,
 ) -> str:
     """Hash the immutable statistical schedule contract, excluding operational caps."""
 
@@ -541,6 +551,8 @@ def _schedule_hash(
         "score_test_id": SCORE_TEST_ID,
         "power_method_id": POWER_METHOD_ID,
     }
+    if frozen_design is not None:
+        contract["frozen_design"] = dict(frozen_design)
     if game_profile_sha256 is not None:
         contract["game_profile_sha256"] = game_profile_sha256
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -636,6 +648,23 @@ def _planning_sidecar_common(
 
 
 def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArtifacts:
+    """Publish a scientific plan for the built-in game engine."""
+    return _plan_h2h_schedule(cfg, force=force, engine=BUILTIN_ENGINE)
+
+
+@numerical_observation()
+def _plan_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HScheduleArtifacts:
+    """Evaluate planning methods under their declared numerical context."""
+    threads = (
+        cfg.resources.native_threads_per_worker
+        if cfg.resource_limiter_mode.value == "enabled"
+        else None
+    )
+    with threadpool_limits(limits=threads):
+        return _publish_h2h_schedule(cfg, force=force, engine=engine)
+
+
+def _publish_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HScheduleArtifacts:
     """Power-size and freeze equal pair/root/order simulation blocks."""
 
     if (
@@ -657,6 +686,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         )
     if len(roots) == 1 and not cfg.head2head.allow_single_root:
         raise ValueError("single-root H2H is disabled by head2head.allow_single_root")
+    design = authenticated_strategy_design(cfg, candidates, engine=engine)
     pair_count = len(candidates) * (len(candidates) - 1) // 2
     alpha_per_pair = cfg.head2head.family_alpha / pair_count
     scenarios = tuple(float(value) for value in H2H_SEAT1_ADVANTAGE_SCENARIOS)
@@ -691,6 +721,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     max_attempts_per_block = math.ceil(max_attempt_multiplier * block_games)
     maximum_total_attempts = max_attempts_per_block * len(roots) * 2 * pair_count
     schedule_hash = _schedule_hash(
+        frozen_design=design,
         family_hash=family_hash,
         roots=roots,
         effect=cfg.head2head.practical_delta,
@@ -714,6 +745,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         alpha_per_pair=alpha_per_pair,
     )
     plan: dict[str, Any] = {
+        "frozen_design": design,
         "family_hash": family_hash,
         "schedule_hash": schedule_hash,
         "candidate_count": len(candidates),
@@ -774,6 +806,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         game_profile_sha256=cfg._game_profile_sha256,
     )
     family_sources = [
+        cfg.strategy_manifest_root_path(),
         cfg.h2h_candidate_family_manifest_path(),
         cfg.h2h_candidate_family_path(),
     ]
@@ -788,6 +821,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         sidecar_artifacts=expected_outputs,
     ):
         existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
+        if existing_plan.get("schedule_hash") != schedule_hash:
+            raise RuntimeError("published H2H statistical design differs; use a new output root")
         authorization = _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
         blocked = authorization["execution_authorization"] != "ready"
         return H2HScheduleArtifacts(
@@ -1247,18 +1282,34 @@ def _initialize_h2h_worker(
     strategy_manifest_path: Path,
     oracle_game_profile: GameProfile | None,
     policy: Any,
+    authorized_mapping: list[dict[str, Any]],
+    cfg: AppConfig,
+    expected_dependencies: str,
 ) -> None:
     """Load one immutable manifest per worker before processing any blocks."""
 
     global _H2H_WORKER_INITIALIZATION_SECONDS, _H2H_WORKER_INITIALIZER_REPORT_PENDING
     global _H2H_WORKER_MANIFEST, _H2H_WORKER_MANIFEST_PATH, _H2H_WORKER_PROFILE
+    from farkle.utils.scientific_identity import stage_dependency_sha256
+
     started = time.perf_counter()
-    apply_native_thread_limits(policy)
+    if is_process_pool_worker():
+        apply_native_thread_limits(policy)
+    if stage_dependency_sha256(cfg, "h2h_execute", observe_worker=True) != expected_dependencies:
+        raise ValueError("Worker scientific dependencies differ from the authorized H2H design")
     loaded = False
+    candidates = [row["strategy_id"] for row in authorized_mapping]
     if _H2H_WORKER_MANIFEST is None or strategy_manifest_path != _H2H_WORKER_MANIFEST_PATH:
-        _H2H_WORKER_MANIFEST = pd.read_parquet(strategy_manifest_path)
+        manifest = pd.read_parquet(
+            strategy_manifest_path, filters=[("strategy_id", "in", candidates)]
+        )
+        if canonical_strategy_mapping(manifest, candidates) != authorized_mapping:
+            raise ValueError("Worker strategy mapping differs from authorized H2H design")
+        _H2H_WORKER_MANIFEST = manifest
         _H2H_WORKER_MANIFEST_PATH = strategy_manifest_path
         loaded = True
+    if canonical_strategy_mapping(_H2H_WORKER_MANIFEST, candidates) != authorized_mapping:
+        raise ValueError("Worker strategy mapping differs from authorized H2H design")
     _H2H_WORKER_PROFILE = oracle_game_profile
     if loaded:
         _H2H_WORKER_INITIALIZATION_SECONDS = time.perf_counter() - started
@@ -1583,8 +1634,48 @@ def execute_h2h_schedule(
     *,
     n_jobs: int | None = None,
     chunk_games: int = DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT,
-    block_runner: BlockRunner = _simulate_block,
     oracle_game_profile: GameProfile | None = None,
+) -> H2HExecutionArtifacts:
+    """Execute a scientific plan with its authorized built-in implementation."""
+    return _execute_h2h_schedule(
+        cfg,
+        n_jobs=n_jobs,
+        chunk_games=chunk_games,
+        oracle_game_profile=oracle_game_profile,
+    )
+
+
+@numerical_observation()
+def _execute_h2h_schedule(
+    cfg: AppConfig,
+    *,
+    n_jobs: int | None = None,
+    chunk_games: int = DEFAULT_H2H_CHECKPOINT_ATTEMPT_LIMIT,
+    synthetic_runner: BlockRunner | None = None,
+    oracle_game_profile: GameProfile | None = None,
+) -> H2HExecutionArtifacts:
+    threads = (
+        cfg.resources.native_threads_per_worker
+        if cfg.resource_limiter_mode.value == "enabled"
+        else None
+    )
+    with threadpool_limits(limits=threads):
+        return _execute_blocks(
+            cfg,
+            n_jobs=n_jobs,
+            chunk_games=chunk_games,
+            synthetic_runner=synthetic_runner,
+            oracle_game_profile=oracle_game_profile,
+        )
+
+
+def _execute_blocks(
+    cfg: AppConfig,
+    *,
+    n_jobs: int | None,
+    chunk_games: int,
+    synthetic_runner: BlockRunner | None,
+    oracle_game_profile: GameProfile | None,
 ) -> H2HExecutionArtifacts:
     """Execute missing immutable blocks and publish their row-preserving union.
 
@@ -1616,6 +1707,14 @@ def execute_h2h_schedule(
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("H2H execution requires a complete valid power plan")
+    design = plan.get("frozen_design")
+    if not isinstance(design, dict) or design.get("engine") != (
+        BUILTIN_ENGINE if synthetic_runner is None else SYNTHETIC_ENGINE
+    ):
+        raise AuthenticatedContractError(
+            "H2H execution engine does not match the frozen authorization; "
+            "preserve the existing plan and use an appropriately issued plan"
+        )
     _refresh_execution_authorization(cfg, plan, blocked=False)
     resolve_cap_authorization(cfg, plan, request=True)
     _refresh_execution_authorization(cfg, plan, blocked=False)
@@ -1848,7 +1947,6 @@ def execute_h2h_schedule(
         n_jobs_override=configured_jobs,
         resources=cfg.resources,
     )
-    apply_native_thread_limits(policy)
     worker_count = policy.process_workers
     scheduler_state.update(
         requested_workers=configured_jobs,
@@ -1868,7 +1966,7 @@ def execute_h2h_schedule(
     update_progress()
     memory_guard = make_process_tree_memory_guard(cfg.resources)
     memory_guard.check_before_schedule(force=True)
-    if block_runner is not _simulate_block and worker_count != 1:
+    if synthetic_runner is not None and worker_count != 1:
         raise ValueError("custom H2H block runners require n_jobs=1")
     scheduler_active_count = 0
     scheduler_generation = 0
@@ -1930,7 +2028,7 @@ def execute_h2h_schedule(
             long_tail=(scheduler_active_count <= worker_count or scheduler_generation > 1),
         )
 
-    if block_runner is _simulate_block and pending:
+    if synthetic_runner is None and pending:
         # ``process_map`` is the shared bounded-submission policy.  Process
         # workers receive the inherited Step 5.5 Job/cgroup boundary before
         # this initializer loads the manifest or allocates model state.
@@ -1963,7 +2061,14 @@ def execute_h2h_schedule(
                     tasks,
                     n_jobs=min(worker_count, len(active_chunks)),
                     initializer=_initialize_h2h_worker,
-                    initargs=(manifest_path, oracle_game_profile, policy),
+                    initargs=(
+                        manifest_path,
+                        oracle_game_profile,
+                        policy,
+                        plan["frozen_design"]["strategy_mapping"],
+                        cfg,
+                        plan["frozen_design"]["execution_dependencies_sha256"],
+                    ),
                     window=worker_count * cfg.resources.max_in_flight_per_worker,
                     mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
                     memory_guard=memory_guard,
@@ -2039,7 +2144,7 @@ def execute_h2h_schedule(
                     int(item["order"]),
                 ),
             )
-    elif pending:
+    elif pending and synthetic_runner is not None:
         # Custom runners are intentionally serial test/instrumentation hooks.
         for block in pending:
             current = block
@@ -2059,7 +2164,7 @@ def execute_h2h_schedule(
                 simulation_started = time.perf_counter()
                 result = _normalize_runner_result(
                     current,
-                    block_runner(current, manifest_path, chunk_plan.attempt_count),
+                    synthetic_runner(current, manifest_path, chunk_plan.attempt_count),
                 )
                 simulation_worker_seconds += time.perf_counter() - simulation_started
                 checkpoint_started = time.perf_counter()

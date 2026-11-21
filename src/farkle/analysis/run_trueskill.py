@@ -80,6 +80,7 @@ from farkle.utils.parallel import (
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
 from farkle.utils.release_identity import is_v3_config
+from farkle.utils.scientific_identity import WorkerDependencies, producer_scope, worker_dependencies
 from farkle.utils.stage_completion import freshness_sha256
 from farkle.utils.strategy_ids import (
     STRATEGY_ID_ARROW_TYPE,
@@ -1179,11 +1180,15 @@ def _rate_block_worker(
                     )
 
 
-def _initialize_trueskill_worker(policy: StageParallelPolicy) -> None:
+def _initialize_trueskill_worker(
+    policy: StageParallelPolicy, dependencies: WorkerDependencies | None = None
+) -> None:
     """Apply the resolved native-thread cap in spawned rating workers."""
 
     os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
     apply_native_thread_limits(policy)
+    if dependencies is not None:
+        dependencies.verify()
 
 
 def run_trueskill(
@@ -1299,7 +1304,7 @@ def run_trueskill(
             max_workers=actual_workers,
             mp_context=mp_context,
             initializer=_initialize_trueskill_worker,
-            initargs=(policy,),
+            initargs=(policy, worker_dependencies()),
         )
         clean_shutdown = False
         futures: dict[cf.Future[tuple[str, int]], Path] = {}
@@ -1467,7 +1472,7 @@ def _resolve_root_row_data_dir(cfg: AppConfig) -> Path | None:
 
 
 def _trueskill_cell_freshness(cfg: AppConfig) -> str:
-    """Bind resumable cells to the same scoped method, code, and run lineage."""
+    """Bind resumable cells to scoped producer dependencies and the Git guard."""
 
     code_identity = cfg._code_identity or resolve_code_identity(
         _REPO_ROOT.parent,
@@ -1478,16 +1483,10 @@ def _trueskill_cell_freshness(cfg: AppConfig) -> str:
             "stage": "trueskill_cell",
             "stage_config_sha": cfg.stage_config_sha("trueskill"),
             "cache_key_version": cfg.stage_cache_key_version("trueskill"),
-            "freshness_key": cfg.freshness_key(),
+            "cell_dependency_version": 2,
             "trueskill_cell_method_version": TRUESKILL_CELL_METHOD_VERSION,
-            "hyperparameters": {
-                "beta": cfg.trueskill.beta,
-                "tau": cfg.trueskill.tau,
-                "draw_probability": cfg.trueskill.draw_probability,
-            },
             "ordered_input_contract": "exact_parquet_bytes_in_declared_row_order",
             "code_identity": asdict(code_identity),
-            "run_lineage_sha256": cfg._run_lineage_sha256,
         }
     )
 
@@ -1638,9 +1637,8 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
         }
         if cfg.io.temp_dir is not None:
             run_kwargs["temp_dir"] = cfg.io.temp_dir
-        run_trueskill(
-            **run_kwargs,
-        )
+        with producer_scope(cfg, "trueskill"):
+            run_trueskill(**run_kwargs)
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}"):

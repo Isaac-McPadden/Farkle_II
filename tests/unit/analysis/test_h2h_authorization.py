@@ -8,9 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
+from tests.helpers.h2h_oracle import execute_oracle, plan_oracle, publish_fixture_family
 from tests.unit.analysis.test_h2h_schedule import _cfg, _write_frozen_family
 
 from farkle.analysis import h2h_authorization as consent
@@ -29,11 +28,177 @@ def planned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[AppConfig,
     _write_frozen_family(cfg, (1, 2))
     monkeypatch.setattr(schedule, "_minimum_block_games", lambda **kwargs: 2)
     monkeypatch.setattr(schedule, "_worst_scenario_power", lambda **kwargs: 0.9)
-    schedule.plan_h2h_schedule(cfg)
-    manifest = cfg.strategy_manifest_root_path()
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest)
+    plan_oracle(cfg)
     return cfg, json.loads(cfg.h2h_power_plan_path().read_text())
+
+
+def test_planning_requires_authenticated_mapping_before_publication(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, (1, 2))
+    path = cfg.strategy_manifest_root_path()
+    sidecar_path(path).unlink()
+    with pytest.raises(RuntimeError, match="authenticated strategy manifest"):
+        schedule.plan_h2h_schedule(cfg)
+    assert not cfg.h2h_power_plan_path().exists()
+    assert not cfg.h2h_block_manifest_path().exists()
+    assert not cfg.h2h_cap_authorization_path().exists()
+
+
+def test_equal_candidate_ids_cannot_transfer_strategy_authorization(tmp_path, monkeypatch):
+    from tests.helpers.artifact_sidecars import (
+        clean_test_code_identity,
+        publish_v3_strategy_manifest,
+    )
+
+    from farkle.simulation.strategies import ThresholdStrategy
+
+    monkeypatch.setattr(schedule, "_minimum_block_games", lambda **kwargs: 2)
+    monkeypatch.setattr(schedule, "_worst_scenario_power", lambda **kwargs: 0.9)
+    plans = []
+    for threshold in (300, 900):
+        cfg = _cfg(tmp_path / str(threshold))
+        cfg._code_identity = clean_test_code_identity()
+        cfg.head2head.total_game_cap = 1
+        publish_fixture_family(cfg, [1, 2])
+        publish_v3_strategy_manifest(
+            cfg,
+            tuple(ThresholdStrategy(score_threshold=threshold, strategy_id=sid) for sid in (1, 2)),
+        )
+        schedule.plan_h2h_schedule(cfg)
+        plans.append(json.loads(cfg.h2h_power_plan_path().read_bytes()))
+    assert plans[0]["family_hash"] == plans[1]["family_hash"]
+    assert plans[0]["schedule_hash"] != plans[1]["schedule_hash"]
+    with (
+        consent.cap_authorization_policy(override=consent.authorization_token(plans[0])),
+        pytest.raises(consent.H2HAuthorizationRequired, match="override_mismatch"),
+    ):
+        consent.resolve_cap_authorization(cfg, plans[1], request=True)
+
+    frozen = cfg.h2h_cap_authorization_path().read_bytes()
+    with pytest.raises(RuntimeError, match="Immutable root strategy manifest"):
+        publish_v3_strategy_manifest(
+            cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2))
+        )
+    # Replace both files externally with another valid publication to exercise the
+    # independent consumer check even when a writer bypasses frozen publication.
+    import shutil
+
+    other = _cfg(tmp_path / "300").strategy_manifest_root_path()
+    shutil.copyfile(other, cfg.strategy_manifest_root_path())
+    shutil.copyfile(sidecar_path(other), sidecar_path(cfg.strategy_manifest_root_path()))
+    with pytest.raises(RuntimeError, match="frozen source|frozen H2H"):
+        schedule.execute_h2h_schedule(cfg)
+    assert cfg.h2h_cap_authorization_path().read_bytes() == frozen
+
+
+def test_legacy_authorization_reader_preserves_identity_but_cannot_issue_consent(tmp_path):
+    from farkle.utils.frozen_h2h import verify_frozen_strategy_design
+
+    legacy = {"schedule_hash": "a" * 64, "maximum_total_attempts": 10}
+    # Golden identity from the pre-scientific-design schedule contract.
+    assert (
+        schedule._schedule_hash(
+            family_hash="a" * 64,
+            roots=(11, 22),
+            effect=0.03,
+            family_alpha=0.05,
+            alpha_per_pair=0.01,
+            target_power=0.8,
+            scenarios=(0.0, 0.05),
+            block_games=4,
+            max_attempt_multiplier=2.0,
+            min_candidate_completion_rate=0.99,
+            game_profile_sha256=None,
+        )
+        == "6438181305bfdcdca0de0300d1d7db39386084ffcdcc0dca900cc63762c2251c"
+    )
+    assert consent.authorization_token(legacy) == f"{'a' * 64}:10"
+    with pytest.raises(RuntimeError, match="Historical H2H plan"):
+        verify_frozen_strategy_design(_cfg(tmp_path), legacy)
+
+
+def test_root_force_preserves_authenticated_mapping_before_and_after_external_pair_freeze(
+    tmp_path, monkeypatch
+):
+    from tests.helpers.artifact_sidecars import (
+        make_authenticated_v3_config,
+        publish_v3_strategy_manifest,
+    )
+
+    from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+    from farkle.simulation import runner
+    from farkle.simulation.strategies import ThresholdStrategy
+    from farkle.utils.frozen_h2h import verify_frozen_strategy_design
+
+    first, second = (
+        SeedRunContext.from_config(
+            make_authenticated_v3_config(tmp_path, name=f"root_{seed}", root_seed=seed)
+        )
+        for seed in (11, 22)
+    )
+    root = first.config
+    old = [ThresholdStrategy(strategy_id=i, score_threshold=100 * i) for i in (1, 2)]
+    new = [ThresholdStrategy(strategy_id=i, score_threshold=200 * i) for i in (1, 2)]
+    mapping = publish_v3_strategy_manifest(root, tuple(old))
+    files = (mapping, sidecar_path(mapping))
+    original = [(p.read_bytes(), p.stat().st_mtime_ns) for p in files]
+    checkpoint = root.n_dir(2) / "2p_checkpoint.pkl"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(b"existing checkpoint")
+
+    def require_refusal():
+        with pytest.raises(ValueError, match="manifest mismatch.*new output root"):
+            runner.run_single_n(root, 2, new, force=True)
+        assert checkpoint.read_bytes() == b"existing checkpoint"
+        assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in files] == original
+
+    require_refusal()
+    pair = RootPairRunContext.from_root_contexts(
+        (first, second), pair_root=tmp_path / "external_pair"
+    ).config
+    publish_fixture_family(pair, [1, 2])
+    monkeypatch.setattr(schedule, "_minimum_block_games", lambda **_: 1)
+    monkeypatch.setattr(schedule, "_worst_scenario_power", lambda **_: 0.9)
+    schedule.plan_h2h_schedule(pair)
+    plan = json.loads(pair.h2h_power_plan_path().read_bytes())
+    consent_bytes = pair.h2h_cap_authorization_path().read_bytes()
+    require_refusal()
+
+    def stop_before_games(**_):
+        raise InterruptedError("fixture stops before games")
+
+    monkeypatch.setattr(runner.tournament_mod, "run_tournament", stop_before_games)
+    with pytest.raises(InterruptedError, match="fixture stops before games"):
+        runner.run_single_n(root, 2, old, force=True)
+    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in files] == original
+    verify_frozen_strategy_design(pair, plan)
+    assert pair.h2h_cap_authorization_path().read_bytes() == consent_bytes
+
+
+def test_builtin_and_oracle_consent_cannot_cross_the_execution_boundary(tmp_path, monkeypatch):
+    monkeypatch.setattr(schedule, "_minimum_block_games", lambda **kwargs: 2)
+    monkeypatch.setattr(schedule, "_worst_scenario_power", lambda **kwargs: 0.9)
+    tokens = []
+    for engine, planner in (("scientific", schedule.plan_h2h_schedule), ("oracle", plan_oracle)):
+        cfg = _cfg(tmp_path / engine)
+        cfg.head2head.total_game_cap = 1
+        _write_frozen_family(cfg, (1, 2))
+        planner(cfg)
+        plan = json.loads(cfg.h2h_power_plan_path().read_bytes())
+        token = consent.authorization_token(plan)
+        tokens.append(token)
+        original = cfg.h2h_cap_authorization_path().read_bytes()
+        with (
+            consent.cap_authorization_policy(override=token),
+            pytest.raises(RuntimeError, match="engine does not match"),
+        ):
+            if engine == "scientific":
+                execute_oracle(cfg, block_runner=lambda *_: pytest.fail("unapproved engine ran"))
+            else:
+                schedule.execute_h2h_schedule(cfg)
+        assert cfg.h2h_cap_authorization_path().read_bytes() == original
+        assert not cfg.h2h_block_results_dir().exists()
+    assert tokens[0] != tokens[1]
 
 
 def _runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
@@ -63,8 +228,8 @@ def test_under_equal_unlimited_never_prompt(planned, monkeypatch, cap) -> None:
     cfg.head2head.total_game_cap = cap
     prompts = _terminal(monkeypatch, [])
     with consent.cap_authorization_policy(interactive=True):
-        schedule.plan_h2h_schedule(cfg)
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        plan_oracle(cfg)
+        execute_oracle(cfg, block_runner=_runner)
     assert not prompts
     assert plan["maximum_total_attempts"] == 16
 
@@ -102,9 +267,7 @@ def test_refusal_preserves_work_and_never_executes(planned, monkeypatch, answer,
         consent.cap_authorization_policy(interactive=True),
         pytest.raises(consent.H2HAuthorizationRequired) as error,
     ):
-        schedule.execute_h2h_schedule(
-            cfg, block_runner=lambda *args: pytest.fail("unauthorized work")
-        )
+        execute_oracle(cfg, block_runner=lambda *args: pytest.fail("unauthorized work"))
     assert error.value.reason == reason
     assert "--h2h-authorize" in str(error.value)
     assert all(p.read_bytes() == data for p, data in before.items())
@@ -124,7 +287,7 @@ def test_invalid_then_lowercase_approval_survives_replay_and_finalization(
     }
     prompts = _terminal(monkeypatch, ["yes", "?", " y "])
     with consent.cap_authorization_policy(interactive=True):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        execute_oracle(cfg, block_runner=_runner)
     assert len(prompts) == 3 and all(consent.PROMPT in p for p in prompts)
     authorization = json.loads(cfg.h2h_cap_authorization_path().read_text())
     assert authorization["authorized_total_game_cap"] == plan["maximum_total_attempts"]
@@ -135,8 +298,8 @@ def test_invalid_then_lowercase_approval_survives_replay_and_finalization(
         for p in cfg.analysis_dir.rglob("*")
         if p.is_file()
     }
-    assert not schedule.plan_h2h_schedule(cfg).execution_blocked
-    schedule.execute_h2h_schedule(cfg, block_runner=lambda *args: pytest.fail("replayed work"))
+    assert not plan_oracle(cfg).execution_blocked
+    execute_oracle(cfg, block_runner=lambda *args: pytest.fail("replayed work"))
     assert all((p.read_bytes(), p.stat().st_mtime_ns) == data for p, data in before.items())
     assert all(p.read_bytes() == data for p, data in immutable.items())
     done = read_stage_done(stage_done_path(cfg.stage_dir("h2h_execute"), "h2h_execute"))
@@ -157,7 +320,7 @@ def test_noninteractive_does_not_read_stdin(planned, monkeypatch, override, reas
         consent.cap_authorization_policy(interactive=True, override=override),
         pytest.raises(consent.H2HAuthorizationRequired) as error,
     ):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        execute_oracle(cfg, block_runner=_runner)
     assert error.value.reason == reason
 
 
@@ -177,7 +340,7 @@ def test_explicit_override_and_partial_resume_require_independent_consent(
         consent.cap_authorization_policy(override=consent.authorization_token(plan)),
         pytest.raises(RuntimeError, match="injected"),
     ):
-        schedule.execute_h2h_schedule(cfg, block_runner=interrupt)
+        execute_oracle(cfg, block_runner=interrupt)
     blocks = list(cfg.h2h_block_results_dir().glob("*.parquet"))
     assert len(blocks) == 1
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in blocks}
@@ -186,13 +349,13 @@ def test_explicit_override_and_partial_resume_require_independent_consent(
     # Progress alone must never grant permission, even though it was formerly approved.
     cfg.h2h_cap_authorization_path().unlink()
     sidecar_path(cfg.h2h_cap_authorization_path()).unlink()
-    assert schedule.plan_h2h_schedule(cfg).execution_blocked
+    assert plan_oracle(cfg).execution_blocked
     _terminal(monkeypatch, ["N"])
     with (
         consent.cap_authorization_policy(interactive=True),
         pytest.raises(consent.H2HAuthorizationRequired) as refusal,
     ):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        execute_oracle(cfg, block_runner=_runner)
     assert refusal.value.reason == "refused"
     state = json.loads(cfg.h2h_execution_state_path().read_text())
     assert state["completed_block_count"] == 1
@@ -212,7 +375,7 @@ def test_explicit_override_and_partial_resume_require_independent_consent(
         remaining.append(block["block_id"])
         return _runner(block, manifest, chunk)
 
-    schedule.execute_h2h_schedule(cfg, block_runner=resumed)
+    execute_oracle(cfg, block_runner=resumed)
     assert len(remaining) == 3 and calls[0] not in remaining
     assert all((p.read_bytes(), p.stat().st_mtime_ns) == data for p, data in before.items())
 
@@ -234,10 +397,10 @@ def test_authorization_publication_interruption(planned, monkeypatch, boundary, 
             consent.cap_authorization_policy(override=consent.authorization_token(plan)),
             pytest.raises(RuntimeError, match="pause after one"),
         ):
-            schedule.execute_h2h_schedule(cfg, block_runner=stop_after_one)
+            execute_oracle(cfg, block_runner=stop_after_one)
         cfg.h2h_cap_authorization_path().unlink()
         sidecar_path(cfg.h2h_cap_authorization_path()).unlink()
-        assert schedule.plan_h2h_schedule(cfg).execution_blocked
+        assert plan_oracle(cfg).execution_blocked
     blocks = list(cfg.h2h_block_results_dir().glob("*.parquet"))
     retained = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in blocks}
     assert len(blocks) == int(partial)
@@ -257,17 +420,17 @@ def test_authorization_publication_interruption(planned, monkeypatch, boundary, 
         consent.cap_authorization_policy(override=consent.authorization_token(plan)),
         pytest.raises(RuntimeError, match="publication interruption"),
     ):
-        schedule.execute_h2h_schedule(cfg, block_runner=lambda *args: pytest.fail("early work"))
+        execute_oracle(cfg, block_runner=lambda *args: pytest.fail("early work"))
     monkeypatch.setattr(consent, "write_json_artifact_atomic", publish)
     assert len(list(cfg.h2h_block_results_dir().glob("*.parquet"))) == int(partial)
     if boundary == "data_only":
         with pytest.raises(consent.H2HAuthorizationRequired):
-            schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+            execute_oracle(cfg, block_runner=_runner)
         with consent.cap_authorization_policy(override=consent.authorization_token(plan)):
-            schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+            execute_oracle(cfg, block_runner=_runner)
     else:
-        assert not schedule.plan_h2h_schedule(cfg).execution_blocked
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        assert not plan_oracle(cfg).execution_blocked
+        execute_oracle(cfg, block_runner=_runner)
     assert all(
         (path.read_bytes(), path.stat().st_mtime_ns) == data for path, data in retained.items()
     )
@@ -289,7 +452,7 @@ def test_authenticated_but_mismatched_authorization_rejected(planned, field, val
         auth = consent.resolve_cap_authorization(cfg, plan, request=True)
     consent._publish(cfg, plan, {**auth, field: value})
     with pytest.raises(ValueError):
-        schedule.plan_h2h_schedule(cfg)
+        plan_oracle(cfg)
 
 
 def test_stage_runner_records_operational_stop_and_stops_even_continue_on_error(
@@ -306,7 +469,7 @@ def test_stage_runner_records_operational_stop_and_stops_even_continue_on_error(
     )
 
     def execute(inner: AppConfig) -> None:
-        schedule.execute_h2h_schedule(inner, block_runner=_runner)
+        execute_oracle(inner, block_runner=_runner)
 
     with pytest.raises(consent.H2HAuthorizationRequired):
         StageRunner().run(
@@ -343,8 +506,9 @@ def test_final_byte_audit_retains_and_checks_authorization(planned) -> None:
 
     cfg, plan = planned
     with consent.cap_authorization_policy(override=consent.authorization_token(plan)):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
-    assert audit_sidecar_completeness(cfg.analysis_dir) == []
+        execute_oracle(cfg, block_runner=_runner)
+    failures = audit_sidecar_completeness(cfg.analysis_dir)
+    assert len(failures) == 1 and "ineligible for scientific release" in failures[0]
     auth = json.loads(cfg.h2h_cap_authorization_path().read_text())
     consent._publish(cfg, plan, {**auth, "authorized_total_game_cap": 17})
     failures = audit_sidecar_completeness(cfg.analysis_dir)
@@ -354,11 +518,11 @@ def test_final_byte_audit_retains_and_checks_authorization(planned) -> None:
 def test_corrupt_progress_publication_keeps_approval_and_block_resume(planned) -> None:
     cfg, plan = planned
     with consent.cap_authorization_policy(override=consent.authorization_token(plan)):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        execute_oracle(cfg, block_runner=_runner)
     authorization_bytes = cfg.h2h_cap_authorization_path().read_bytes()
     cfg.h2h_execution_state_path().write_text("interrupted state publication")
-    schedule.plan_h2h_schedule(cfg)
-    schedule.execute_h2h_schedule(cfg, block_runner=lambda *args: pytest.fail("replayed block"))
+    plan_oracle(cfg)
+    execute_oracle(cfg, block_runner=lambda *args: pytest.fail("replayed block"))
     assert cfg.h2h_cap_authorization_path().read_bytes() == authorization_bytes
 
 
@@ -367,17 +531,18 @@ def test_renewed_consent_with_same_amount_refreshes_exact_provenance(planned) ->
 
     cfg, plan = planned
     with consent.cap_authorization_policy(override=consent.authorization_token(plan)):
-        schedule.execute_h2h_schedule(cfg, block_runner=_runner)
+        execute_oracle(cfg, block_runner=_runner)
     prior = json.loads(cfg.h2h_execution_state_path().read_text())
     authorization = json.loads(cfg.h2h_cap_authorization_path().read_text())
     # A different consent record can authorize the same amount. Refresh its
     # source binding too, while retaining every accumulated progress field.
     consent._publish(cfg, plan, {**authorization, "authorization_source": "interactive"})
-    assert not schedule.plan_h2h_schedule(cfg).execution_blocked
+    assert not plan_oracle(cfg).execution_blocked
     refreshed = json.loads(cfg.h2h_execution_state_path().read_text())
     assert refreshed["cap_authorization_sha256"] != prior["cap_authorization_sha256"]
     assert {k: v for k, v in refreshed.items() if k != "cap_authorization_sha256"} == {
         k: v for k, v in prior.items() if k != "cap_authorization_sha256"
     }
-    schedule.execute_h2h_schedule(cfg, block_runner=lambda *args: pytest.fail("replayed block"))
-    assert audit_sidecar_completeness(cfg.analysis_dir) == []
+    execute_oracle(cfg, block_runner=lambda *args: pytest.fail("replayed block"))
+    failures = audit_sidecar_completeness(cfg.analysis_dir)
+    assert len(failures) == 1 and "ineligible for scientific release" in failures[0]

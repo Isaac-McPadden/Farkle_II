@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from tests.helpers.artifact_sidecars import clean_test_code_identity
+from tests.helpers.h2h_oracle import write_fixture_contribution as _write_frame
 
 from farkle.analysis.candidate_family import (
     _contract_family,
@@ -21,17 +21,14 @@ from farkle.analysis.h2h_schedule import plan_h2h_schedule
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.trueskill_screening import (
     TRUESKILL_CONDITIONING,
-    trueskill_method_contract,
 )
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
-    make_artifact_sidecar,
     sidecar_path,
     validate_artifact_sidecar,
 )
-from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import (
     ArtifactMismatchError,
     load_authenticated_sidecar,
@@ -63,43 +60,6 @@ def _ranked(order: tuple[int, ...]) -> _RankedContribution:
         score_name="fixture_score",
         sidecar=cast(ArtifactSidecar, None),
     )
-
-
-def _write_frame(
-    cfg: AppConfig,
-    path: Path,
-    frame: pd.DataFrame,
-    *,
-    scope: ArtifactScope,
-    operation: str,
-    seed_scope: str,
-    current_trueskill_contract: bool = True,
-    sources: tuple[Path, ...] = (),
-) -> None:
-    frame = frame.copy()
-    frame["strategy"] = pd.array(frame["strategy"].tolist(), dtype="Int32")
-    table = pa.Table.from_pandas(frame, preserve_index=False)
-    is_trueskill = operation == "equal_root_k_percentile_mean" and current_trueskill_contract
-    sidecar = make_artifact_sidecar(
-        cfg,
-        path,
-        producer="test",
-        scope=scope,
-        source_scope=scope,
-        source_artifacts=list(sources),
-        operation=operation,
-        consistency_columns=table.schema.names,
-        player_counts=[2, 4],
-        required_player_counts=[2, 4],
-        missing_cell_policy="fail",
-        seed_scope=seed_scope,
-        conditioning=TRUESKILL_CONDITIONING if is_trueskill else "unconditional",
-        method_contract=cast(
-            Any,
-            trueskill_method_contract(operation) if is_trueskill else None,
-        ),
-    )
-    write_parquet_artifact_atomic(table, path, sidecar=sidecar)
 
 
 def _write_inputs(cfg: AppConfig, *, reverse_rows: bool = False) -> None:
@@ -153,6 +113,13 @@ def planned_family(tmp_path: Path) -> AppConfig:
     cfg._code_identity = clean_test_code_identity()
     cfg._run_lineage_sha256 = "1" * 64
     _write_inputs(cfg)
+    from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
+
+    from farkle.simulation.strategies import ThresholdStrategy
+
+    publish_v3_strategy_manifest(
+        cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in range(1, 9))
+    )
     freeze_h2h_candidate_family(cfg)
     plan_h2h_schedule(cfg)
     return cfg
@@ -175,6 +142,7 @@ def test_frozen_inputs_reuse_original_publication(planned_family: AppConfig) -> 
     cfg = planned_family
     before = _frozen_publications(cfg)
     _write_inputs(cfg)
+    cfg._run_lineage_sha256 = "2" * 64
     freeze_h2h_candidate_family(cfg, force=True)
     assert _frozen_publications(cfg) == before
 
@@ -293,13 +261,10 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
     }
     assert len(manifest["family_hash"]) == 64
     trueskill_identity = manifest["source_identity"]["trueskill"]
-    assert len(trueskill_identity["sidecar_sha256"]) == 64
-    assert len(trueskill_identity["method_contract_sha256"]) == 64
-    assert len(trueskill_identity["stage_identity_sha256"]) == 64
-    assert trueskill_identity["outcome_schema_version"] == 2
-    assert trueskill_identity["conditioning_version"] == 2
+    for source in manifest["source_identity"].values():
+        assert len(source["publication_science_v1"]) == 64
+        assert len(source["method_contract_sha256"]) == 64
     assert trueskill_identity["conditioning"] == TRUESKILL_CONDITIONING
-    assert isinstance(trueskill_identity["schema_version"], int)
 
     membership = pq.read_table(artifacts.membership).to_pandas().set_index("strategy")
     assert membership.index.tolist() == list(range(1, 9))

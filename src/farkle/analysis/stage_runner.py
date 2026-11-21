@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -20,6 +21,8 @@ from farkle.utils.manifest import (
     make_run_id,
     validate_manifest_contract,
 )
+from farkle.utils.scientific_identity import producer_scope
+from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import CompletionState, read_stage_done, resolve_stage_state
 from farkle.utils.telemetry import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -270,7 +273,16 @@ class StageRunner:
                         scope.update(phase=item.name, state="working")
                         phase_started = float(context.monotonic_clock())
                         try:
-                            with use_supervisor_recorder(recorder, scope):
+                            with (
+                                use_supervisor_recorder(recorder, scope),
+                                numerical_observation(),
+                                (
+                                    producer_scope(context.config, item.name)
+                                    if item.completion_stamp is not None
+                                    or context.config.stage_layout.folder_for(item.name) is not None
+                                    else nullcontext()
+                                ),
+                            ):
                                 item.action(context.config)
                         finally:
                             durations["action"] += _elapsed(

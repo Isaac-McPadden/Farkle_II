@@ -36,7 +36,6 @@ from farkle.orchestration.run_contexts import (
 from farkle.simulation.game_profile import GameProfile
 from farkle.utils.artifact_contract import (
     sha256_file,
-    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.authenticated_contract import (
@@ -434,9 +433,12 @@ def assert_pair_candidate_oracle(pair_context: RootPairRunContext) -> None:
     }
     assert manifest["source_identity"]["win_rate"]["sha256"] == sha256_file(win_path)
     assert manifest["source_identity"]["trueskill"]["sha256"] == sha256_file(ts_path)
-    assert manifest["source_identity"]["trueskill"]["sidecar_sha256"] == sha256_file(
-        sidecar_path(ts_path)
-    )
+    for role, path in (("win_rate", win_path), ("trueskill", ts_path)):
+        publication = load_authenticated_sidecar(path)
+        assert (
+            manifest["source_identity"][role]["publication_science_v1"]
+            == publication.stage_identity.immutable_design_identities["publication_science_v1"]
+        )
     assert not cfg.stage_dir("h2h_power").exists()
     assert not cfg.h2h_power_plan_path().exists()
     assert not cfg.h2h_block_manifest_path().exists()

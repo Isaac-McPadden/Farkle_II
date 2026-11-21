@@ -28,6 +28,7 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
@@ -36,8 +37,10 @@ from farkle.utils.parallel import (
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
-from farkle.utils.release_identity import is_v3_config
+from farkle.utils.release_identity import exact_direct_sources, is_v3_config
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
+from farkle.utils.scientific_dependencies import stage_producer
+from farkle.utils.scientific_identity import require_input_roles
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import (
     canonical_strategy_id,
@@ -397,6 +400,13 @@ def build_percentile_contribution(
     coordinates = [(cell.root_seed, cell.k) for cell in cells]
     if len(set(coordinates)) != len(coordinates):
         raise ValueError("TrueSkill rating cells contain duplicate root/k coordinates")
+    roots = cfg.sim.seed_list or [cfg.sim.seed]
+    if stage_producer(cfg, "trueskill").scope == "pair":
+        require_input_roles(
+            cfg, "trueskill", {f"root_rating_cells/{root}/{k}" for root, k in coordinates}
+        )
+    elif set(coordinates) != {(root, k) for root in roots for k in cfg.sim.n_players_list}:
+        raise ValueError("TrueSkill rating cells do not cover configured root/k support")
     for cell in cells:
         validate_artifact_sidecar(
             cell.ratings_path,
@@ -409,16 +419,28 @@ def build_percentile_contribution(
                 "method_contract": trueskill_method_contract("sequential_rating"),
             },
         )
+        producer = load_authenticated_sidecar(cell.ratings_path)
+        if (
+            producer.method_contract.root_seeds != (cell.root_seed,)
+            or producer.artifact.location.player_count != cell.k
+        ):
+            raise ArtifactContractError(
+                f"Rating producer coordinate differs from requested root/k: {cell.ratings_path}"
+            )
     output = cfg.trueskill_candidate_contribution_path()
     done = stage_done_path(cfg.trueskill_stage_dir, "trueskill_percentile_contribution")
     inputs = [cell.ratings_path for cell in cells]
-    if not force and stage_is_up_to_date(
-        done,
-        inputs=inputs,
-        outputs=[output],
-        cfg=cfg,
-        stage="trueskill",
-        sidecar_artifacts=[output],
+    if (
+        not force
+        and stage_is_up_to_date(
+            done,
+            inputs=inputs,
+            outputs=[output],
+            cfg=cfg,
+            stage="trueskill",
+            sidecar_artifacts=[output],
+        )
+        and exact_direct_sources(output, inputs)
     ):
         return output
     frames = [_load_rating_frame(cell) for cell in cells]

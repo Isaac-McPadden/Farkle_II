@@ -324,6 +324,18 @@ def _build_audit_index(
     )
 
 
+def _audit_frozen_mapping(design: Mapping[str, Any], path: Path, digest: str) -> None:
+    from farkle.utils.frozen_h2h import read_authenticated_mapping
+
+    mapping = design["strategy_mapping"]
+    ids = [row["strategy_id"] for row in mapping]
+    if (
+        digest != design.get("strategy_artifact_sha256")
+        or read_authenticated_mapping(path, digest, ids) != mapping
+    ):
+        raise ValueError("frozen mapping differs from the audited strategy manifest")
+
+
 def _validate_indexed_artifacts(index: _AuditIndex) -> list[str]:
     failures: list[str] = []
     for path in index.data_paths:
@@ -343,6 +355,42 @@ def _validate_indexed_artifacts(index: _AuditIndex) -> list[str]:
                 raise ValueError("indexed canonical location changed during validation")
             record.metadata = metadata
             record.sidecar_sha256 = sha256_file(record.sidecar_path)
+            if location.stage_key == "h2h_power" and path.name == "power_plan.json":
+                from farkle.utils.frozen_h2h import (
+                    BUILTIN_ENGINE,
+                    FROZEN_DESIGN_VERSION,
+                )
+
+                plan = read_json_file_with_retry(path)
+                if "frozen_design" in plan:
+                    design = plan["frozen_design"]
+                    if not isinstance(design, dict) or (
+                        design.get("version"),
+                        design.get("engine"),
+                    ) != (FROZEN_DESIGN_VERSION, BUILTIN_ENGINE):
+                        failures.append(f"H2H engine is ineligible for scientific release: {path}")
+                    if isinstance(design, dict):
+                        assert isinstance(metadata, AuthenticatedSidecar)
+                        strategy_sources = [
+                            source
+                            for source in metadata.source_artifacts
+                            if source.artifact.location.stage_key == "simulation"
+                            and source.artifact.location.relative_path
+                            == "strategy_manifest.parquet"
+                        ]
+                        if len(strategy_sources) != 1 or (
+                            strategy_sources[0].artifact.content_sha256
+                            != design.get("strategy_artifact_sha256")
+                        ):
+                            raise ValueError(
+                                "frozen strategy design lacks its exact strategy source"
+                            )
+                        source = strategy_sources[0]
+                        strategy = index.resolve(source.artifact.location)
+                        if strategy is not None:
+                            _audit_frozen_mapping(
+                                design, strategy.path, source.artifact.content_sha256
+                            )
             if location.stage_key == "h2h_execute" and path.name == "execution_state.json":
                 from farkle.analysis.h2h_authorization import (
                     validate_authorization,
@@ -655,6 +703,24 @@ def _validate_cross_context_provenance(indexes: Iterable[_AuditIndex]) -> list[s
                     f"unresolved cross-context source binding: {record.path}: "
                     f"{source.logical_role}"
                 )
+            elif (
+                record.location.stage_key == "h2h_power"
+                and record.path.name == "power_plan.json"
+                and source.artifact.location.stage_key == "simulation"
+                and source.artifact.location.relative_path == "strategy_manifest.parquet"
+            ):
+                try:
+                    plan = read_json_file_with_retry(record.path)
+                    if "frozen_design" in plan:
+                        _audit_frozen_mapping(
+                            plan["frozen_design"],
+                            candidates[0].path,
+                            source.artifact.content_sha256,
+                        )
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    failures.append(
+                        f"invalid cross-root frozen strategy mapping: {record.path}: {exc}"
+                    )
         for manifest in metadata.manifest_roots:
             candidates = [
                 item

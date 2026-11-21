@@ -31,9 +31,9 @@ from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     load_authenticated_sidecar,
     resolve_code_identity,
-    stage_config_identity,
 )
 from farkle.utils.release_identity import capture_v3_inputs
+from farkle.utils.scientific_identity import producer_config_identity
 
 CONTRACT_ID = "first_release_task0_v1"
 SCHEMA_VERSION = 1
@@ -1046,13 +1046,12 @@ def guide_product_reusable(
             or authenticated.manifest_roots != captured.manifests
         ):
             return False
-        if (
-            authenticated.stage_identity.stage_config.sha256
-            != stage_config_identity(
-                cfg,
-                stage_key="reporting",
-                field_paths=authenticated.stage_identity.stage_config.field_paths,
-            ).sha256
+        if authenticated.stage_identity.stage_config.sha256 != producer_config_identity(
+            cfg, "reporting"
+        ).sha256 or authenticated.stage_identity.immutable_design_identities.get(
+            "stage_dependencies_v1"
+        ) != cfg.stage_config_sha(
+            "reporting"
         ):
             return False
         current_code = cfg._code_identity or resolve_code_identity(

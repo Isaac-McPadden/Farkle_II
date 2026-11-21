@@ -31,6 +31,15 @@ also exits 3 before H2H games start. Tournament/root analysis work completed
 before that stop remains resumable. Do not use the envelope projection as an
 authorization token.
 
+New H2H plans require the root's authenticated strategy manifest. The first
+publication fixes that mapping for the life of the root. An identical rerun
+retains the original manifest and sidecar, including with `--force`. Use a
+new output root to change strategy definitions. Consent binds the selected
+definitions, candidate contributions, numerical design and built-in game
+engine. Workers verify the definitions they load before playing. Historical
+plans retain their original identities. Issuing consent requires a plan that
+records the authenticated mapping.
+
 ## Execution and storage
 
 The machine profile requests 16 simulation/analysis workers, eight ingest

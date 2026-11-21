@@ -44,7 +44,12 @@ def test_root_pair_context_uses_pair_analysis_root_and_both_roots(tmp_path: Path
     second = _root_context(tmp_path, 22)
     pair_root = tmp_path / "pair"
 
+    first.config._code_identity = second.config._code_identity = clean_test_code_identity()
     context = RootPairRunContext.from_root_contexts((first, second), pair_root=pair_root)
+    assert context.config._code_identity == first.config._code_identity
+    second.config._code_identity = clean_test_code_identity("f" * 40)
+    with pytest.raises(ValueError, match="different producer Git identities"):
+        RootPairRunContext.from_root_contexts((first, second), pair_root=pair_root)
 
     assert context.root_pair == (11, 22)
     assert context.analysis_root == pair_root / SEED_PAIR_ANALYSIS_DIRNAME

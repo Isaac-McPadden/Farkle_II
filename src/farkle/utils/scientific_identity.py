@@ -1,4 +1,4 @@
-"""Prospective scientific comparison. No publication, resume or release path calls this API.
+"""Scoped scientific dependency projection for production and comparison.
 
 Call on an already stable source tree. Inputs are evidence from the same producer invocation:
 each role covers its complete coordinate-labeled inventory, including its upstream science.
@@ -8,11 +8,14 @@ Capturing/verifying those facts and admitting reuse are separate integration res
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
 import sysconfig
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -21,12 +24,12 @@ from typing import Any
 
 from farkle.config import AppConfig
 from farkle.protocols import implementation_contract
-from farkle.utils.artifact_contract import sha256_file
-from farkle.utils.authenticated_contract import identity_sha256
+from farkle.utils.authenticated_contract import StageConfigIdentity, identity_sha256
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.scientific_dependencies import (
     CLASSIFIED_PACKAGE_FILES,
     LOCAL_DESIGNS,
+    MANAGED_NATIVE_STAGES,
     OPERATIONAL_FIELDS,
     PREFLIGHT_LOCK,
     PREFLIGHT_RECIPE,
@@ -38,6 +41,7 @@ from farkle.utils.scientific_dependencies import (
     Producer,
     classified_operation,
     dependencies_for,
+    stage_producer,
 )
 
 SCIENCE_VERSION = 1
@@ -135,7 +139,11 @@ def _source_projection(repo_root: Path, required: frozenset[str]) -> dict[str, s
                 if test.parts[:1] != ("tests",) or ".." in test.parts or test.suffix != ".py":
                     raise ValueError(f"Unclassified preflight node: {node}")
                 paths.add(test.as_posix())
-    return {path: sha256_file(repo_root / path) for path in sorted(paths)}
+    implementation = {}
+    for path in sorted(paths):
+        with (repo_root / path).open("rb") as stream:
+            implementation[path] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return implementation
 
 
 def _public_fields(section: Any, prefix: str = "") -> dict[str, Any]:
@@ -178,7 +186,11 @@ def _config_projection(
             "game_stats", budgets["analysis"]
         )
     selection = {key: public[key] for key in scope}
-    roots = cfg.sim.resolve_seed_list(2 if producer.scope == "pair" else 1)
+    # The standalone analysis entry points also accept an explicit ordered root
+    # list. Retain all supplied coordinates even in their default root layout.
+    roots = list(cfg.sim.seed_list or [cfg.sim.seed])
+    if producer.scope == "pair":
+        roots = cfg.sim.resolve_seed_list(2)
     if len(set(roots)) != len(roots) or roots[0] != cfg.sim.seed:
         raise ValueError("Inconsistent configured root coordinates")
     selection["sim.seed_list"] = roots
@@ -194,6 +206,123 @@ def _config_projection(
                 raise ValueError(f"Invalid player-count keys in {key}")
             selection[key] = {str(k): v for k, v in weights.items()}
     return selection
+
+
+def producer_config_identity(cfg: AppConfig, stage: str) -> StageConfigIdentity:
+    """Persist the normalized allowlist under the existing typed config contract."""
+    producer = stage_producer(cfg, stage)
+    fields = dependencies_for(producer).config_scope
+    selected = _config_projection(cfg, producer, fields)
+    paths = tuple(sorted(selected))
+    payload = {"stage_key": stage, "field_paths": paths, "selected_config": selected}
+    return StageConfigIdentity(stage, paths, selected, identity_sha256(payload))
+
+
+def require_input_roles(cfg: AppConfig, stage: str, roles: set[str]) -> None:
+    """Require the complete scientific inventory for a stage-level reduction."""
+    _require_keys(
+        "direct scientific inputs",
+        roles,
+        dependencies_for(stage_producer(cfg, stage)).required_inputs(cfg),
+    )
+
+
+def _producer_components(
+    producer: Producer, cfg: AppConfig, repo_root: Path, environment: NumericalEnvironment
+) -> dict[str, Any]:
+    deps = dependencies_for(producer)
+    _digest(environment.runtime_sha256, "effective numerical runtime")
+    builds = environment.distribution_sha256
+    _require_keys("numerical builds", set(builds), deps.distributions)
+    return {
+        "scientific_dependency_version": SCIENCE_VERSION,
+        "producer": producer,
+        "implementation": _source_projection(repo_root, deps.source_files),
+        "config": _config_projection(cfg, producer, deps.config_scope),
+        "protocol": implementation_contract(),
+        "outcome_schema": OUTCOME_SCHEMA_VERSION,
+        "tournament_method": TOURNAMENT_METHOD_VERSION,
+        "game_profile": (
+            None
+            if cfg._game_profile_sha256 is None
+            else _digest(cfg._game_profile_sha256, "game profile")
+        ),
+        "numerical_environment": {
+            "python": sys.version,
+            "platform": sysconfig.get_platform(),
+            "runtime": environment.runtime_sha256,
+            "packages": {
+                name: {"version": version(name), "build": _digest(digest, name)}
+                for name, digest in builds.items()
+            },
+        },
+    }
+
+
+def stage_dependency_sha256(
+    cfg: AppConfig, stage: str, *, partition: str | None = None, observe_worker: bool = False
+) -> str:
+    """Scoped producer components shared by same-revision publications and durable units."""
+    from farkle.utils.scientific_runtime import numerical_environment
+
+    owner = stage_producer(cfg, stage)
+    producer = Producer(owner.scope, stage, partition)
+    deps = dependencies_for(producer)
+    native_threads = (
+        cfg.resources.native_threads_per_worker
+        if stage in MANAGED_NATIVE_STAGES and cfg.resource_limiter_mode.value == "enabled"
+        else None
+    )
+    runtime, builds = numerical_environment(
+        deps.distributions, native_threads=native_threads, observe_worker=observe_worker
+    )
+    return identity_sha256(
+        _producer_components(
+            producer,
+            cfg,
+            Path(__file__).resolve().parents[3],
+            NumericalEnvironment(runtime, builds),
+        )
+    )
+
+
+_ACTIVE_PRODUCER: ContextVar[tuple[AppConfig, str] | None] = ContextVar(
+    "active_scientific_producer", default=None
+)
+
+
+@contextmanager
+def producer_scope(cfg: AppConfig, stage: str) -> Iterator[None]:
+    """Pass the owning stage to scientific work launched through an executor."""
+    token = _ACTIVE_PRODUCER.set((cfg, stage))
+    try:
+        yield
+    finally:
+        _ACTIVE_PRODUCER.reset(token)
+
+
+@dataclass(frozen=True)
+class WorkerDependencies:
+    config: AppConfig
+    stage: str
+    expected: str
+
+    def verify(self) -> None:
+        if not compatible_dependency_digests(
+            stage_dependency_sha256(self.config, self.stage, observe_worker=True), self.expected
+        ):
+            raise ValueError(f"Worker scientific dependencies differ for {self.stage}")
+
+
+def worker_dependencies() -> WorkerDependencies | None:
+    producer = _ACTIVE_PRODUCER.get()
+    if producer is None:
+        return None
+    cfg, stage = producer
+    if stage == "h2h_execute":
+        # This executor independently verifies the digest in the authorized plan.
+        return None
+    return WorkerDependencies(cfg, stage, stage_dependency_sha256(cfg, stage))
 
 
 def project_scientific_identity(
@@ -244,36 +373,8 @@ def project_scientific_identity(
             _digest(binding.semantic_sha256, role)
         if environment is None:
             raise ValueError("Missing verified numerical environment")
-        _digest(environment.runtime_sha256, "effective numerical runtime")
-        builds = environment.distribution_sha256
-        _require_keys("numerical builds", set(builds), deps.distributions)
-        packages = {
-            name: {"version": version(name), "build": _digest(digest, name)}
-            for name, digest in builds.items()
-        }
-        config = _config_projection(cfg, producer, deps.config_scope)
-        science = {
-            "scientific_dependency_version": SCIENCE_VERSION,
-            "producer": producer,
-            "coordinates": unit,
-            "implementation": _source_projection(repo_root, deps.source_files),
-            "config": config,
-            "protocol": implementation_contract(),
-            "outcome_schema": OUTCOME_SCHEMA_VERSION,
-            "tournament_method": TOURNAMENT_METHOD_VERSION,
-            "game_profile": (
-                None
-                if cfg._game_profile_sha256 is None
-                else _digest(cfg._game_profile_sha256, "game profile")
-            ),
-            "numerical_environment": {
-                "python": sys.version,
-                "platform": sysconfig.get_platform(),
-                "runtime": environment.runtime_sha256,
-                "packages": packages,
-            },
-            "inputs": dict(inputs),
-        }
+        science = _producer_components(producer, cfg, repo_root, environment)
+        science.update(coordinates=unit, inputs=dict(inputs))
         return ScientificFingerprint(SCIENCE_VERSION, identity_sha256(science))
     except (OSError, KeyError, TypeError, ValueError, AttributeError, PackageNotFoundError) as exc:
         return ScientificFingerprint(SCIENCE_VERSION, None, str(exc))
@@ -286,3 +387,14 @@ def scientific_compatibility(
     if not previous.classified or not current.classified:
         return Compatibility.UNCLASSIFIED
     return Compatibility.COMPATIBLE if previous.sha256 == current.sha256 else Compatibility.CHANGED
+
+
+def compatible_dependency_digests(recorded: str | None, current: str | None) -> bool:
+    """Compare two digests decoded from the version-one dependency field."""
+    return (
+        scientific_compatibility(
+            ScientificFingerprint(SCIENCE_VERSION, recorded),
+            ScientificFingerprint(SCIENCE_VERSION, current),
+        )
+        is Compatibility.COMPATIBLE
+    )

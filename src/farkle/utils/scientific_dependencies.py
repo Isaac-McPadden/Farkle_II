@@ -1,4 +1,4 @@
-"""Scientific dependency catalog v1. Only the prospective projector consumes this catalog.
+"""Scientific dependency catalog v1. Shared by publication, freshness, and prospective cross-commit comparison.
 
 Whole modules cover method constants, worker entry points and ordered reductions. Shared
 helpers are deliberately broad. The registry still owns stage names and legacy cache scopes.
@@ -10,7 +10,6 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from farkle.analysis.stage_registry import resolve_scoped_stage_definition
 from farkle.config import AppConfig
 
 
@@ -64,7 +63,7 @@ _COMMON = (
         completion_files copy_on_write csv_files frozen_h2h logging manifest os_memory parallel
         partitioned_stage progress random release_identity schema_helpers sinks source_snapshot
         stage_completion stats strategy_ids streaming_loop telemetry timing types writer yaml_helpers
-        scientific_dependencies scientific_identity""",
+        scientific_dependencies scientific_identity scientific_runtime""",
     )
     | _modules("analysis/", "__init__ stage_registry stage_runner")
     | _modules("simulation/", "__init__ strategies")
@@ -157,7 +156,7 @@ _STAGE_GROUPS: dict[str, tuple[set[str], str]] = {
     ),
     "h2h_power": (
         _H2H,
-        "frozen_membership frozen_family_manifest",
+        "frozen_membership frozen_family_manifest strategy_manifest",
     ),
     "h2h_execute": (
         _H2H,
@@ -350,6 +349,23 @@ _EXTRA_CONFIG = {
     "reporting": ("head2head.delta_equivalence", "screening.max_shuffles_per_root_k"),
 }
 
+# These producers establish a native worker limit as part of their execution policy.
+MANAGED_NATIVE_STAGES = frozenset(
+    {
+        "simulation",
+        "ingest",
+        "metrics",
+        "rng_diagnostics",
+        "game_stats",
+        "trueskill",
+        "root_stability",
+        "hgb",
+        "h2h_power",
+        "h2h_execute",
+    }
+)
+
+
 # Narrow legacy whole-section scopes where the actual operation reads individual
 # fields. Plan parameters travel with the frozen scientific input to execution.
 _CONFIG_SCOPE_OVERRIDES = {
@@ -369,8 +385,33 @@ _CONFIG_SCOPE_OVERRIDES = {
 }
 
 
+def stage_producer(cfg: AppConfig, stage: str) -> Producer:
+    """Use the owning layout for duplicate names. Simulation always belongs to a root."""
+    from farkle.analysis.stage_registry import resolve_scoped_stage_definition
+
+    if stage == "simulation":
+        return Producer("root", stage)
+    for placement in cfg.stage_layout.placements:
+        if placement.definition.key == stage:
+            return Producer("pair" if placement.definition.group == "root_pair" else "root", stage)
+    # Inactive stages may still be queried by tooling. A unique owner is unambiguous.
+    owners = []
+    scopes: tuple[Literal["root", "pair"], ...] = ("root", "pair")
+    for scope in scopes:
+        try:
+            resolve_scoped_stage_definition(scope, stage)
+        except KeyError:
+            continue
+        owners.append(Producer(scope, stage))
+    if len(owners) != 1:
+        raise ValueError(f"Cannot resolve inactive or unknown producer {stage!r} in this layout")
+    return owners[0]
+
+
 def dependencies_for(producer: Producer) -> Dependencies:
     """Resolve the catalog for one scoped producer. Unknown keys have no fallback."""
+    from farkle.analysis.stage_registry import resolve_scoped_stage_definition
+
     stage = producer.stage
     definition = resolve_scoped_stage_definition(producer.scope, stage)
     files, roles = _STAGE_GROUPS[stage]

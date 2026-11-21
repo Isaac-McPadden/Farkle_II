@@ -223,8 +223,8 @@ def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
         ckpt_path=ckpt_path,
         row_dir=row_dir,
         metric_chunk_dir=metric_dir,
-        strategy_manifest_path=cfg.strategy_manifest_root_path(),
     )
+    assert cfg.strategy_manifest_root_path().is_file()
 
     assert not runner._has_existing_outputs(
         n_dir=n_dir,

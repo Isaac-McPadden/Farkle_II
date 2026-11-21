@@ -191,7 +191,7 @@ def _identity(cfg: AppConfig, player_counts: Sequence[int]) -> PartitionedStageI
         stage_name="combine",
         root_seed=int(cfg.sim.seed),
         input_identities=(("partition_inventory", inventory),),
-        statistical_config_sha256=cfg.stage_config_sha("combine"),
+        statistical_config_sha256=cfg.partition_dependency_sha("combine", "combine"),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=_COMBINE_SCHEMA_VERSION,
         method_version=_COMBINE_METHOD_VERSION,

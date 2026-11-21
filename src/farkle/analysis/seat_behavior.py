@@ -23,6 +23,7 @@ from farkle.analysis.outcome_publication import (
     _dependent_unit,
     _Design,
     _identity_from_json,
+    _partition_design,
     _resolve_design,
     _source_units,
     _unit_from_json,
@@ -39,7 +40,6 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
-from farkle.utils.authenticated_contract import identity_sha256
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -669,12 +669,7 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
         validate_artifact_sidecar(p)
     root = cfg.seat_behavior_units_dir(k)
     plan_path = root / "plan.json"
-    design_hash = identity_sha256(
-        {
-            "design": asdict(d),
-            "inputs": [(str(p), sha256_file(p), sha256_file(sidecar_path(p))) for p in inputs],
-        }
-    )
+    design_hash = _partition_design(cfg, d, "seat_behavior", inputs)
     code_hash = resolved_code_identity_sha256(cfg)
     rows_per_unit = budget // (4 * RUN_DTYPE.itemsize * (k + 1))
     tile_size = min(len(d.roster), budget // (4 * (k + 1) * 2 * 2048))
@@ -703,7 +698,11 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
             cfg.results_root.resolve()
         ):
             raise ValueError("behavior checkpoint path escaped owner")
-        if resolved.exists():
+        if resolved.exists() and any(resolved.iterdir()):
+            if not force:
+                raise ValueError(
+                    f"Incompatible partition evidence at {resolved}; preserve it and use a new output root"
+                )
             shutil.rmtree(resolved)
         plan = {
             "method_version": METHOD_VERSION,

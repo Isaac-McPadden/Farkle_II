@@ -23,9 +23,8 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.authenticated_contract import (
-    CodeIdentityPolicy,
     identity_sha256,
-    resolve_code_identity,
+    producer_code_identity,
 )
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
@@ -58,15 +57,7 @@ class PartitionedStageError(RuntimeError):
 
 
 def resolved_code_identity_sha256(cfg: Any) -> str:
-    """Return the full repository code identity for resumable unit freshness."""
-
-    identity = getattr(cfg, "_code_identity", None)
-    if identity is None:
-        identity = resolve_code_identity(
-            Path(__file__).resolve().parents[3],
-            policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
-        )
-    return identity_sha256(asdict(identity))
+    return identity_sha256(asdict(producer_code_identity(cfg)))
 
 
 def _canonical_bytes(value: Any) -> bytes:

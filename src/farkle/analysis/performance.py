@@ -958,7 +958,7 @@ def _bootstrap_identity(
         stage_name="performance_bootstrap",
         root_seed=int(cfg.sim.seed),
         input_identities=inputs,
-        statistical_config_sha256=cfg.stage_config_sha("metrics"),
+        statistical_config_sha256=cfg.partition_dependency_sha("metrics", "performance_bootstrap"),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=1,
         method_version=_PERFORMANCE_METHOD_VERSION,

@@ -113,6 +113,9 @@ def validate_authorization_sources(
 
 def _publish(cfg: AppConfig, plan: Mapping[str, Any], payload: dict[str, Any]) -> None:
     from farkle.analysis.h2h_schedule import h2h_method_contract
+    from farkle.utils.frozen_h2h import verify_frozen_strategy_design
+
+    verify_frozen_strategy_design(cfg, plan)
 
     path = cfg.h2h_cap_authorization_path()
     sidecar = make_artifact_sidecar(
@@ -148,6 +151,9 @@ def resolve_cap_authorization(
     configured-cap permission, then require new explicit consent when exceeded.
     Valid records for a different plan fail closed instead of being reassigned.
     """
+    from farkle.utils.frozen_h2h import verify_frozen_strategy_design
+
+    verify_frozen_strategy_design(cfg, plan)
     path = cfg.h2h_cap_authorization_path()
     cap = cfg.head2head.total_game_cap
     existing: dict[str, Any] | None = None
@@ -172,12 +178,6 @@ def resolve_cap_authorization(
                 and metadata.stage_identity.code != cfg._code_identity
             ):
                 raise ValueError("H2H authorization belongs to different code identity")
-            if (
-                cfg._run_lineage_sha256 is not None
-                and metadata.stage_identity.immutable_design_identities.get("run_lineage_sha256")
-                != cfg._run_lineage_sha256
-            ):
-                raise ValueError("H2H authorization belongs to a different run lineage")
             validate_authorization(existing, plan)
             validate_authorization_sources(
                 existing, cfg.h2h_power_plan_path(), cfg.h2h_block_manifest_path()

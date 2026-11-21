@@ -477,6 +477,13 @@ def resolve_code_identity(
     )
 
 
+def producer_code_identity(cfg: AppConfig) -> CodeIdentity:
+    """Use the invocation's Git guard, including for a standalone producer."""
+    return cfg._code_identity or resolve_code_identity(
+        Path(__file__).resolve().parents[3], policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class VersionIdentity:
     """All version dimensions that can make scientific artifacts incompatible."""
@@ -1949,6 +1956,15 @@ def publish_authenticated_file_atomic(
         staged_data.unlink(missing_ok=True)
 
 
+def _install_once(source: Path | str, destination: Path | str) -> None:
+    """Atomically install a new file without replacing a racing publisher."""
+    if os.name == "nt":
+        os.rename(source, destination)
+    else:
+        os.link(source, destination)
+        Path(source).unlink()
+
+
 def publish_staged_authenticated_artifact_atomic(
     staged_data: Path | str,
     path: Path | str,
@@ -2009,9 +2025,16 @@ def publish_staged_authenticated_artifact_atomic(
             )
             return frozen
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        final_sidecar.unlink(missing_ok=True)
-        publish_staged_file_atomic(staged_path, final_path)
-        publish_staged_file_atomic(staged_sidecar, final_sidecar)
+        if (
+            location.stage_key == "simulation"
+            and location.path(cfg) == cfg.strategy_manifest_root_path()
+        ):
+            _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
+            _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
+        else:
+            final_sidecar.unlink(missing_ok=True)
+            publish_staged_file_atomic(staged_path, final_path)
+            publish_staged_file_atomic(staged_sidecar, final_sidecar)
         if sources:
             resolved_source_paths = source_paths or {}
             if set(resolved_source_paths) != {source.logical_role for source in sources}:
@@ -2310,6 +2333,19 @@ def _classify_loaded_completion(
         for path, location in expected_paths.items():
             output = recorded[location]
             metadata, sidecar_sha = verification.sidecar(path)
+            dependency = expected_stage_identity.immutable_design_identities.get(
+                "stage_dependencies_v1"
+            )
+            if dependency is not None:
+                from farkle.utils.scientific_identity import compatible_dependency_digests
+
+                if metadata is None or not compatible_dependency_digests(
+                    metadata.stage_identity.immutable_design_identities.get(
+                        "stage_dependencies_v1"
+                    ),
+                    dependency,
+                ):
+                    return CompletionState.COMPLETE_STALE
             if output.manifest is not None:
                 if (
                     not isinstance(metadata, ImmutableManifestSidecar)

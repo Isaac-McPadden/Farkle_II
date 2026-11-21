@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from scipy.stats import norm
+from tests.helpers.h2h_oracle import execute_oracle, plan_oracle, publish_fixture_family
 
 from farkle.analysis import h2h_schedule as h2h_schedule_module
 from farkle.analysis.h2h_schedule import (
@@ -23,15 +24,10 @@ from farkle.analysis.h2h_schedule import (
     plan_h2h_chunk,
     plan_h2h_schedule,
 )
-from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
+from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
-    make_artifact_sidecar,
     sidecar_path,
     validate_artifact_sidecar,
-)
-from farkle.utils.artifacts import (
-    write_json_artifact_atomic,
-    write_parquet_artifact_atomic,
 )
 from farkle.utils.random import RandomPurpose, coordinate_seed
 from farkle.utils.stage_completion import CompletionState
@@ -48,6 +44,9 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=sim,
     )
+    from tests.helpers.artifact_sidecars import clean_test_code_identity
+
+    cfg._code_identity = clean_test_code_identity()
     cfg.screening.practical_delta_by_k = {2: 0.03, 4: 0.03}
     cfg.screening.delta_across_k = 0.03
     cfg.head2head.total_game_cap = None
@@ -56,54 +55,14 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
 
 
 def _write_frozen_family(cfg: AppConfig, strategies: tuple[int, ...] = (1, 2, 3)) -> None:
-    family_hash = "a" * 64
-    roots = cfg.sim.seed_list or [cfg.sim.seed]
-    membership = pd.DataFrame(
-        {
-            "strategy": list(strategies),
-            "final_family": [True] * len(strategies),
-            "family_hash": [family_hash] * len(strategies),
-        }
+    from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
+
+    from farkle.simulation.strategies import ThresholdStrategy
+
+    publish_v3_strategy_manifest(
+        cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in strategies)
     )
-    membership["strategy"] = pd.array(membership["strategy"].tolist(), dtype="Int32")
-    manifest: dict[str, Any] = {
-        "family_hash": family_hash,
-        "candidates": list(strategies),
-        "candidate_count": len(strategies),
-        "root_seeds": roots,
-        "single_root_execution": len(roots) == 1,
-    }
-    common: dict[str, Any] = {
-        "producer": "test",
-        "scope": ArtifactScope.H2H_2P,
-        "source_scope": ArtifactScope.CROSS_SEED,
-        "operation": "candidate_family_freeze",
-        "player_counts": [2],
-        "required_player_counts": [2],
-        "missing_cell_policy": "fail",
-        "seed_scope": "both_roots_combined" if len(roots) == 2 else "single_root",
-    }
-    membership_path = cfg.h2h_candidate_family_path()
-    membership_table = pa.Table.from_pandas(membership, preserve_index=False)
-    membership_sidecar = make_artifact_sidecar(
-        cfg,
-        membership_path,
-        consistency_columns=membership.columns.tolist(),
-        **common,
-    )
-    write_parquet_artifact_atomic(
-        membership_table,
-        membership_path,
-        sidecar=membership_sidecar,
-    )
-    manifest_path = cfg.h2h_candidate_family_manifest_path()
-    manifest_sidecar = make_artifact_sidecar(
-        cfg,
-        manifest_path,
-        consistency_columns=list(manifest),
-        **common,
-    )
-    write_json_artifact_atomic(manifest, manifest_path, sidecar=manifest_sidecar)
+    publish_fixture_family(cfg, list(strategies))
 
 
 @pytest.mark.parametrize(
@@ -539,10 +498,7 @@ def test_statistical_contract_validates_h2h_noncompletion_policy(
 def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=(1, 2))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
     calls: list[str] = []
     completed_counts_seen_by_runner: list[int] = []
     immutable_plan = cfg.h2h_power_plan_path().read_bytes()
@@ -559,7 +515,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
             "wins_seat2": games - games // 2,
         }
 
-    completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=fake_runner)
+    completed = execute_oracle(cfg, n_jobs=1, block_runner=fake_runner)
 
     assert len(calls) == 4
     assert completed_counts_seen_by_runner == [0, 1, 2, 3]
@@ -575,7 +531,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     assert state_payload["execution_state"] == CompletionState.COMPLETE_VALID.value
     assert state_payload["completed_block_count"] == state_payload["total_block_count"] == 4
     assert cfg.h2h_power_plan_path().read_bytes() == immutable_plan
-    resumed_plan = plan_h2h_schedule(cfg)
+    resumed_plan = plan_oracle(cfg)
     assert resumed_plan.execution_blocked is False
 
     def fail_if_called(
@@ -583,7 +539,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     ) -> dict[str, Any]:  # pragma: no cover - completed blocks must skip
         raise AssertionError("completed immutable block was regenerated")
 
-    replay = execute_h2h_schedule(cfg, n_jobs=1, block_runner=fail_if_called)
+    replay = execute_oracle(cfg, n_jobs=1, block_runner=fail_if_called)
     pd.testing.assert_frame_equal(
         pq.read_table(completed.order_counts).to_pandas(),
         pq.read_table(replay.order_counts).to_pandas(),
@@ -595,10 +551,7 @@ def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
 ) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=(1, 2))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
     calls = 0
 
     def interrupt_after_initial_attempts(
@@ -621,7 +574,7 @@ def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
         raise RuntimeError("intentional replacement interruption")
 
     with pytest.raises(RuntimeError, match="replacement interruption"):
-        execute_h2h_schedule(
+        execute_oracle(
             cfg,
             n_jobs=1,
             block_runner=interrupt_after_initial_attempts,
@@ -666,7 +619,7 @@ def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
             "completion_status": "complete",
         }
 
-    completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=finish_from_checkpoint)
+    completed = execute_oracle(cfg, n_jobs=1, block_runner=finish_from_checkpoint)
     counts = pq.read_table(completed.order_counts).to_pandas()
 
     assert resumed_coordinates == [target]
@@ -682,12 +635,9 @@ def test_interrupted_block_sidecar_publication_replays_only_that_coordinate(
 ) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=(1, 2))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
 
-    initial = execute_h2h_schedule(
+    initial = execute_oracle(
         cfg,
         n_jobs=1,
         block_runner=lambda block, _manifest, _chunk: {
@@ -717,7 +667,7 @@ def test_interrupted_block_sidecar_publication_replays_only_that_coordinate(
             "wins_seat2": 0,
         }
 
-    recovered = execute_h2h_schedule(cfg, n_jobs=1, block_runner=replay_one)
+    recovered = execute_oracle(cfg, n_jobs=1, block_runner=replay_one)
 
     assert replayed == [interrupted_block_id]
     validate_artifact_sidecar(interrupted_path)
@@ -729,10 +679,7 @@ def test_interrupted_block_sidecar_publication_replays_only_that_coordinate(
 def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=(1, 2))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
     calls = 0
 
     def always_safety_limit(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
@@ -753,14 +700,8 @@ def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -
 
     baseline_cfg = _cfg(tmp_path / "baseline")
     _write_frozen_family(baseline_cfg, strategies=(1, 2))
-    plan_h2h_schedule(baseline_cfg)
-    baseline_manifest = baseline_cfg.strategy_manifest_root_path()
-    baseline_manifest.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        pa.table({"strategy_id": pa.array([], type=pa.int64())}),
-        baseline_manifest,
-    )
-    baseline = execute_h2h_schedule(
+    plan_oracle(baseline_cfg)
+    baseline = execute_oracle(
         baseline_cfg,
         n_jobs=1,
         block_runner=always_safety_limit,
@@ -779,7 +720,7 @@ def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -
         phase="action",
     )
     with use_supervisor_recorder(recorder, scope):
-        artifacts = execute_h2h_schedule(
+        artifacts = execute_oracle(
             cfg,
             n_jobs=1,
             block_runner=always_safety_limit,
@@ -889,11 +830,14 @@ def test_worker_initializer_caches_immutable_strategy_manifest(
 ) -> None:
     """A worker parses the immutable strategy artifact once, not once per chunk."""
 
-    manifest = pd.DataFrame({"strategy_id": pd.array([1, 2], dtype="Int32")})
+    from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
+
+    manifest = build_strategy_manifest([ThresholdStrategy(strategy_id=sid) for sid in (1, 2)])
+    mapping = h2h_schedule_module.canonical_strategy_mapping(manifest, [1, 2])
     reads: list[Path] = []
     observed_manifests: list[pd.DataFrame] = []
 
-    def fake_read(path: Path) -> pd.DataFrame:
+    def fake_read(path: Path, **kwargs: Any) -> pd.DataFrame:
         reads.append(path)
         return manifest
 
@@ -906,10 +850,17 @@ def test_worker_initializer_caches_immutable_strategy_manifest(
             observed_manifests.append(cached_manifest) or dict(block)
         ),
     )
+    cfg = AppConfig()
+    cfg.set_resource_limiter_mode("disabled")
+    expected = cfg.stage_config_sha("h2h_execute")
     h2h_schedule_module._H2H_WORKER_MANIFEST = None
     h2h_schedule_module._H2H_WORKER_MANIFEST_PATH = None
-    h2h_schedule_module._initialize_h2h_worker(Path("canonical.parquet"), None, object())
-    h2h_schedule_module._initialize_h2h_worker(Path("canonical.parquet"), None, object())
+    h2h_schedule_module._initialize_h2h_worker(
+        Path("canonical.parquet"), None, object(), mapping, cfg, expected
+    )
+    h2h_schedule_module._initialize_h2h_worker(
+        Path("canonical.parquet"), None, object(), mapping, cfg, expected
+    )
 
     block = {"block_id": "first"}
     previous, first = h2h_schedule_module._simulate_cached_block((block, 10))
@@ -928,11 +879,9 @@ def test_real_h2h_heartbeats_report_executor_topology_and_preserve_outcomes(
 ):
     from tests.helpers.artifact_sidecars import (
         clean_test_code_identity,
-        publish_v3_strategy_manifest,
     )
 
     from farkle.simulation.game_profile import GameProfile
-    from farkle.simulation.strategies import ThresholdStrategy
 
     profile = GameProfile(default_target_score=100, default_max_rounds=200)
     outputs = []
@@ -947,9 +896,6 @@ def test_real_h2h_heartbeats_report_executor_topology_and_preserve_outcomes(
         cfg.head2head.practical_delta = 0.2
         _write_frozen_family(cfg, strategies=(1, 2))
         plan_h2h_schedule(cfg)
-        publish_v3_strategy_manifest(
-            cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2))
-        )
         logger = logging.getLogger(f"tests.h2h.topology_{workers}")
         snapshots = []
         recorder = SupervisorHeartbeatRecorder(
@@ -975,7 +921,7 @@ def test_real_h2h_heartbeats_report_executor_topology_and_preserve_outcomes(
         scope.finish(status="success")
         recorder.close()
         outputs.append(pq.read_table(artifacts.order_counts).to_pandas())
-        progress = [s["active_scopes"][0]["progress"] for s in snapshots]
+        progress = [active["progress"] for s in snapshots for active in s["active_scopes"]]
         busy = [p for p in progress if p.get("scheduler_event") == "waiting_on_futures"]
         if workers == 2:
             assert busy
@@ -999,13 +945,28 @@ def test_real_h2h_heartbeats_report_executor_topology_and_preserve_outcomes(
     pd.testing.assert_frame_equal(outputs[0], outputs[1])
 
 
+def test_worker_rejects_mismatched_loaded_definitions_before_the_first_game(monkeypatch):
+    from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
+    from farkle.utils import scientific_identity
+
+    manifest = build_strategy_manifest([ThresholdStrategy(strategy_id=1)])
+    authorized = h2h_schedule_module.canonical_strategy_mapping(manifest, [1])
+    different = manifest.assign(score_threshold=manifest["score_threshold"] + 100)
+    monkeypatch.setattr(h2h_schedule_module.pd, "read_parquet", lambda *a, **kw: different)
+    monkeypatch.setattr(h2h_schedule_module, "_H2H_WORKER_MANIFEST", None)
+    monkeypatch.setattr(scientific_identity, "stage_dependency_sha256", lambda *a, **kw: "a" * 64)
+    for expected, reason in (("b" * 64, "scientific dependencies"), ("a" * 64, "strategy mapping")):
+        with pytest.raises(ValueError, match=reason):
+            h2h_schedule_module._initialize_h2h_worker(
+                Path("strategy_manifest.parquet"), None, None, authorized, AppConfig(), expected
+            )
+        assert h2h_schedule_module._H2H_WORKER_MANIFEST is None
+
+
 def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=tuple(range(8)))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
     completed_counts_seen_by_runner: list[int] = []
 
     def fake_runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
@@ -1019,7 +980,7 @@ def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) 
             "wins_seat2": games - games // 2,
         }
 
-    completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=fake_runner)
+    completed = execute_oracle(cfg, n_jobs=1, block_runner=fake_runner)
 
     assert len(completed.block_paths) == 112
     observed_checkpoints = sorted(set(completed_counts_seen_by_runner))
@@ -1034,12 +995,9 @@ def test_complete_execution_without_stamp_fast_finalizes(
 ) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=(1, 2))
-    plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    plan_oracle(cfg)
 
-    completed = execute_h2h_schedule(
+    completed = execute_oracle(
         cfg,
         n_jobs=1,
         block_runner=lambda block, _manifest, _chunk: {
@@ -1063,7 +1021,7 @@ def test_complete_execution_without_stamp_fast_finalizes(
 
     monkeypatch.setattr(h2h_schedule_module.pq, "read_table", reject_block_parquet_reads)
 
-    recovered = execute_h2h_schedule(
+    recovered = execute_oracle(
         cfg,
         n_jobs=1,
         block_runner=lambda *_args: (_ for _ in ()).throw(

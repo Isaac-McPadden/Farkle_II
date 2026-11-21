@@ -59,6 +59,7 @@ from farkle.utils.authenticated_contract import (
     ArtifactMismatchError,
     canonical_json_bytes,
     capture_source_artifact_unbound,
+    producer_code_identity,
     validate_authenticated_artifact_metadata,
 )
 from farkle.utils.authentication_telemetry import (
@@ -709,7 +710,7 @@ def _read_checkpoint(
         or artifact.format_identity.media_type != "application/x-python-pickle"
         or artifact.logical_operation != "publish_simulation_checkpoint"
         or metadata.stage_identity.stage_key != "simulation"
-        or (cfg._code_identity is not None and metadata.stage_identity.code != cfg._code_identity)
+        or metadata.stage_identity.code != producer_code_identity(cfg)
     ):
         raise ArtifactMismatchError(f"checkpoint producer identity differs: {path}")
 

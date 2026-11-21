@@ -826,7 +826,7 @@ def _mirrored_identity(cfg: AppConfig, source: Path) -> PartitionedStageIdentity
         stage_name="seat_mirrored_pairing",
         root_seed=int(cfg.sim.seed),
         input_identities=(("combined_rows_k2", sha256_file(source)),),
-        statistical_config_sha256=cfg.stage_config_sha("metrics"),
+        statistical_config_sha256=cfg.partition_dependency_sha("metrics", "seat_mirrored_pairing"),
         code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=_MIRROR_SCHEMA_VERSION,
         method_version=_MIRROR_METHOD_VERSION,

@@ -28,6 +28,7 @@ from farkle.analysis.outcome_publication import (
     _CoalescedWriter,
     _Design,
     _identity_from_json,
+    _partition_design,
     _resolve_design,
     _unit_from_json,
     _write_rows,
@@ -45,7 +46,6 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
-from farkle.utils.authenticated_contract import identity_sha256
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -785,19 +785,8 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
     root = cfg.outcome_precision_ranges_dir(k)
     plan_path = root / "plan.json"
     inputs = _inputs(cfg, k)
-    design_hash = identity_sha256(
-        {
-            "design": asdict(d),
-            "specification": _specification(cfg),
-            "inputs": [
-                (
-                    str(p),
-                    sha256_file(p),
-                    sha256_file(sidecar_path(p)) if sidecar_path(p).exists() else None,
-                )
-                for p in inputs
-            ],
-        }
+    design_hash = _partition_design(
+        cfg, d, "outcome_precision", inputs, specification=_specification(cfg)
     )
     code_hash = resolved_code_identity_sha256(cfg)
     plan: dict[str, Any] | None = None

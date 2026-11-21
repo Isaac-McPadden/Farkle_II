@@ -77,6 +77,74 @@ def test_scoped_registry_and_complete_catalog():
         dependencies_for(Producer("pair", "simulation"))
 
 
+def test_live_stage_and_partition_use_same_scoped_dependencies(monkeypatch):
+    from farkle.utils import scientific_runtime
+
+    builds = {}
+    monkeypatch.setattr(
+        scientific_runtime,
+        "numerical_environment",
+        lambda names, **_: ("a" * 64, {n: builds.get(n, "b" * 64) for n in names}),
+    )
+    cfg = AppConfig()
+    cfg.sim.seed_list = [0, 1]
+    root = cfg.stage_config_sha("trueskill")
+    sim = cfg.partition_dependency_sha("simulation", "shuffle")
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
+    pair = cfg.stage_config_sha("trueskill")
+    assert pair != root
+    cfg.analysis.n_jobs += 1
+    cfg._run_lineage_sha256 = "9" * 64
+    assert cfg.stage_config_sha("trueskill") == pair
+    builds["trueskill"] = "c" * 64
+    assert cfg.stage_config_sha("trueskill") != pair
+    assert cfg.partition_dependency_sha("simulation", "shuffle") == sim
+    with pytest.raises(KeyError):
+        cfg.partition_dependency_sha("simulation", "unknown")
+
+
+def test_native_observation_binds_runtime_controls_and_actual_build_bytes(tmp_path, monkeypatch):
+    from importlib.metadata import PackagePath
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from farkle.utils import scientific_runtime as runtime
+
+    file = tmp_path / "compute.py"
+    file.write_bytes(b"first")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    dist = SimpleNamespace(
+        files=[PackagePath(file.name)],
+        version="1.0",
+        requires=[],
+        locate_file=lambda name: tmp_path / name,
+    )
+    monkeypatch.setattr(runtime.metadata, "distribution", lambda _: dist)
+    monkeypatch.setattr(runtime, "_host_build", lambda _: "a" * 64)
+    names = frozenset({"fixture"})
+    with runtime.numerical_observation():
+        ambient, first = runtime.numerical_environment(names)
+        with np.errstate(over="raise" if np.geterr()["over"] != "raise" else "ignore"):
+            assert runtime.numerical_environment(names)[0] != ambient
+        assert (
+            runtime.numerical_environment(names, native_threads=1)[0]
+            != runtime.numerical_environment(names, native_threads=2)[0]
+        )
+    file.write_bytes(b"other")
+    with runtime.numerical_observation():
+        assert runtime.numerical_environment(names)[1] != first
+    shadow = tmp_path / "other"
+    shadow.mkdir()
+    (shadow / file.name).write_bytes(b"shadow")
+    monkeypatch.syspath_prepend(str(shadow))
+    with pytest.raises(ValueError, match="outside the installed"):
+        runtime.numerical_environment(names)
+    dist.files = []
+    with pytest.raises(ValueError, match="file inventory"):
+        runtime.numerical_environment(names)
+
+
 @pytest.fixture
 def source_tree(tmp_path):
     for file in dependencies_for(SIM).source_files | dependencies_for(RATING).source_files:

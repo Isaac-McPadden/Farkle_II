@@ -10,6 +10,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.h2h_oracle import execute_oracle, plan_oracle
 from tests.helpers.task7_fixture import publish_task7_reporting_fixture
 from tests.unit.analysis.test_structure_reporting import _publish_rng_inputs
 
@@ -17,7 +18,6 @@ from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING, all_player_
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.dominance import build_dominance_outputs
 from farkle.analysis.h2h_inference import run_h2h_inference
-from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
 from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.analysis.root_stability import RootBatchCell, build_two_root_stability
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resolve_stage_layout
@@ -263,24 +263,14 @@ def _prepare(cfg: AppConfig, root: Path) -> tuple[Any, Any, Any]:
     stability = build_two_root_stability(cfg, _write_root_cells(cfg, root))
     _write_trueskill_contribution(cfg, root)
     family = freeze_h2h_candidate_family(cfg)
-    schedule = plan_h2h_schedule(cfg)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_table = pa.table({"strategy_id": [1, 2, 3]})
-    manifest_sidecar = make_artifact_sidecar(
-        cfg,
-        manifest_path,
-        producer="toy_oracle",
-        scope=ArtifactScope.DIAGNOSTICS,
-        source_scope="synthetic_fixture",
-        operation="synthetic_guide_fixture",
-        conditioning="synthetic_structural_fixture",
-        consistency_columns=manifest_table.schema.names,
-        player_counts=cfg.sim.n_players_list,
-        required_player_counts=cfg.sim.n_players_list,
-        missing_cell_policy="fail",
+    from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
+
+    from farkle.simulation.strategies import ThresholdStrategy
+
+    publish_v3_strategy_manifest(
+        cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2, 3))
     )
-    write_parquet_artifact_atomic(manifest_table, manifest_path, sidecar=manifest_sidecar)
+    schedule = plan_oracle(cfg)
     return stability, family, schedule
 
 
@@ -317,7 +307,7 @@ def test_two_root_multi_k_resume_matches_oracle(
     baseline_stability, baseline_family, baseline_schedule = _prepare(
         baseline_cfg, tmp_path / "baseline"
     )
-    baseline_execution = execute_h2h_schedule(
+    baseline_execution = execute_oracle(
         baseline_cfg,
         n_jobs=1,
         block_runner=_toy_block_runner,
@@ -342,7 +332,7 @@ def test_two_root_multi_k_resume_matches_oracle(
         return _toy_block_runner(block, manifest, chunk_games)
 
     with pytest.raises(RuntimeError, match="intentional toy interruption"):
-        execute_h2h_schedule(
+        execute_oracle(
             resumed_cfg,
             n_jobs=1,
             block_runner=interrupting_runner,
@@ -354,7 +344,7 @@ def test_two_root_multi_k_resume_matches_oracle(
     assert interrupted_state["completed_block_count"] == 2
     immutable_resumed_plan = resumed_cfg.h2h_power_plan_path().read_bytes()
 
-    resumed_execution = execute_h2h_schedule(
+    resumed_execution = execute_oracle(
         resumed_cfg,
         n_jobs=1,
         block_runner=_toy_block_runner,
@@ -445,7 +435,8 @@ def test_two_root_multi_k_resume_matches_oracle(
         resumed_cfg.migration_report_path(),
     ]
     _assert_one_sidecar(derived)
-    assert audit_sidecar_completeness(resumed_cfg.analysis_dir) == []
+    failures = audit_sidecar_completeness(resumed_cfg.analysis_dir)
+    assert len(failures) == 1 and "ineligible for scientific release" in failures[0]
     expected_stage_dirs = [
         "00_root_stability",
         "01_trueskill",
@@ -472,7 +463,7 @@ def test_always_noncompleted_candidate_remains_frozen_and_has_no_report_claim(
     cfg.head2head.delta_equivalence = 0.20
     _stability, family, _schedule = _prepare(cfg, tmp_path / "noncompletion")
 
-    execution = execute_h2h_schedule(
+    execution = execute_oracle(
         cfg,
         n_jobs=1,
         block_runner=_noncompletion_oracle_runner,

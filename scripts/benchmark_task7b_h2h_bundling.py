@@ -22,9 +22,8 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Final, cast
 
-import pandas as pd
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
@@ -33,10 +32,9 @@ from farkle.analysis import h2h_schedule
 from farkle.analysis.h2h_inference import run_h2h_inference
 from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
 from farkle.analysis.release_audit import audit_sidecar_completeness
-from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig, assign_config_sha
-from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
-from farkle.utils.artifact_contract import make_artifact_sidecar, sidecar_path
-from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
+from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
+from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.artifact_contract import sidecar_path
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.authentication_telemetry import (
     AuthenticationTelemetry,
@@ -187,54 +185,10 @@ def _cfg(root: Path, *, workers: int) -> AppConfig:
 
 
 def _write_frozen_family(cfg: AppConfig, candidate_count: int) -> None:
-    family_hash = hashlib.sha256(f"task7b-family:{candidate_count}".encode("ascii")).hexdigest()
+    from tests.helpers.h2h_oracle import publish_fixture_family
+
     candidates = list(range(1, candidate_count + 1))
-    membership = pd.DataFrame(
-        {
-            "strategy": pd.array(candidates, dtype="Int32"),
-            "final_family": [True] * candidate_count,
-            "family_hash": [family_hash] * candidate_count,
-        }
-    )
-    manifest: dict[str, object] = {
-        "family_hash": family_hash,
-        "candidates": candidates,
-        "candidate_count": candidate_count,
-        "root_seeds": [11, 22],
-        "single_root_execution": False,
-    }
-    common: dict[str, Any] = {
-        "producer": "task7b_benchmark",
-        "scope": ArtifactScope.H2H_2P,
-        "source_scope": ArtifactScope.CROSS_SEED,
-        "operation": "candidate_family_freeze",
-        "player_counts": [2],
-        "required_player_counts": [2],
-        "missing_cell_policy": "fail",
-        "seed_scope": "both_roots_combined",
-    }
-    membership_path = cfg.h2h_candidate_family_path()
-    write_parquet_artifact_atomic(
-        pa.Table.from_pandas(membership, preserve_index=False),
-        membership_path,
-        sidecar=make_artifact_sidecar(
-            cfg,
-            membership_path,
-            consistency_columns=membership.columns.tolist(),
-            **common,
-        ),
-    )
-    manifest_path = cfg.h2h_candidate_family_manifest_path()
-    write_json_artifact_atomic(
-        manifest,
-        manifest_path,
-        sidecar=make_artifact_sidecar(
-            cfg,
-            manifest_path,
-            consistency_columns=list(manifest),
-            **common,
-        ),
-    )
+    publish_fixture_family(cfg, candidates)
     strategies = [
         ThresholdStrategy(
             score_threshold=250 + 17 * strategy_id,
@@ -243,12 +197,9 @@ def _write_frozen_family(cfg: AppConfig, candidate_count: int) -> None:
         )
         for strategy_id in candidates
     ]
-    strategy_manifest = cfg.strategy_manifest_root_path()
-    strategy_manifest.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        pa.Table.from_pandas(build_strategy_manifest(strategies), preserve_index=False),
-        strategy_manifest,
-    )
+    from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
+
+    publish_v3_strategy_manifest(cfg, tuple(strategies))
 
 
 @contextlib.contextmanager

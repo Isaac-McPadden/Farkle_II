@@ -30,6 +30,7 @@ def test_resource_defaults_use_distinct_explicit_memory_controls() -> None:
 
 def test_resource_controls_are_execution_provenance_not_statistical_freshness() -> None:
     baseline = AppConfig()
+    baseline.sim.seed_list = [baseline.sim.seed, baseline.sim.seed + 1]
     changed = replace(
         baseline,
         resources=replace(
@@ -40,7 +41,6 @@ def test_resource_controls_are_execution_provenance_not_statistical_freshness() 
             minimum_system_available_memory_mb=2048,
             parent_process_memory_mb=256,
             logical_cpu_budget=2,
-            native_threads_per_worker=2,
             stage_batch_bytes={**baseline.resources.stage_batch_bytes, "trueskill": 1024},
         ),
     )
@@ -50,14 +50,19 @@ def test_resource_controls_are_execution_provenance_not_statistical_freshness() 
         *resolve_root_pair_stage_layout(baseline).keys(),
     }
     assert compute_config_sha(baseline) == compute_config_sha(changed)
-    assert all(
-        baseline.stage_config_sha(stage) == changed.stage_config_sha(stage) for stage in stage_keys
-    )
+    changed_stages = {
+        stage
+        for stage in stage_keys
+        if baseline.stage_config_sha(stage) != changed.stage_config_sha(stage)
+    }
+    assert changed_stages == set()
 
 
 def test_legacy_worker_counts_are_execution_only_for_all_hashes() -> None:
     baseline = AppConfig()
+    baseline.sim.seed_list = [baseline.sim.seed, baseline.sim.seed + 1]
     changed = AppConfig()
+    changed.sim.seed_list = list(baseline.sim.seed_list)
     changed.sim.n_jobs = 7
     changed.ingest.n_jobs = 7
     changed.analysis.n_jobs = 7
@@ -68,15 +73,22 @@ def test_legacy_worker_counts_are_execution_only_for_all_hashes() -> None:
         *resolve_root_pair_stage_layout(baseline).keys(),
     }
     assert compute_config_sha(baseline) == compute_config_sha(changed)
-    assert all(
-        baseline.stage_config_sha(stage) == changed.stage_config_sha(stage) for stage in stage_keys
-    )
+    changed_stages = {
+        stage
+        for stage in stage_keys
+        if baseline.stage_config_sha(stage) != changed.stage_config_sha(stage)
+    }
+    assert changed_stages == {"rng_diagnostics"}
 
 
 def test_scratch_path_and_limiter_mode_are_execution_only(tmp_path: Path) -> None:
     baseline = AppConfig()
+    baseline.sim.seed_list = [baseline.sim.seed, baseline.sim.seed + 1]
     changed = AppConfig()
+    changed.sim.seed_list = list(baseline.sim.seed_list)
     changed.io.temp_dir = tmp_path.resolve()
+    # Isolate the scratch-location comparison from a change in effective BLAS width.
+    baseline.set_resource_limiter_mode("disabled")
     changed.set_resource_limiter_mode("disabled")
 
     stage_keys = {

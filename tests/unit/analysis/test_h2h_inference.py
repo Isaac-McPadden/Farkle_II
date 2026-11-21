@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -17,21 +18,24 @@ from statsmodels.stats.proportion import (
 from statsmodels.stats.proportion import (
     test_proportions_2indep as statsmodels_score_test,
 )
+from tests.helpers.artifact_sidecars import clean_test_code_identity
+from tests.helpers.h2h_oracle import execute_oracle, plan_oracle
+from tests.unit.analysis.test_h2h_schedule import _write_frozen_family
 
+from farkle.analysis import h2h_schedule
 from farkle.analysis.h2h_inference import (
     run_h2h_inference,
     score_difference_interval,
     two_proportion_score_test,
 )
-from farkle.analysis.h2h_schedule import H2H_METHOD_VERSION, SCORE_TEST_ID
+from farkle.analysis.h2h_schedule import SCORE_TEST_ID
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
-from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
-from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
+from farkle.utils.scientific_runtime import numerical_observation
 
 
 def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
@@ -45,9 +49,11 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
     )
     cfg.screening.practical_delta_by_k = {2: 0.03}
     cfg.screening.delta_across_k = 0.03
+    cfg._code_identity = clean_test_code_identity()
     return cfg
 
 
+@numerical_observation()
 def _publish_inputs(
     cfg: AppConfig,
     pairs: list[tuple[str, str, int, int, int]],
@@ -56,180 +62,32 @@ def _publish_inputs(
 ) -> None:
     """Publish pairs as (A, B, games/order/root, x_ab/root, x_ba/root)."""
 
-    family_hash = "b" * 64
-    roots = cfg.sim.seed_list or [cfg.sim.seed]
-    rows: list[dict[str, object]] = []
-    for pair_id, (strategy_a, strategy_b, games, x_ab, x_ba) in enumerate(pairs):
-        for root_index, root_seed in enumerate(roots):
-            for order, wins_seat1 in ((0, x_ab), (1, x_ba)):
-                row: dict[str, object] = {
-                    "family_hash": family_hash,
-                    "schedule_hash": "c" * 64,
-                    "block_id": f"block-{pair_id}-{root_seed}-{order}",
-                    "pair_id": pair_id,
-                    "strategy_a": strategy_a,
-                    "strategy_b": strategy_b,
-                    "root_seed": root_seed,
-                    "root_index": root_index,
-                    "order": order,
-                    "order_label": "a_b" if order == 0 else "b_a",
-                    "seat1_strategy": strategy_a if order == 0 else strategy_b,
-                    "seat2_strategy": strategy_b if order == 0 else strategy_a,
-                    "n_completed_required": games,
-                    "max_attempts": 2 * games,
-                    "games_attempted": games,
-                    "games_completed": games,
-                    "games_safety_limit": 0,
-                    "replacement_attempt_count": 0,
-                    "completion_status": "complete",
-                    "completion_game_rate": 1.0,
-                    "safety_limit_game_rate": 0.0,
-                    "wins_seat1": wins_seat1,
-                    "wins_seat2": games - wins_seat1,
-                    "rng_scheme_version": RNG_SCHEME_VERSION,
-                    "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
-                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-                    "h2h_method_version": H2H_METHOD_VERSION,
-                    "score_test_id": SCORE_TEST_ID,
-                }
-                if cell_overrides is not None:
-                    row.update(cell_overrides.get((pair_id, int(root_seed), order), {}))
-                attempted = int(cast(Any, row["games_attempted"]))
-                completed = int(cast(Any, row["games_completed"]))
-                safety = int(cast(Any, row["games_safety_limit"]))
-                seat1_wins = int(cast(Any, row["wins_seat1"]))
-                seat2_wins = int(cast(Any, row["wins_seat2"]))
-                row["wins_a"] = seat1_wins if order == 0 else seat2_wins
-                row["wins_b"] = seat2_wins if order == 0 else seat1_wins
-                row["completion_game_rate"] = completed / attempted if attempted else None
-                row["safety_limit_game_rate"] = safety / attempted if attempted else None
-                rows.append(row)
-    counts = pd.DataFrame(rows)
-    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
-        counts[column] = pd.array(
-            [int(value) for value in counts[column]],
-            dtype="Int32",
-        )
-    counts_path = cfg.h2h_order_counts_path()
-    counts_table = pa.Table.from_pandas(counts, preserve_index=False)
-    counts_sidecar = make_artifact_sidecar(
-        cfg,
-        counts_path,
-        producer="test",
-        scope=ArtifactScope.H2H_2P,
-        source_scope=ArtifactScope.H2H_2P,
-        operation="concatenate_root_order_blocks",
-        uncertainty_method=SCORE_TEST_ID,
-        consistency_columns=counts.columns.tolist(),
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
-        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
-    )
-    write_parquet_artifact_atomic(counts_table, counts_path, sidecar=counts_sidecar)
-    schedule_columns = [
-        "family_hash",
-        "schedule_hash",
-        "block_id",
-        "pair_id",
-        "strategy_a",
-        "strategy_b",
-        "root_seed",
-        "root_index",
-        "order",
-        "order_label",
-        "seat1_strategy",
-        "seat2_strategy",
-        "n_completed_required",
-        "max_attempts",
-        "rng_scheme_version",
-        "rng_purpose_namespace",
-        "outcome_schema_version",
-        "h2h_method_version",
-        "score_test_id",
-    ]
-    schedule = counts[schedule_columns].copy()
-    schedule_path = cfg.h2h_block_manifest_path()
-    schedule_sidecar = make_artifact_sidecar(
-        cfg,
-        schedule_path,
-        producer="test",
-        scope=ArtifactScope.H2H_2P,
-        source_scope=ArtifactScope.H2H_2P,
-        operation="construct_pair_root_order_blocks",
-        consistency_columns=schedule.columns.tolist(),
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
-        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
-    )
-    write_parquet_artifact_atomic(
-        pa.Table.from_pandas(schedule, preserve_index=False),
-        schedule_path,
-        sidecar=schedule_sidecar,
-    )
+    candidates = sorted({int(sid) for a, b, *_ in pairs for sid in (a, b)})
+    outcomes = {(int(a), int(b)): (games, x_ab, x_ba) for a, b, games, x_ab, x_ba in pairs}
+    block_games = pairs[0][2]
+    assert all(games == block_games for games, _, _ in outcomes.values())
+    _write_frozen_family(cfg, tuple(candidates))
+    with (
+        patch.object(h2h_schedule, "_minimum_block_games", return_value=block_games),
+        patch.object(h2h_schedule, "_worst_scenario_power", return_value=0.81),
+        patch.object(h2h_schedule, "implemented_score_test_power", return_value=0.81),
+    ):
+        plan_oracle(cfg)
 
-    plan = {
-        "family_hash": family_hash,
-        "schedule_hash": "c" * 64,
-        "planning_state": "complete_valid",
-        "root_seeds": roots,
-        "unordered_pair_count": len(pairs),
-        "total_block_count": len(rows),
-        "n_completed_required_per_root_order_block": pairs[0][2],
-        "max_attempts_per_root_order_block": 2 * pairs[0][2],
-        "max_attempt_multiplier": 2.0,
-        "min_candidate_completion_rate": cfg.head2head.min_candidate_completion_rate,
-        "h2h_method_version": H2H_METHOD_VERSION,
-        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-        "rng_scheme_version": RNG_SCHEME_VERSION,
-        "target_power": 0.80,
-        "worst_scenario_achieved_power": 0.81,
-    }
-    plan_path = cfg.h2h_power_plan_path()
-    plan_sidecar = make_artifact_sidecar(
-        cfg,
-        plan_path,
-        producer="test",
-        scope=ArtifactScope.H2H_2P,
-        source_scope=ArtifactScope.H2H_2P,
-        operation="score_test_power_plan",
-        consistency_columns=list(plan),
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
-        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
-    )
-    write_json_artifact_atomic(plan, plan_path, sidecar=plan_sidecar)
+    def fixed_counts(block: dict[str, Any], _path: Path, _limit: int) -> dict[str, Any]:
+        order = block["order"]
+        games, x_ab, x_ba = outcomes[block["strategy_a"], block["strategy_b"]]
+        wins = x_ab if order == 0 else x_ba
+        return {
+            **block,
+            "games_attempted": games,
+            "games_completed": games,
+            "wins_seat1": wins,
+            "wins_seat2": games - wins,
+            **(cell_overrides or {}).get((block["pair_id"], block["root_seed"], order), {}),
+        }
 
-    execution = {
-        "family_hash": family_hash,
-        "schedule_hash": plan["schedule_hash"],
-        "execution_authorization": "ready",
-        "execution_state": "complete_valid",
-        "completed_block_count": len(rows),
-        "total_block_count": len(rows),
-        "games_attempted": int(counts["games_attempted"].sum()),
-        "games_completed": int(counts["games_completed"].sum()),
-        "games_safety_limit": int(counts["games_safety_limit"].sum()),
-        "replacement_attempt_count": int(counts["replacement_attempt_count"].sum()),
-    }
-    state_path = cfg.h2h_execution_state_path()
-    state_sidecar = make_artifact_sidecar(
-        cfg,
-        state_path,
-        producer="test",
-        scope=ArtifactScope.H2H_2P,
-        source_scope=ArtifactScope.H2H_2P,
-        operation="h2h_execution_state",
-        uncertainty_method=SCORE_TEST_ID,
-        consistency_columns=list(execution),
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
-        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
-    )
-    write_json_artifact_atomic(execution, state_path, sidecar=state_sidecar)
+    execute_oracle(cfg, block_runner=fixed_counts, n_jobs=1, chunk_games=2 * block_games)
 
 
 def _rewrite_execution_state(cfg: AppConfig, **updates: object) -> None:
@@ -357,6 +215,7 @@ def test_h2h_inference_accepts_complete_boundary_counts(tmp_path: Path) -> None:
         [
             ("1", "2", 100, 0, 100),
             ("1", "3", 100, 100, 100),
+            ("2", "3", 100, 0, 0),
         ],
     )
 
@@ -364,8 +223,8 @@ def test_h2h_inference_accepts_complete_boundary_counts(tmp_path: Path) -> None:
 
     inference = pq.read_table(artifacts.pairwise_inference).to_pandas()
     diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
-    assert len(inference) == 2
-    assert len(diagnostics) == 4
+    assert len(inference) == 3
+    assert len(diagnostics) == 6
     assert np.isfinite(inference[["ordinary_d_low", "ordinary_d_high"]]).all().all()
     assert np.isfinite(diagnostics[["ordinary_d_low", "ordinary_d_high"]]).all().all()
 
