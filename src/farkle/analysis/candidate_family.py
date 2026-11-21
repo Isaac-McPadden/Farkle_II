@@ -33,7 +33,7 @@ from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.frozen_h2h import contribution_science
 from farkle.utils.release_identity import exact_direct_sources
 from farkle.utils.scientific_identity import require_input_roles
-from farkle.utils.scientific_runtime import numerical_observation
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import (
     stage_done_path,
     stage_is_up_to_date,
@@ -442,7 +442,7 @@ def _default_win_rate_path(cfg: AppConfig, roots: tuple[int, ...]) -> Path:
     return cfg.performance_across_k_path()
 
 
-@numerical_observation()
+@stage_action("candidate_freeze", also=())
 def freeze_h2h_candidate_family(
     cfg: AppConfig,
     *,

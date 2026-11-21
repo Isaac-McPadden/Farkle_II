@@ -58,6 +58,7 @@ from farkle.utils.random import (
     coordinate_entropy,
     coordinate_seed,
 )
+from farkle.utils.scientific_invocation import preflight_request, stage_action
 
 ROOT = Path(__file__).resolve().parents[3]
 KS = (2, 3, 4, 5, 6, 8, 10, 12)
@@ -208,10 +209,26 @@ def _tests(cfg: AppConfig, plan: Path, recipe: dict[str, Any], deadline: float) 
     nodes = sorted({node for check in recipe["checks"] for node in check["existing_test_nodes"]})
     with tempfile.TemporaryDirectory(prefix="farkle-preflight-", dir=cfg.io.temp_dir) as temporary:
         report = Path(temporary) / "tests.xml"
-        command = [sys.executable, "-m", "pytest", "-q", *nodes, f"--junitxml={report}"]
+        request = preflight_request(cfg, nodes)
+        envelope = Path(temporary) / "launch.json"
+        envelope.write_text(json.dumps(request), encoding="utf-8")
+        expected = identity_sha256(request)
+        command = [
+            sys.executable,
+            "-m",
+            "farkle.cli.preflight_worker",
+            str(envelope),
+            expected,
+        ]
         started = time.monotonic()
         test_environment = dict(os.environ)
         test_environment.pop("PYTEST_ADDOPTS", None)
+        test_environment.pop("PYTEST_PLUGINS", None)
+        test_environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        test_environment["PYTHONSAFEPATH"] = "1"
+        test_environment["PYTHONPATH"] = os.pathsep.join(
+            [str(ROOT / "src"), test_environment.get("PYTHONPATH", "")]
+        )
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -228,6 +245,11 @@ def _tests(cfg: AppConfig, plan: Path, recipe: dict[str, Any], deadline: float) 
             process.kill()
             process.communicate()
             raise TimeoutError("preflight correctness workload timed out") from None
+        if process.returncode == 0 and (
+            not envelope.with_suffix(".verified").is_file()
+            or envelope.with_suffix(".verified").read_text(encoding="ascii") != expected
+        ):
+            raise RuntimeError("Preflight subprocess did not attest its launch identity")
         cases = (
             []
             if not report.exists()
@@ -246,7 +268,7 @@ def _tests(cfg: AppConfig, plan: Path, recipe: dict[str, Any], deadline: float) 
             ]
         )
         payload = {
-            "invocation": command[:-1],
+            "invocation": command,
             "selected_nodes": nodes,
             "cases": cases,
             "elapsed_seconds": time.monotonic() - started,
@@ -273,6 +295,7 @@ def _tests(cfg: AppConfig, plan: Path, recipe: dict[str, Any], deadline: float) 
     return path
 
 
+@stage_action("rng_diagnostics")
 def run(cfg: AppConfig, *, force: bool = False) -> tuple[Path, dict[str, Any]]:
     """Execute/reuse the frozen matrix, supplemental oracles and capability units."""
     started = time.monotonic()

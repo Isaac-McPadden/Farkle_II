@@ -51,7 +51,7 @@ def _modules(directory: str, names: str) -> set[str]:
 # dispatch workers dynamically. Hash their implementation even on a clean checkout.
 _COMMON = (
     _modules("", "__init__ __main__ config protocols")
-    | _modules("cli/", "__init__ launcher main protected")
+    | _modules("cli/", "__init__ launcher main protected preflight_worker")
     | _modules(
         "orchestration/",
         "__init__ execution_history profile_metadata run_contexts seed_utils two_seed_pipeline",
@@ -63,7 +63,7 @@ _COMMON = (
         completion_files copy_on_write csv_files frozen_h2h logging manifest os_memory parallel
         partitioned_stage progress random release_identity schema_helpers sinks source_snapshot
         stage_completion stats strategy_ids streaming_loop telemetry timing types writer yaml_helpers
-        scientific_dependencies scientific_identity scientific_runtime""",
+        scientific_dependencies scientific_identity scientific_runtime scientific_files scientific_invocation""",
     )
     | _modules("analysis/", "__init__ stage_registry stage_runner")
     | _modules("simulation/", "__init__ strategies")
@@ -415,6 +415,10 @@ def dependencies_for(producer: Producer) -> Dependencies:
     stage = producer.stage
     definition = resolve_scoped_stage_definition(producer.scope, stage)
     files, roles = _STAGE_GROUPS[stage]
+    if PREFLIGHT_RECIPE in files:
+        # The locked pytest recipe exercises other producers, including a raw
+        # pipeline oracle and a repository-wide RNG source audit.
+        files = set(CLASSIFIED_PACKAGE_FILES)
     inputs = set(roles.split())
     if producer.scope == "pair" and stage == "trueskill":
         inputs = {"root_rating_cells"}
@@ -449,7 +453,8 @@ def dependencies_for(producer: Producer) -> Dependencies:
     if files & _MODEL or stage == "reporting":
         libraries.add("matplotlib")
     if PREFLIGHT_RECIPE in files:
-        libraries.update(("psutil", "pytest"))
+        # The preflight loads tests/conftest.py and the materialized YAML overlay.
+        libraries.update(("psutil", "pytest", "freezegun", "matplotlib", "PyYAML"))
     return Dependencies(
         frozenset(_COMMON | files),
         tuple(sorted(fields)),

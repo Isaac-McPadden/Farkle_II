@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypeVar, cast
@@ -526,6 +527,7 @@ def _run_one_seed(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
     code_identity: CodeIdentity,
+    context: SeedRunContext | None = None,
     telemetry: SupervisorHeartbeatRecorder | None = None,
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
@@ -538,13 +540,11 @@ def _run_one_seed(
             interval_seconds=0.0,
         )
     auth_telemetry = authentication_telemetry or AuthenticationTelemetry()
-    root_cfg = _build_seed_cfg(
-        cfg,
-        seed_pair=seed_pair,
-        seed=seed,
-        policy_bundle=policy_bundle,
-    )
-    context = SeedRunContext.from_config(root_cfg)
+    if context is None:
+        context = SeedRunContext.from_config(
+            _build_seed_cfg(cfg, seed_pair=seed_pair, seed=seed, policy_bundle=policy_bundle)
+        )
+    root_cfg = context.config
     publish_invocation(
         context,
         manifest_path=manifest_path,
@@ -673,10 +673,18 @@ def _run_one_seed(
 def _write_pipeline_health(
     path: Path, payload: dict[str, Any], *, temp_dir: Path | None = None
 ) -> None:
+    from farkle.utils.scientific_invocation import separate_execution, verify_launch
+
+    if payload.get("status") == "complete_success":
+        verify_launch()
+    failed = payload.get("status") in {"failed", "resource_failure", "blocked_by_cap"}
     if temp_dir is None and payload.get("temp_dir") is not None:
         temp_dir = Path(str(payload["temp_dir"]))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path), temp_dir=temp_dir) as temporary:
+    with (
+        separate_execution() if failed else nullcontext(),
+        atomic_path(str(path), temp_dir=temp_dir) as temporary,
+    ):
         Path(temporary).write_text(
             json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -690,9 +698,10 @@ def _write_pipeline_telemetry(
     path: Path, payload: dict[str, object], *, temp_dir: Path | None = None
 ) -> None:
     """Publish one bounded operational snapshot without scanning result trees."""
+    from farkle.utils.scientific_invocation import separate_execution
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path), temp_dir=temp_dir) as temporary:
+    with separate_execution(), atomic_path(str(path), temp_dir=temp_dir) as temporary:
         Path(temporary).write_text(
             json.dumps(payload, indent=2, sort_keys=True, default=str),
             encoding="utf-8",
@@ -897,6 +906,9 @@ def _run_pipeline_observed(
     cfg: AppConfig,
     *,
     seed_pair: tuple[int, int],
+    launch_pair: RootPairRunContext,
+    policy_bundle: _PerSeedPolicyBundle,
+    code_identity: CodeIdentity,
     force: bool = False,
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
@@ -906,44 +918,11 @@ def _run_pipeline_observed(
 ) -> None:
     """Run both roots, then combination, H2H, agreement, and reporting once."""
 
-    if len(set(seed_pair)) != 2:
-        raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
-    if oracle_game_profile is None:
-        cfg.validate_statistical_contract(require_two_roots=True)
-    if cfg.config_sha is None:
-        assign_config_sha(cfg)
-    code_identity = resolve_code_identity(
-        Path(__file__).resolve().parents[3],
-        policy=(
-            CodeIdentityPolicy.DEVELOPMENT_DIRTY
-            if oracle_game_profile is not None
-            else CodeIdentityPolicy.RELEASE_CLEAN
-        ),
-    )
-    policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     pair_root = seed_pair_root(cfg, seed_pair)
     if not force:
-        preview_root_contexts = cast(
-            tuple[SeedRunContext, SeedRunContext],
-            tuple(
-                SeedRunContext.from_config(
-                    _build_seed_cfg(
-                        cfg,
-                        seed_pair=seed_pair,
-                        seed=seed,
-                        policy_bundle=policy_bundle,
-                    )
-                )
-                for seed in seed_pair
-            ),
-        )
-        preview_pair_context = RootPairRunContext.from_root_contexts(
-            preview_root_contexts,
-            pair_root=pair_root,
-        )
         _require_existing_resume_identity(
             pair_root,
-            cfg=preview_pair_context.config,
+            cfg=launch_pair.config,
             code_identity=code_identity,
         )
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
@@ -1000,10 +979,12 @@ def _run_pipeline_observed(
     finalization_timings: list[dict[str, object]] = []
     pair_stage_timings: tuple[dict[str, object], ...] = ()
     root_results = {}
-    for seed in seed_pair:
+    for context in launch_pair.root_contexts:
+        seed = context.seed
         memory_guard.check_before_schedule()
         root_results[seed] = _run_one_seed(
             cfg,
+            context=context,
             seed=seed,
             seed_pair=seed_pair,
             manifest_path=manifest_path,
@@ -1402,7 +1383,65 @@ def run_pipeline(
     cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
 ) -> None:
-    """Run the two-root pipeline under one parent-owned heartbeat recorder."""
+    """Pin both root designs and the pair before starting either root."""
+    from farkle.utils.scientific_invocation import configured_producers, scientific_invocation
+
+    if len(set(seed_pair)) != 2:
+        raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
+    if oracle_game_profile is None:
+        cfg.validate_statistical_contract(require_two_roots=True)
+    if cfg.config_sha is None:
+        assign_config_sha(cfg)
+    code_identity = resolve_code_identity(
+        Path(__file__).resolve().parents[3],
+        policy=(
+            CodeIdentityPolicy.DEVELOPMENT_DIRTY
+            if oracle_game_profile is not None
+            else CodeIdentityPolicy.RELEASE_CLEAN
+        ),
+    )
+    policy = _derive_per_seed_job_budgets(cfg, len(seed_pair))
+    apply_native_thread_limits(policy.simulation)
+    roots = tuple(
+        SeedRunContext.from_config(
+            _build_seed_cfg(cfg, seed_pair=seed_pair, seed=seed, policy_bundle=policy)
+        )
+        for seed in seed_pair
+    )
+    for root in roots:
+        root.config._code_identity = code_identity
+        root.config._game_profile_sha256 = (
+            oracle_game_profile.sha256 if oracle_game_profile else None
+        )
+    pair = RootPairRunContext.from_root_contexts(
+        cast(tuple[SeedRunContext, SeedRunContext], roots), pair_root=seed_pair_root(cfg, seed_pair)
+    )
+    producers = [entry for root in roots for entry in configured_producers(root.config)]
+    producers.extend(configured_producers(pair.config))
+    with scientific_invocation(producers):
+        _run_pipeline_pinned(
+            cfg,
+            seed_pair=seed_pair,
+            launch_pair=pair,
+            policy_bundle=policy,
+            code_identity=code_identity,
+            force=force,
+            cli_overrides=cli_overrides,
+            oracle_game_profile=oracle_game_profile,
+        )
+
+
+def _run_pipeline_pinned(
+    cfg: AppConfig,
+    *,
+    seed_pair: tuple[int, int],
+    launch_pair: RootPairRunContext,
+    policy_bundle: _PerSeedPolicyBundle,
+    code_identity: CodeIdentity,
+    force: bool,
+    cli_overrides: tuple[str, ...],
+    oracle_game_profile: GameProfile | None,
+) -> None:
 
     memory_guard = make_process_tree_memory_guard(cfg.resources)
     telemetry_boundary = memory_boundary_provenance(cfg.resources)
@@ -1436,6 +1475,9 @@ def run_pipeline(
             _run_pipeline_observed(
                 cfg,
                 seed_pair=seed_pair,
+                launch_pair=launch_pair,
+                policy_bundle=policy_bundle,
+                code_identity=code_identity,
                 force=force,
                 cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,

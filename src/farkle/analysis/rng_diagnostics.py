@@ -134,12 +134,12 @@ _BLAKE2B_SIGMA = np.asarray(
 _BLAKE2B_PERSONAL0 = np.uint64(0x6D2D656C6B726166)
 
 
-@njit(cache=True, nogil=True, inline="always")
+@njit(nogil=True, inline="always")
 def _rotate_right_64(value: np.uint64, shift: int) -> np.uint64:
     return (value >> np.uint64(shift)) | (value << np.uint64(64 - shift))
 
 
-@njit(cache=True, nogil=True, inline="always")
+@njit(nogil=True, inline="always")
 def _blake2b_mix(
     state: np.ndarray,
     a: int,
@@ -159,7 +159,7 @@ def _blake2b_mix(
     state[b] = _rotate_right_64(state[b] ^ state[c], 63)
 
 
-@njit(cache=True, nogil=True)
+@njit(nogil=True)
 def _blake2b_matchup_ids_kernel(composite: np.ndarray) -> np.ndarray:
     """Return hashlib-compatible personalized BLAKE2b-64 IDs for int32 rows."""
 
@@ -2386,7 +2386,7 @@ class _OnlineMetric:
         return float(numerator / (den_x * den_y) ** 0.5), "estimated"
 
 
-@njit(cache=True, nogil=True)
+@njit(nogil=True)
 def _compiled_online_sums(
     values: np.ndarray, lags: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -2809,4 +2809,6 @@ if __name__ == "__main__":  # pragma: no cover
     exit_code = supervise_module_if_needed(__name__, sys.argv[1:], direct_cfg.resources)
     if exit_code is not None:
         raise SystemExit(exit_code)
-    run(direct_cfg)
+    from farkle.utils.scientific_invocation import stage_action
+
+    stage_action("rng_diagnostics")(run)(direct_cfg)

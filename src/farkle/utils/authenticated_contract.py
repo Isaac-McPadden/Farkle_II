@@ -1796,9 +1796,12 @@ def publish_immutable_manifest_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        final_sidecar.unlink(missing_ok=True)
-        publish_staged_file_atomic(staged_data, final_path)
-        publish_staged_file_atomic(staged_sidecar, final_sidecar)
+        from farkle.utils.scientific_invocation import publication_transaction
+
+        with publication_transaction():
+            final_sidecar.unlink(missing_ok=True)
+            publish_staged_file_atomic(staged_data, final_path)
+            publish_staged_file_atomic(staged_sidecar, final_sidecar)
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -1859,9 +1862,12 @@ def publish_immutable_manifest_bytes_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        final_sidecar.unlink(missing_ok=True)
-        publish_staged_file_atomic(staged_data, final_path)
-        publish_staged_file_atomic(staged_sidecar, final_sidecar)
+        from farkle.utils.scientific_invocation import publication_transaction
+
+        with publication_transaction():
+            final_sidecar.unlink(missing_ok=True)
+            publish_staged_file_atomic(staged_data, final_path)
+            publish_staged_file_atomic(staged_sidecar, final_sidecar)
         return metadata
     finally:
         staged_data.unlink(missing_ok=True)
@@ -2025,16 +2031,19 @@ def publish_staged_authenticated_artifact_atomic(
             )
             return frozen
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        if (
-            location.stage_key == "simulation"
-            and location.path(cfg) == cfg.strategy_manifest_root_path()
-        ):
-            _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
-            _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
-        else:
-            final_sidecar.unlink(missing_ok=True)
-            publish_staged_file_atomic(staged_path, final_path)
-            publish_staged_file_atomic(staged_sidecar, final_sidecar)
+        from farkle.utils.scientific_invocation import publication_transaction
+
+        with publication_transaction():
+            if (
+                location.stage_key == "simulation"
+                and location.path(cfg) == cfg.strategy_manifest_root_path()
+            ):
+                _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
+                _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
+            else:
+                final_sidecar.unlink(missing_ok=True)
+                publish_staged_file_atomic(staged_path, final_path)
+                publish_staged_file_atomic(staged_sidecar, final_sidecar)
         if sources:
             resolved_source_paths = source_paths or {}
             if set(resolved_source_paths) != {source.logical_role for source in sources}:

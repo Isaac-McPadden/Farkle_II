@@ -398,6 +398,8 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
             rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
             cfg.analysis.rng_diagnostic_lags = rng_lags
         compute_rng_diagnostics = getattr(args, "rng_diagnostics", None)
+        if compute_rng_diagnostics is not None:
+            cfg.analysis.disable_rng_diagnostics = not compute_rng_diagnostics
         cfg.validate_statistical_contract(require_two_roots=args.command == "two-seed-pipeline")
         assign_config_sha(cfg)
 
@@ -415,6 +417,37 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
             },
         )
 
+    from farkle.utils.scientific_invocation import configured_producers, scientific_invocation
+
+    producers: list[tuple[AppConfig, str]] = []
+    if cfg is not None and args.command == "run":
+        if args.metrics:
+            cfg.sim.expanded_metrics = True
+        if args.row_dir is not None:
+            cfg.sim.row_dir = args.row_dir
+        producers = [(cfg, "simulation")]
+    if cfg is not None and args.command == "analyze":
+        stages = (
+            None
+            if args.an_cmd in ("analytics", "pipeline")
+            else ["metrics" if args.an_cmd == "preprocess" else args.an_cmd]
+        )
+        if stages is not None and getattr(args, "compute_game_stats", False):
+            stages.append("game_stats")
+        producers = configured_producers(cfg, stages)
+    with scientific_invocation(producers):
+        _execute(args, parser, cfg, log_level, root_logger, rng_lags, compute_rng_diagnostics)
+
+
+def _execute(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    cfg: AppConfig | None,
+    log_level: int,
+    root_logger: logging.Logger,
+    rng_lags: tuple[int, ...] | None,
+    compute_rng_diagnostics: bool | None,
+) -> None:
     log_file = _resolve_log_file(args, cfg)
     if log_file is not None:
         configure_logging(level=log_level, log_file=log_file)
@@ -424,10 +457,6 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
     if args.command == "run":
         if cfg is None:  # pragma: no cover - guarded by command gate above
             parser.error("Run command requires a loaded configuration")
-        if args.metrics:
-            cfg.sim.expanded_metrics = True
-        if args.row_dir is not None:
-            cfg.sim.row_dir = args.row_dir
         write_active_config(cfg, cfg.results_root)
         resume_run = not args.force
         LOGGER.info(

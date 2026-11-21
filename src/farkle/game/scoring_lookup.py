@@ -24,7 +24,7 @@ from farkle.utils.types import Int64Array1D, SixFaceCounts
 # ---------------------------------------------------------------------------
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _straight(ctr: Int64Array1D) -> Tuple[int, int]:
     """Return the straight bonus if every face appears once.
 
@@ -38,7 +38,7 @@ def _straight(ctr: Int64Array1D) -> Tuple[int, int]:
     return (1500, 6) if np.all(ctr == 1) else (0, 0)
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _three_pairs(ctr: Int64Array1D) -> Tuple[int, int]:
     """Detect the *three pairs* pattern.
 
@@ -53,7 +53,7 @@ def _three_pairs(ctr: Int64Array1D) -> Tuple[int, int]:
     return (1500, 6) if pairs == 3 else (0, 0)
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _two_triplets(ctr: Int64Array1D) -> Tuple[int, int]:
     """Detect the *two triplets* pattern.
 
@@ -68,7 +68,7 @@ def _two_triplets(ctr: Int64Array1D) -> Tuple[int, int]:
     return (2500, 6) if trips == 2 else (0, 0)
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _four_kind_plus_pair(ctr: Int64Array1D) -> Tuple[int, int]:
     """Check for four of a kind together with a separate pair.
 
@@ -82,7 +82,7 @@ def _four_kind_plus_pair(ctr: Int64Array1D) -> Tuple[int, int]:
     return (1500, 6) if 4 in ctr and 2 in ctr else (0, 0)
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _apply_sets(ctr: Int64Array1D) -> tuple[int, int]:
     """Score and consume any n-of-a-kind groups.
 
@@ -120,7 +120,7 @@ def _apply_sets(ctr: Int64Array1D) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _evaluate_nb(
     c1: int,
     c2: int,

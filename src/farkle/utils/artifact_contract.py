@@ -176,19 +176,33 @@ def publish_staged_file_atomic(
     *,
     copy_buffer_bytes: int = _CROSS_FILESYSTEM_COPY_BUFFER_BYTES,
     replace: Callable[[Path | str, Path | str], None] | None = None,
+    invalidate_sidecar: bool = False,
 ) -> None:
     """Publish a closed staged file, bridging cross-filesystem moves atomically."""
+
+    from farkle.utils.scientific_invocation import publication_boundary
 
     source = Path(staged_path)
     destination = Path(final_path)
     replace_operation = replace_file_atomic if replace is None else replace
+
+    def install(staged: Path) -> None:
+        publication_boundary()
+        if invalidate_sidecar:
+            sidecar_path(destination).unlink(missing_ok=True)
+        replace_operation(staged, destination)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        replace_operation(source, destination)
-        return
-    except OSError as exc:
-        if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
-            raise
+    cross_volume_invalidation = (
+        invalidate_sidecar and source.stat().st_dev != destination.parent.stat().st_dev
+    )
+    if not cross_volume_invalidation:
+        try:
+            install(source)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+                raise
     descriptor, bridge = make_staged_path(
         destination,
         prefix="._publish_",
@@ -198,7 +212,7 @@ def publish_staged_file_atomic(
             shutil.copyfileobj(source_handle, output_handle, length=copy_buffer_bytes)
             output_handle.flush()
             os.fsync(output_handle.fileno())
-        replace_operation(bridge, destination)
+        install(bridge)
         source.unlink(missing_ok=True)
     finally:
         bridge.unlink(missing_ok=True)
@@ -632,9 +646,12 @@ def publish_staged_artifact_with_sidecar(
         _validate_sidecar_fields(bound)
         staged_sidecar.write_text(_canonical_json(bound), encoding="utf-8")
 
-        final_sidecar.unlink(missing_ok=True)
-        publish_staged_file_atomic(staged_path, final_path)
-        publish_staged_file_atomic(staged_sidecar, final_sidecar)
+        from farkle.utils.scientific_invocation import publication_transaction
+
+        with publication_transaction():
+            final_sidecar.unlink(missing_ok=True)
+            publish_staged_file_atomic(staged_path, final_path)
+            publish_staged_file_atomic(staged_sidecar, final_sidecar)
         validate_artifact_sidecar(final_path)
         return bound
     finally:

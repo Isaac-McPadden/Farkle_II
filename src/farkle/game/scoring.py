@@ -44,7 +44,7 @@ class ScoreCandidate(NamedTuple):
 # --------------------------------------------------------------------------- #
 # 1.  Tiny helpers - all immutable / hash-friendly
 # --------------------------------------------------------------------------- #
-@nb.njit(cache=True)
+@nb.njit()
 def _faces_to_counts_nb(faces: np.ndarray) -> SixFaceCounts:
     """Count occurrences of each face value.
 
@@ -149,7 +149,7 @@ Int64Array1DNP = np.ndarray  # local alias to keep the signature tidy inside num
 
 
 # 1) **FAST kernel** - stays in Numba, but now returns an ndarray
-@nb.njit(cache=True)
+@nb.njit()
 def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> Int64Array1D:
     """Expand counts into a sorted NumPy array.
 

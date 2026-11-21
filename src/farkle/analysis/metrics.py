@@ -34,6 +34,7 @@ from farkle.utils.parallel import (
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def _all_player_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> list[Pa
     return [path for _, path in sorted(results)]
 
 
+@stage_action("metrics")
 def run(cfg: AppConfig) -> None:
     """Build canonical outputs over complete configured player-count support."""
 

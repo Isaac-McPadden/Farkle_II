@@ -84,6 +84,26 @@ immutable checkout's source; the venv's editable installation otherwise points
 at the working tree. The qualified temporary snapshots are evidence, not the
 user's finalized release checkout.
 
+Each scientific invocation measures its scoped producer definitions and numerical
+installation in the selected interpreter. The root and pair invocation receipts
+include the component digests under `scientific_launch_v1`. Workers measure their
+own imports and compare the result with their parent's expectation. Later invocations
+measure again. Git provenance, the run namespace, cap consent, and the independent
+release audit still have their original roles.
+
+Keep the checkout and environment stable from interpreter startup. Windows holds
+read handles on measured files and monitors the package directories. A source
+update can therefore receive a sharing violation until the run exits. On Linux,
+mutable dependency files require kernel read leases and directory watches.
+When ownership prevents a lease, use a read-only installation on a supported
+local filesystem. An unknown filesystem fails the launch check.
+Dependency handles and watches count against the operating system's process limits.
+After a drift diagnostic, start a fresh interpreter against the intended
+checkout and use the ordinary resume command to evaluate the durable work.
+Dynamic imports compile from protected source. Farkle's Numba kernels keep
+compiled specializations in process memory. A fresh interpreter pays the
+compilation cost for the specializations it uses.
+
 The following PowerShell example is documentation only. Set `releaseRoot` to
 the finalized checkout; review disk space and the new result prefix first.
 Keep the same checkout and options for every ordinary resume.

@@ -28,6 +28,7 @@ def atomic_path(
     final_path: str,
     *,
     temp_dir: str | os.PathLike[str] | None = None,
+    invalidate_sidecar: bool = False,
 ) -> Iterator[str]:
     """Write in configured scratch (or beside the target), then publish atomically."""
 
@@ -35,7 +36,7 @@ def atomic_path(
     os.close(fd)
     try:
         yield str(staged)
-        publish_staged_file_atomic(staged, final_path)
+        publish_staged_file_atomic(staged, final_path, invalidate_sidecar=invalidate_sidecar)
     finally:
         with suppress(FileNotFoundError):
             os.remove(staged)
@@ -51,6 +52,7 @@ class ParquetShardWriter:
     row_group_size: int = 200_000
     sidecar: ArtifactSidecar | None = None
     temp_dir: str | os.PathLike[str] | None = None
+    invalidate_sidecar: bool = False
 
     _writer: Optional[pq.ParquetWriter] = None
     _tmp_path: str = ""
@@ -110,7 +112,9 @@ class ParquetShardWriter:
                 raise
         if success:
             if self.sidecar is None:
-                publish_staged_file_atomic(self._tmp_path, self.out_path)
+                publish_staged_file_atomic(
+                    self._tmp_path, self.out_path, invalidate_sidecar=self.invalidate_sidecar
+                )
             else:
                 publish_staged_artifact_with_sidecar(
                     self._tmp_path,

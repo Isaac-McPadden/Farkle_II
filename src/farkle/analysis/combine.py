@@ -35,6 +35,7 @@ from farkle.utils.partitioned_stage import (
 )
 from farkle.utils.release_identity import CapturedV3Inputs, capture_v3_inputs
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.source_snapshot import (
     AuthenticatedParquetSnapshot,
     parquet_snapshot_from_captured_inputs,
@@ -520,6 +521,7 @@ def _remove_orphan_partitions(cfg: AppConfig, player_counts: Sequence[int]) -> N
             partition.parent.rmdir()
 
 
+@stage_action("combine")
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Publish or precisely resume the canonical partitioned ``concat_ks`` dataset."""
 

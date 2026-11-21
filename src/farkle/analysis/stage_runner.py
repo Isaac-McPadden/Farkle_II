@@ -21,6 +21,7 @@ from farkle.utils.manifest import (
     make_run_id,
     validate_manifest_contract,
 )
+from farkle.utils.scientific_files import ScientificDrift
 from farkle.utils.scientific_identity import producer_scope
 from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import CompletionState, read_stage_done, resolve_stage_state
@@ -161,6 +162,21 @@ class StageRunner:
     ) -> StageRunResult:
         """Execute a stage plan while recording manifest events and validation."""
 
+        from farkle.utils.scientific_invocation import configured_producers, scientific_invocation
+
+        stages = [
+            item.name
+            for item in plan
+            if item.completion_stamp is not None
+            or context.config.stage_layout.folder_for(item.name) is not None
+        ]
+        with scientific_invocation(configured_producers(context.config, stages)):
+            return StageRunner._run(plan, context, raise_on_failure=raise_on_failure)
+
+    @staticmethod
+    def _run(
+        plan: Sequence[StagePlanItem], context: StageRunContext, *, raise_on_failure: bool
+    ) -> StageRunResult:
         manifest_path = context.manifest_path
         config_sha = getattr(context.config, "config_sha", None)
         run_id = context.run_id or make_run_id(context.run_label)
@@ -414,7 +430,9 @@ class StageRunner:
                                 else {}
                             ),
                         }
-                        should_break = not context.continue_on_error
+                        should_break = (
+                            isinstance(exc, ScientificDrift) or not context.continue_on_error
+                        )
 
                     scope.update(phase="stage_end_publication", state="publishing")
                     phase_started = float(context.monotonic_clock())

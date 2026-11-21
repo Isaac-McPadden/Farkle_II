@@ -122,7 +122,7 @@ _STRAT_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-@nb.njit(cache=True)
+@nb.njit()
 def _decide_continue(
     turn_score,
     dice_left,

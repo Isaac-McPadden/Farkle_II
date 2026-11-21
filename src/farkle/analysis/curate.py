@@ -24,6 +24,7 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.copy_on_write import CopyProvenance, clone_or_copy_bounded
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import expected_schema_for, n_players_from_schema
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import atomic_path
 
@@ -155,6 +156,7 @@ def _write_manifest(
         )
 
 
+@stage_action("curate")
 def run(cfg: AppConfig) -> None:
     """Finalize every configured by-k raw artifact without scope fallback."""
 

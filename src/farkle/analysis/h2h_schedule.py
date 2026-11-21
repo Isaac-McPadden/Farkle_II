@@ -64,7 +64,7 @@ from farkle.utils.parallel import (
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
-from farkle.utils.scientific_runtime import numerical_observation
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import (
     CompletionState,
     stage_done_path,
@@ -652,7 +652,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     return _plan_h2h_schedule(cfg, force=force, engine=BUILTIN_ENGINE)
 
 
-@numerical_observation()
+@stage_action("h2h_power", also=("h2h_execute",))
 def _plan_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HScheduleArtifacts:
     """Evaluate planning methods under their declared numerical context."""
     threads = (
@@ -1645,7 +1645,7 @@ def execute_h2h_schedule(
     )
 
 
-@numerical_observation()
+@stage_action("h2h_execute", also=("h2h_power",))
 def _execute_h2h_schedule(
     cfg: AppConfig,
     *,

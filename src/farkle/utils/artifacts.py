@@ -32,11 +32,14 @@ def write_parquet_atomic(
     *,
     codec: Compression = "snappy",
     temp_dir: Path | str | None = None,
+    invalidate_sidecar: bool = False,
 ) -> None:
     """Write *table* to *path* atomically using Parquet compression."""
     final_path = Path(path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(final_path), temp_dir=temp_dir) as tmp_path:
+    with atomic_path(
+        str(final_path), temp_dir=temp_dir, invalidate_sidecar=invalidate_sidecar
+    ) as tmp_path:
         pq.write_table(table, tmp_path, compression=normalize_compression(codec))
 
 

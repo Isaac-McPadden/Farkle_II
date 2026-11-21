@@ -311,7 +311,7 @@ def test_stage_runner_records_separate_phase_timings_without_changing_manifest_p
     result = StageRunner.run(
         [
             StagePlanItem(
-                "timed",
+                "ingest",
                 action,
                 required_outputs=(output,),
                 completion_stamp=stamp,

@@ -106,6 +106,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     child = [sys.executable, "-m", "farkle.cli.protected", *arguments]
     child_env = os.environ.copy()
+    source = str(Path(__file__).resolve().parents[2])
+    child_env["FARKLE_LAUNCH_SOURCE"] = source
+    child_env["PYTHONSAFEPATH"] = "1"
+    child_env["PYTHONPYCACHEPREFIX"] = str(Path(source) / "farkle" / "__init__.py")
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    child_env["PYTHONPATH"] = os.pathsep.join([source, child_env.get("PYTHONPATH", "")])
     if mode is ResourceLimiterMode.ENABLED:
         native_threads = str(max(1, int(cfg.resources.native_threads_per_worker)))
         for variable in _NATIVE_THREAD_ENV_VARS:

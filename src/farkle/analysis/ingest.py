@@ -64,6 +64,7 @@ from farkle.utils.schema_helpers import (
     TOURNAMENT_METHOD_VERSION,
     raw_simulation_schema_for,
 )
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import ParquetShardWriter
 
@@ -942,6 +943,7 @@ def _run_partitioned_ingest(cfg: AppConfig) -> None:
     )
 
 
+@stage_action("ingest")
 def run(cfg: AppConfig) -> None:
     """Ingest authenticated raw game results into canonical by-k Parquets."""
 

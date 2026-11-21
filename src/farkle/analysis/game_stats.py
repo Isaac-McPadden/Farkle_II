@@ -84,6 +84,7 @@ from farkle.utils.partitioned_stage import resolved_code_identity_sha256
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter, atomic_path
@@ -534,6 +535,7 @@ def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.D
     return out
 
 
+@stage_action("game_stats")
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Compute game statistics and write them to parquet outputs.
 
@@ -745,7 +747,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
         if not rare_events_summary_data_up_to_date:
             memory_guard.check_before_schedule()
-            sidecar_path(rare_events_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_flags(
                 per_n_inputs,
                 cfg=cfg,
@@ -765,7 +766,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 raise RuntimeError("game-stats: no rare events available to summarize")
 
         if write_details and not rare_events_details_data_up_to_date:
-            sidecar_path(rare_events_details_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_details(
                 per_n_inputs,
                 thresholds=resolved_thresholds,
@@ -2196,9 +2196,6 @@ def _rare_event_flags(
                 "total_shards": len(per_n_inputs),
             },
         )
-        for _n_players, _path, shard_path, stats_path, _done_path in stale_inputs:
-            sidecar_path(shard_path).unlink(missing_ok=True)
-            sidecar_path(stats_path).unlink(missing_ok=True)
         worker_count = max(1, min(len(stale_inputs), max(1, n_workers)))
         tasks = (
             _RareEventShardTask(
@@ -2316,6 +2313,7 @@ def _rare_event_flags(
         str(output_path),
         schema=schema,
         compression=codec,
+        invalidate_sidecar=True,
         temp_dir=cfg.io.temp_dir if cfg is not None else None,
     )
     try:
@@ -2783,7 +2781,11 @@ def _build_rare_event_summary_shard(
     rows_written = 0
 
     writer = ParquetShardWriter(
-        str(shard_path), schema=schema, compression=codec, temp_dir=temp_dir
+        str(shard_path),
+        schema=schema,
+        compression=codec,
+        temp_dir=temp_dir,
+        invalidate_sidecar=True,
     )
     try:
         ds_in = ds.dataset(input_path)
@@ -2981,6 +2983,7 @@ def _build_rare_event_summary_shard(
             shard_path,
             codec=codec,
             temp_dir=temp_dir,
+            invalidate_sidecar=True,
         )
 
     payload: dict[str, Any] = {
@@ -2993,6 +2996,7 @@ def _build_rare_event_summary_shard(
     with atomic_path(
         str(stats_path),
         temp_dir=temp_dir,
+        invalidate_sidecar=True,
     ) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     if publish_completion:
@@ -3034,7 +3038,11 @@ def _rare_event_details(
 
     rows_written = 0
     writer = ParquetShardWriter(
-        str(output_path), schema=schema, compression=codec, temp_dir=temp_dir
+        str(output_path),
+        schema=schema,
+        compression=codec,
+        temp_dir=temp_dir,
+        invalidate_sidecar=True,
     )
     try:
         for n_players, path in per_n_inputs:

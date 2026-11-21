@@ -85,6 +85,7 @@ from farkle.utils.release_identity import (
 )
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.scientific_identity import producer_scope
+from farkle.utils.scientific_invocation import stage_action
 from farkle.utils.scientific_runtime import numerical_observation
 from farkle.utils.stage_completion import (
     CompletionState,
@@ -1412,6 +1413,13 @@ def run_tournament(
             raise ValueError("game-profile identity does not match the authenticated run lineage")
         cfg._game_profile_sha256 = profile_sha256
 
+    return _dispatch_tournament(cfg, force=force, oracle_game_profile=oracle_game_profile)
+
+
+@stage_action("simulation", also=())
+def _dispatch_tournament(
+    cfg: AppConfig, *, force: bool, oracle_game_profile: GameProfile | None
+) -> int:
     configured_n_vals = list(cfg.sim.n_players_list)
     if not configured_n_vals:
         raise ValueError("sim.n_players_list must contain at least one player count")
@@ -1467,7 +1475,7 @@ def run_tournament(
     return int(sum(totals.values()))
 
 
-@numerical_observation()
+@stage_action("simulation", also=())
 def run_single_n(
     cfg: AppConfig,
     n: int,
@@ -1925,6 +1933,7 @@ def run_single_n(
     return total_games
 
 
+@stage_action("simulation", also=())
 def run_multi(
     cfg: AppConfig,
     player_counts: Sequence[int] | None = None,

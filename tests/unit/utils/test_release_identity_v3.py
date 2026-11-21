@@ -98,6 +98,37 @@ def _publish(
     return path
 
 
+def test_drift_during_staging_preserves_authenticated_pair(v3_cfg, monkeypatch):
+    from farkle.utils import scientific_runtime
+    from farkle.utils.scientific_files import ScientificDrift
+    from farkle.utils.scientific_invocation import scientific_invocation
+
+    monkeypatch.setattr(
+        scientific_runtime,
+        "numerical_environment",
+        lambda names, **_: ("a" * 64, dict.fromkeys(names, "b" * 64)),
+    )
+    with (
+        pytest.raises(ScientificDrift, match="sim.n_players_list"),
+        scientific_invocation([(v3_cfg, "metrics")]),
+    ):
+        path = _publish(v3_cfg, "unit.parquet")
+        saved = path.read_bytes(), sidecar_path(path).read_bytes()
+        encode = authenticated_contract.AuthenticatedSidecar.canonical_bytes
+
+        def change_after_staging(metadata):
+            result = encode(metadata)
+            v3_cfg.sim.n_players_list.append(4)
+            return result
+
+        monkeypatch.setattr(
+            authenticated_contract.AuthenticatedSidecar, "canonical_bytes", change_after_staging
+        )
+        _publish(v3_cfg, "unit.parquet")
+    assert (path.read_bytes(), sidecar_path(path).read_bytes()) == saved
+    validate_authenticated_artifact_unbound(path)
+
+
 def test_changed_source_bytes_invalidate_cached_descendant(v3_cfg: AppConfig) -> None:
     source = _publish(v3_cfg, "source.parquet")
     derived = _publish(v3_cfg, "derived.parquet", sources=[source])

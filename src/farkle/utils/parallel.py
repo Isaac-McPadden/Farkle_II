@@ -856,6 +856,8 @@ def _initialize_process_worker(initializer, initargs: tuple[Any, ...], dependenc
     """Mark executor children so nested stage policies collapse to one process."""
 
     os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
+    if dependencies is not None:
+        dependencies.attach()
     if initializer is not None:
         initializer(*initargs)
     if dependencies is not None:
@@ -960,6 +962,12 @@ def process_map(
     from farkle.utils.scientific_identity import worker_dependencies
 
     dependencies = worker_dependencies()
+    if dependencies is not None and dependencies.placement:
+        from functools import partial
+
+        from farkle.utils.scientific_invocation import checked_worker_result
+
+        fn = partial(checked_worker_result, fn)
     resolved_jobs = normalize_n_jobs(n_jobs, default=1)
     submitted = 0
     completed = 0

@@ -8,13 +8,12 @@ Capturing/verifying those facts and admitting reuse are separate integration res
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sys
 import sysconfig
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
@@ -118,7 +117,19 @@ def _raise_os_error(error: OSError) -> None:
 def _source_projection(repo_root: Path, required: frozenset[str]) -> dict[str, str]:
     # Enumerate untracked files too. Unknown modules, extension modules, or resources
     # in the import root cannot silently enter a later simulation/worker.
+    from farkle.utils.scientific_runtime import _OBSERVATION, _file_digest
+
+    observation = _OBSERVATION.get()
+    files = observation.files if observation else None
+    if files is not None and (repo_root, required) in files.sources:
+        files.check()
+        return files.sources[repo_root, required]
     for directory, dirs, files_here in (repo_root / "src").walk(on_error=_raise_os_error):
+        if files is not None:
+            files.watch_names(directory)
+            # The watch must precede the enumeration it protects.
+            if set(dirs + files_here) != {p.name for p in directory.iterdir()}:
+                raise ValueError(f"Scientific import directory changed during startup: {directory}")
         if "__pycache__" in dirs:
             dirs.remove("__pycache__")
         for name in files_here:
@@ -129,6 +140,9 @@ def _source_projection(repo_root: Path, required: frozenset[str]) -> dict[str, s
     if PREFLIGHT_RECIPE in required:
         # Preflight executes these nodes via pytest, outside the import root.
         # The supplied suite identity additionally binds fixture/plugin dependencies.
+        if files is not None:
+            files.digest(repo_root / PREFLIGHT_LOCK)
+            files.digest(repo_root / PREFLIGHT_RECIPE)
         locks = json.loads((repo_root / PREFLIGHT_LOCK).read_bytes())["sha256"]
         if set(locks) - required:
             raise ValueError("Unclassified dependency in preflight capability lock")
@@ -139,10 +153,26 @@ def _source_projection(repo_root: Path, required: frozenset[str]) -> dict[str, s
                 if test.parts[:1] != ("tests",) or ".." in test.parts or test.suffix != ".py":
                     raise ValueError(f"Unclassified preflight node: {node}")
                 paths.add(test.as_posix())
+        # The RNG contract node inspects Python files across all three trees.
+        # src is classified above. Pytest also imports helpers and conftests here.
+        for root in ("tests", "scripts"):
+            for folder, dirs, names in (repo_root / root).walk(on_error=_raise_os_error):
+                if files is not None:
+                    files.watch_names(folder)
+                    if set(dirs + names) != {p.name for p in folder.iterdir()}:
+                        raise ValueError(f"Preflight directory changed during startup: {folder}")
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                paths.update(
+                    (folder / name).relative_to(repo_root).as_posix()
+                    for name in names
+                    if name.endswith(".py")
+                )
     implementation = {}
     for path in sorted(paths):
-        with (repo_root / path).open("rb") as stream:
-            implementation[path] = hashlib.file_digest(stream, "sha256").hexdigest()
+        implementation[path] = _file_digest(repo_root / path)
+    if files is not None:
+        files.check()
+        files.sources[repo_root, required] = implementation
     return implementation
 
 
@@ -259,14 +289,12 @@ def _producer_components(
     }
 
 
-def stage_dependency_sha256(
-    cfg: AppConfig, stage: str, *, partition: str | None = None, observe_worker: bool = False
-) -> str:
-    """Scoped producer components shared by same-revision publications and durable units."""
+def live_components(
+    cfg: AppConfig, producer: Producer, *, observe_worker: bool = False
+) -> dict[str, Any]:
     from farkle.utils.scientific_runtime import numerical_environment
 
-    owner = stage_producer(cfg, stage)
-    producer = Producer(owner.scope, stage, partition)
+    stage = producer.stage
     deps = dependencies_for(producer)
     native_threads = (
         cfg.resources.native_threads_per_worker
@@ -276,14 +304,24 @@ def stage_dependency_sha256(
     runtime, builds = numerical_environment(
         deps.distributions, native_threads=native_threads, observe_worker=observe_worker
     )
-    return identity_sha256(
-        _producer_components(
-            producer,
-            cfg,
-            Path(__file__).resolve().parents[3],
-            NumericalEnvironment(runtime, builds),
-        )
+    return _producer_components(
+        producer, cfg, Path(__file__).resolve().parents[3], NumericalEnvironment(runtime, builds)
     )
+
+
+def stage_dependency_sha256(
+    cfg: AppConfig, stage: str, *, partition: str | None = None, observe_worker: bool = False
+) -> str:
+    """Scoped producer components shared by same-revision publications and durable units."""
+    from farkle.utils.scientific_invocation import checked_components
+
+    owner = stage_producer(cfg, stage)
+    components = checked_components(cfg, owner, observe_worker=observe_worker)
+    if partition is not None:
+        producer = Producer(owner.scope, stage, partition)
+        dependencies_for(producer)  # Validate the family before deriving its distinct digest.
+        components = {**components, "producer": producer}
+    return identity_sha256(components)
 
 
 _ACTIVE_PRODUCER: ContextVar[tuple[AppConfig, str] | None] = ContextVar(
@@ -294,9 +332,24 @@ _ACTIVE_PRODUCER: ContextVar[tuple[AppConfig, str] | None] = ContextVar(
 @contextmanager
 def producer_scope(cfg: AppConfig, stage: str) -> Iterator[None]:
     """Pass the owning stage to scientific work launched through an executor."""
+    from threadpoolctl import threadpool_limits
+
+    from farkle.utils.scientific_invocation import checked_components, current
+
+    pin = current()
+    managed = stage in MANAGED_NATIVE_STAGES and cfg.resource_limiter_mode.value == "enabled"
     token = _ACTIVE_PRODUCER.set((cfg, stage))
     try:
-        yield
+        with (
+            threadpool_limits(limits=cfg.resources.native_threads_per_worker)
+            if pin is not None and managed
+            else nullcontext()
+        ):
+            if pin is not None:
+                checked_components(cfg, stage_producer(cfg, stage))
+            yield
+            if pin is not None:
+                checked_components(cfg, stage_producer(cfg, stage))
     finally:
         _ACTIVE_PRODUCER.reset(token)
 
@@ -306,8 +359,17 @@ class WorkerDependencies:
     config: AppConfig
     stage: str
     expected: str
+    placement: str = ""
+    components: dict[str, Any] | None = None
+
+    def attach(self) -> None:
+        from farkle.utils.scientific_invocation import attach_worker
+
+        if self.placement:
+            attach_worker(self)
 
     def verify(self) -> None:
+        self.attach()
         if not compatible_dependency_digests(
             stage_dependency_sha256(self.config, self.stage, observe_worker=True), self.expected
         ):
@@ -315,14 +377,23 @@ class WorkerDependencies:
 
 
 def worker_dependencies() -> WorkerDependencies | None:
-    producer = _ACTIVE_PRODUCER.get()
+    from farkle.utils.scientific_invocation import current, describe_components, process_placement
+
+    pin = current()
+    producer = _ACTIVE_PRODUCER.get() or (pin.default if pin else None)
     if producer is None:
         return None
     cfg, stage = producer
-    if stage == "h2h_execute":
+    if stage == "h2h_execute" and pin is None:
         # This executor independently verifies the digest in the authorized plan.
         return None
-    return WorkerDependencies(cfg, stage, stage_dependency_sha256(cfg, stage))
+    return WorkerDependencies(
+        cfg,
+        stage,
+        stage_dependency_sha256(cfg, stage),
+        process_placement(cfg, stage),
+        describe_components(pin.components(cfg, stage_producer(cfg, stage))) if pin else None,
+    )
 
 
 def project_scientific_identity(

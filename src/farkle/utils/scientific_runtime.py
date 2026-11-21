@@ -12,6 +12,7 @@ import sysconfig
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib import import_module, metadata
 from importlib.util import find_spec
@@ -25,12 +26,16 @@ from packaging.requirements import Requirement
 from threadpoolctl import threadpool_info, threadpool_limits
 
 from farkle.utils.authenticated_contract import identity_sha256
+from farkle.utils.scientific_files import MeasuredFiles
 
 
 @dataclass
 class _BuildObservation:
     installed: dict[str, str] = field(default_factory=dict)
     host: dict[frozenset[str], str] = field(default_factory=dict)
+    files: MeasuredFiles | None = None
+    origins: dict[str, Path] = field(default_factory=dict)
+    controls: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 _OBSERVATION: ContextVar[_BuildObservation | None] = ContextVar(
@@ -39,12 +44,12 @@ _OBSERVATION: ContextVar[_BuildObservation | None] = ContextVar(
 
 
 @contextmanager
-def numerical_observation() -> Iterator[None]:
+def numerical_observation(files: MeasuredFiles | None = None) -> Iterator[None]:
     """Share producer-entry measurements only within this action, never across separate calls."""
-    if _OBSERVATION.get() is not None:
+    if _OBSERVATION.get() is not None and files is None:
         yield
         return
-    token = _OBSERVATION.set(_BuildObservation())
+    token = _OBSERVATION.set(_BuildObservation(files=files))
     try:
         yield
     finally:
@@ -52,6 +57,9 @@ def numerical_observation() -> Iterator[None]:
 
 
 def _file_digest(path: Path) -> str:
+    observation = _OBSERVATION.get()
+    if observation is not None and observation.files is not None:
+        return observation.files.digest(path)
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
@@ -65,6 +73,13 @@ def _installed_build(name: str, seen: dict[str, str]) -> str:
     if not files:
         raise ValueError(f"Missing installed file inventory for numerical dependency {name}")
     hashes = {}
+    observation = _OBSERVATION.get()
+    if observation is not None and observation.files is not None:
+        for file in files:
+            if file.name in {"RECORD", "METADATA", "direct_url.json"}:
+                observation.files.digest(Path(str(dist.locate_file(file))))
+        if files != dist.files:
+            raise ValueError(f"Installed file inventory changed during measurement of {name}")
     for file in files:
         # Console wrappers, test suites and generated interpreter caches are outside the numerical build.
         if ".." in file.parts or "__pycache__" in file.parts or "tests" in file.parts:
@@ -83,6 +98,8 @@ def _installed_build(name: str, seen: dict[str, str]) -> str:
             spec = find_spec(module)
             if not spec or not spec.origin or Path(spec.origin).resolve() != path.resolve():
                 raise ValueError(f"Numerical module {module} is outside the installed {name} build")
+            if observation is not None and observation.files is not None:
+                observation.origins[module] = path
         if file.suffix == ".pth" and file.name.startswith("__editable__"):
             raise ValueError(f"Editable numerical dependency {name} has no fixed wheel inventory")
         hashes[file.as_posix()] = _file_digest(path)
@@ -183,7 +200,11 @@ def _host_build(names: frozenset[str]) -> str:
         raise ValueError("Cannot identify loaded interpreter and native host images")
     return identity_sha256(
         {
-            "interpreter": _file_digest(Path(sys.executable)),
+            "interpreter": _file_digest(
+                Path("/proc/self/exe").resolve(strict=True)
+                if sys.platform == "linux"
+                else Path(sys.executable)
+            ),
             "abi": sysconfig.get_config_var("SOABI"),
             "platform": platform.platform(),
             "machine": platform.machine(),
@@ -203,7 +224,14 @@ def numerical_environment(
     the loaded libraries' actual thread counts. Data/sidecar verification is independent.
     """
     # Forked children inherit context variables, but must establish their own evidence.
-    observation = (None if observe_worker else _OBSERVATION.get()) or _BuildObservation()
+    active = _OBSERVATION.get()
+    observation = (
+        active if not observe_worker or (active is not None and active.files is not None) else None
+    ) or _BuildObservation()
+    if observation.files is not None and names not in observation.host:
+        # Protect installed code before loading extensions to inspect native images.
+        for name in sorted(names):
+            _installed_build(name, observation.installed)
     if names not in observation.host:
         observation.host[names] = _host_build(names)
     host = observation.host[names]
@@ -222,6 +250,8 @@ def numerical_environment(
         # private OpenMP runtime loaded while producing unrelated outputs.
         if "sklearn" in path.as_posix().lower() and "scikit-learn" not in names:
             continue
+        if observation.files is not None and path not in observation.files.digests:
+            raise ValueError(f"Native numerical library resolved outside launch inventory: {path}")
         info = {k: v for k, v in library.items() if k != "filepath"}
         info["image"] = path.name
         if native_threads is not None and info["num_threads"] != native_threads:
@@ -257,6 +287,7 @@ def numerical_environment(
             if k.startswith(("NPY_", "NUMBA_", "MKL_CBWR", "ARROW_USER_SIMD_LEVEL"))
         },
     }
-    return identity_sha256(controls), {
-        name: _installed_build(name, observation.installed) for name in sorted(names)
-    }
+    runtime = identity_sha256(controls)
+    if observation.files is not None and runtime not in observation.controls:
+        observation.controls[runtime] = deepcopy(controls)
+    return runtime, {name: _installed_build(name, observation.installed) for name in sorted(names)}

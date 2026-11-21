@@ -309,7 +309,9 @@ def _save_ratings_parquet(
     temp_dir: Path | None = None,
 ) -> None:
     """Write ratings to parquet in a consistent schema."""
-    write_parquet_atomic(_ratings_to_table(ratings), path, temp_dir=temp_dir)
+    write_parquet_atomic(
+        _ratings_to_table(ratings), path, temp_dir=temp_dir, invalidate_sidecar=True
+    )
 
 
 def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
@@ -1097,15 +1099,13 @@ def _rate_block_worker(
         }
         # Atomic writes for per-N outputs
         # Write per-N ratings as Parquet (strategy, mu, sigma)
-        sidecar_path(parquet_path).unlink(missing_ok=True)
         if scratch_dir is None:
             _save_ratings_parquet(parquet_path, ratings_stats)
         else:
             _save_ratings_parquet(parquet_path, ratings_stats, temp_dir=scratch_dir)
 
         json_path = paths["json"]
-        sidecar_path(json_path).unlink(missing_ok=True)
-        with atomic_path(str(json_path), temp_dir=scratch_dir) as tmp_path:
+        with atomic_path(str(json_path), temp_dir=scratch_dir, invalidate_sidecar=True) as tmp_path:
             Path(tmp_path).write_text(
                 json.dumps(
                     {strategy: asdict(stats) for strategy, stats in ratings_stats.items()},
@@ -1136,7 +1136,6 @@ def _rate_block_worker(
             _save_done_stamp(done_path, done_stamp)
         else:
             _save_done_stamp(done_path, done_stamp, temp_dir=scratch_dir)
-        sidecar_path(shard_parquet).unlink(missing_ok=True)
         if scratch_dir is None:
             _save_ratings_parquet(shard_parquet, ratings_stats)
         else:
@@ -1166,6 +1165,9 @@ def _rate_block_worker(
         else:
             _save_done_stamp(shard_done_path, shard_done_stamp, temp_dir=scratch_dir)
 
+        from farkle.utils.scientific_invocation import publication_boundary
+
+        publication_boundary()
         run_completed = True
         return player_count, performed_update_games
     finally:
@@ -1300,6 +1302,7 @@ def run_trueskill(
             },
         )
     if actual_workers > 1 and len(blocks) > 1:
+
         ex = cf.ProcessPoolExecutor(
             max_workers=actual_workers,
             mp_context=mp_context,

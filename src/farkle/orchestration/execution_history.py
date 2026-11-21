@@ -123,7 +123,10 @@ def publish_invocation(
             destination=bundle / "run_context.json",
         )
         write_active_config(context.config, bundle, recorded_path=context.active_config_path)
+        from farkle.utils.scientific_invocation import launch_evidence
+
         receipt = {
+            "scientific_launch_v1": launch_evidence(context.config),
             "version": 1,
             "run_id": run_id,
             "previous": {name: _digest(previous / name) for name in _FILES},
