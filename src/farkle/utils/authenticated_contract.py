@@ -1729,6 +1729,44 @@ def capture_manifest_root(
     )
 
 
+def _install_manifest(
+    staged_data: Path,
+    staged_sidecar: Path,
+    final_path: Path,
+    metadata: ImmutableManifestSidecar,
+) -> ImmutableManifestSidecar:
+    from contextlib import nullcontext
+
+    from farkle.utils.manifest import publication_lock
+    from farkle.utils.scientific_invocation import publication_transaction
+
+    final_sidecar = sidecar_path(final_path)
+    simulation = metadata.location.stage_key == "simulation"
+    with publication_lock(final_path) if simulation else nullcontext(), publication_transaction():
+        if simulation:
+            from farkle.utils.frozen_h2h import same_production
+            from farkle.utils.scientific_reuse import immutable_input_error
+
+            if final_sidecar.exists():
+                previous = load_immutable_manifest_sidecar(final_path)
+                if (
+                    previous.location != metadata.location
+                    or previous.summary != metadata.summary
+                    or previous.manifest_sha256 != metadata.manifest_sha256
+                    or sha256_file(final_path) != previous.manifest_sha256
+                    or not same_production(previous.stage_identity, metadata.stage_identity)
+                ):
+                    raise immutable_input_error(final_path)
+                return previous
+            publish_staged_file_atomic(staged_data, final_path)
+            _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
+        else:
+            final_sidecar.unlink(missing_ok=True)
+            publish_staged_file_atomic(staged_data, final_path)
+            publish_staged_file_atomic(staged_sidecar, final_sidecar)
+    return metadata
+
+
 def publish_immutable_manifest_atomic(
     path: Path | str,
     *,
@@ -1751,7 +1789,6 @@ def publish_immutable_manifest_atomic(
         temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
-    final_sidecar = sidecar_path(final_path)
     try:
         root = hashlib.sha256()
         support = hashlib.sha256()
@@ -1796,13 +1833,7 @@ def publish_immutable_manifest_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        from farkle.utils.scientific_invocation import publication_transaction
-
-        with publication_transaction():
-            final_sidecar.unlink(missing_ok=True)
-            publish_staged_file_atomic(staged_data, final_path)
-            publish_staged_file_atomic(staged_sidecar, final_sidecar)
-        return metadata
+        return _install_manifest(staged_data, staged_sidecar, final_path, metadata)
     finally:
         staged_data.unlink(missing_ok=True)
         staged_sidecar.unlink(missing_ok=True)
@@ -1836,7 +1867,6 @@ def publish_immutable_manifest_bytes_atomic(
         temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
-    final_sidecar = sidecar_path(final_path)
     try:
         write_data(staged_data)
         if not staged_data.is_file() or staged_data.stat().st_size <= 0:
@@ -1862,13 +1892,7 @@ def publish_immutable_manifest_bytes_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        from farkle.utils.scientific_invocation import publication_transaction
-
-        with publication_transaction():
-            final_sidecar.unlink(missing_ok=True)
-            publish_staged_file_atomic(staged_data, final_path)
-            publish_staged_file_atomic(staged_sidecar, final_sidecar)
-        return metadata
+        return _install_manifest(staged_data, staged_sidecar, final_path, metadata)
     finally:
         staged_data.unlink(missing_ok=True)
         staged_sidecar.unlink(missing_ok=True)
@@ -2019,6 +2043,7 @@ def publish_staged_authenticated_artifact_atomic(
             manifest_roots=manifest_roots,
         )
         from farkle.utils.frozen_h2h import reuse_frozen_input
+        from farkle.utils.scientific_reuse import ROOT_INPUT_OPERATIONS, immutable_input_error
 
         frozen = reuse_frozen_input(cfg, metadata)
         if frozen is not None:
@@ -2034,11 +2059,17 @@ def publish_staged_authenticated_artifact_atomic(
         from farkle.utils.scientific_invocation import publication_transaction
 
         with publication_transaction():
-            if (
-                location.stage_key == "simulation"
-                and location.path(cfg) == cfg.strategy_manifest_root_path()
-            ):
-                _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
+            if method_contract.procedure in ROOT_INPUT_OPERATIONS:
+                try:
+                    _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
+                except FileExistsError:
+                    # A worker or interrupted publication already installed data.
+                    # The current producer must independently stage the exact bytes.
+                    if (
+                        method_contract.procedure == "publish_strategy_manifest"
+                        or sha256_file(final_path) != artifact.content_sha256
+                    ):
+                        raise immutable_input_error(final_path) from None
                 _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
             else:
                 final_sidecar.unlink(missing_ok=True)
@@ -2121,6 +2152,7 @@ class AuthenticatedCompletion:
     stage_identity_sha256: str
     state: str
     outputs: tuple[CompletionOutputIdentity, ...]
+    completion_producer_v1: CodeIdentity | None = None
 
     def __post_init__(self) -> None:
         if self.lifecycle_contract_version != LIFECYCLE_CONTRACT_VERSION:
@@ -2150,7 +2182,10 @@ def write_authenticated_completion_atomic(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path), temp_dir=temp_dir) as temporary_path:
-        Path(temporary_path).write_bytes(canonical_json_bytes(completion) + b"\n")
+        payload = asdict(completion)
+        if completion.completion_producer_v1 is None:
+            payload.pop("completion_producer_v1")
+        Path(temporary_path).write_bytes(canonical_json_bytes(payload) + b"\n")
 
 
 def _load_completion(path: Path) -> AuthenticatedCompletion:
@@ -2166,7 +2201,14 @@ def _load_completion(path: Path) -> AuthenticatedCompletion:
         )
         for item in payload["outputs"]
     )
-    return _construct(AuthenticatedCompletion, payload, outputs=outputs)
+    code = (
+        _parse_code(payload["completion_producer_v1"])
+        if "completion_producer_v1" in payload
+        else None
+    )
+    return _construct(
+        AuthenticatedCompletion, {**payload, "completion_producer_v1": code}, outputs=outputs
+    )
 
 
 def load_authenticated_completion(path: Path | str) -> AuthenticatedCompletion:
@@ -2329,7 +2371,21 @@ def _classify_loaded_completion(
     deep_verify_artifacts: bool,
     verification: _CompletionVerification,
 ) -> CompletionState:
-    if completion.stage_identity_sha256 != expected_stage_identity.sha256:
+    from farkle.utils.scientific_reuse import compatible_producer, launch_matches
+
+    current_code = expected_stage_identity.code
+    original_code = completion.completion_producer_v1
+    expected_digest = expected_stage_identity.sha256
+    foreign = original_code is not None and original_code != current_code
+    if foreign:
+        if not completion.outputs:
+            return CompletionState.COMPLETE_STALE
+        # Reconstruct the original stamp preimage, including exact output sidecars.
+        # Each output must independently establish its full scientific compatibility.
+        expected_digest = identity_sha256(
+            {**expected_stage_identity._payload_without_digest(), "code_identity": original_code}
+        )
+    if completion.stage_identity_sha256 != expected_digest:
         return CompletionState.COMPLETE_STALE
     try:
         if completion.state == CompletionState.BLOCKED_BY_CAP.value:
@@ -2342,6 +2398,8 @@ def _classify_loaded_completion(
         for path, location in expected_paths.items():
             output = recorded[location]
             metadata, sidecar_sha = verification.sidecar(path)
+            if foreign and (metadata is None or not launch_matches(metadata.stage_identity)):
+                return CompletionState.COMPLETE_STALE
             dependency = expected_stage_identity.immutable_design_identities.get(
                 "stage_dependencies_v1"
             )
@@ -2360,7 +2418,7 @@ def _classify_loaded_completion(
                     not isinstance(metadata, ImmutableManifestSidecar)
                     or metadata.location != location
                     or metadata.stage_identity.versions != expected_stage_identity.versions
-                    or metadata.stage_identity.code != expected_stage_identity.code
+                    or not compatible_producer(metadata.stage_identity, current_code)
                     or metadata.stage_identity.stage_config.sha256
                     != expected_stage_identity.stage_config.sha256
                     or verification.manifest_sha256(path) != metadata.manifest_sha256
@@ -2378,7 +2436,7 @@ def _classify_loaded_completion(
                 or metadata.versions != expected_stage_identity.versions
                 or sidecar_sha != output.sidecar_sha256
                 or metadata.artifact != output.artifact
-                or metadata.stage_identity.code != expected_stage_identity.code
+                or not compatible_producer(metadata.stage_identity, current_code)
                 or metadata.stage_identity.stage_config.sha256
                 != expected_stage_identity.stage_config.sha256
             ):

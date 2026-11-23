@@ -353,6 +353,7 @@ def _simulation_output_sidecar(
     operation: str,
     sources: Sequence[Path] = (),
     support_counts: Sequence[int] | None = None,
+    ordered_roster: str | None = None,
 ) -> ArtifactSidecar:
     """Build the v3 producer contract used at the original simulation write."""
 
@@ -381,6 +382,7 @@ def _simulation_output_sidecar(
             "parameters": {
                 "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                 "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                **({"ordered_builtin_roster_v1": ordered_roster} if ordered_roster else {}),
             },
         },
     )
@@ -417,15 +419,31 @@ def _write_workload_plan_simulation_output(
 
     expected = json.dumps(plan.to_dict(), indent=2, sort_keys=True).encode("utf-8") + b"\n"
     if path.exists():
+        from farkle.utils.release_identity import exact_direct_sources
+        from farkle.utils.scientific_reuse import compatible_producer
+
         metadata = validate_authenticated_artifact_metadata(path, cfg=cfg)
-        if path.stat().st_size != len(expected):
-            raise ValueError(f"simulation workload plan is stale: {path}")
-        if path.read_bytes() != expected:
+        stored = path.read_bytes()
+        if (
+            hashlib.sha256(stored).hexdigest() != metadata.artifact.content_sha256
+            or metadata.method_contract.procedure != "publish_simulation_workload_plan"
+            or not compatible_producer(metadata.stage_identity, producer_code_identity(cfg))
+            or metadata.stage_identity.immutable_design_identities.get("stage_dependencies_v1")
+            != cfg.stage_config_sha("simulation")
+            or not exact_direct_sources(path, [strategy_manifest])
+        ):
+            raise ValueError(f"simulation workload plan identity is stale: {path}")
+        original = json.loads(stored)
+        # These are retained estimates from the producer invocation. Cap,
+        # batch layout, precision and every workload coordinate must still agree.
+        current_plan = plan.to_dict()
+        projections = {"projected_games_per_second", "projected_runtime_seconds"}
+        if original.keys() != current_plan.keys() or any(
+            original[k] != value for k, value in current_plan.items() if k not in projections
+        ):
             raise ValueError(
                 f"simulation workload plan does not match current configuration: {path}"
             )
-        if metadata.artifact.content_sha256 != hashlib.sha256(expected).hexdigest():
-            raise ValueError(f"simulation workload plan identity is stale: {path}")
         return
     sidecar = _simulation_output_sidecar(
         cfg,
@@ -464,6 +482,7 @@ def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Pat
                 if child.is_file()
                 and child.resolve() != done_path.resolve()
                 and not child.name.endswith(".sidecar.json")
+                and not child.name.startswith("._publication_")
                 and not _is_atomic_staging_file(child)
             )
         else:
@@ -555,6 +574,10 @@ def _publish_simulation_manifest_v3(
     canonical_records: list[tuple[tuple[int, ...], dict[str, Any]]] = []
     member_science: dict[tuple[int | str, ...], str] = {}
     code = producer_code_identity(cfg)
+    from farkle.utils.scientific_reuse import closure, compatible_producer, launch_matches
+
+    members_portable = True
+    member_dependencies: dict[str, str] = {}
     reference_metadata = None
     for index, record in enumerate(records):
         raw_path = record.get("path")
@@ -564,6 +587,14 @@ def _publish_simulation_manifest_v3(
         if not source.is_absolute():
             source = path.parent / source
         metadata = validate_authenticated_artifact_metadata(source, cfg=cfg)
+        member = closure(metadata.stage_identity)
+        members_portable &= launch_matches(metadata.stage_identity)
+        if any(
+            key in member_dependencies and member_dependencies[key] != value
+            for key, value in member.items()
+        ):
+            raise ValueError(f"Inconsistent scientific dependencies among shards: {source}")
+        member_dependencies.update(member)
         if reference_metadata is None:
             reference_metadata = metadata
         schema = metadata.artifact.arrow_schema
@@ -636,7 +667,7 @@ def _publish_simulation_manifest_v3(
             and existing.manifest_sha256 == expected_native_sha.hexdigest()
             and sha256_file(path) == existing.manifest_sha256
             and reference_metadata is not None
-            and existing.stage_identity.code == reference_metadata.stage_identity.code
+            and compatible_producer(existing.stage_identity, code)
             and existing.stage_identity.stage_config
             == reference_metadata.stage_identity.stage_config
         ):
@@ -652,6 +683,7 @@ def _publish_simulation_manifest_v3(
         player_counts=[n_players],
         native_records=ordered_records,
         member_science=inventory_science,
+        member_dependencies=member_dependencies if members_portable else None,
     )
 
 
@@ -1153,6 +1185,7 @@ def _validate_resume_outputs(
 
     def require_replay_context() -> Callable[[Path, Mapping[str, Any], AuthenticatedSidecar], None]:
         from farkle.utils.scientific_identity import producer_config_identity
+        from farkle.utils.scientific_reuse import compatible_producer
 
         stage_config = producer_config_identity(cfg, "simulation")
         dependencies = cfg.stage_config_sha("simulation")
@@ -1175,7 +1208,7 @@ def _validate_resume_outputs(
             if (
                 stage.stage_config.sha256 != stage_config.sha256
                 or stage.immutable_design_identities.get("stage_dependencies_v1") != dependencies
-                or stage.code != code
+                or not compatible_producer(stage, code)
                 or {item.sha256 for item in metadata.source_artifacts} != source_identities
                 or (checkpoint_error is not None and sha256_file(shard) != record["data_sha256"])
             ):
@@ -1188,7 +1221,7 @@ def _validate_resume_outputs(
         require_replay_context()
         if checkpoint_error is not None
         or "partial_aggregate" in checkpoint_meta
-        or (require_authenticated_checkpoint and has_row_manifest and metric_chunk_dir is not None)
+        or (require_authenticated_checkpoint and (has_row_manifest or has_metrics_manifest))
         else None
     )
 
@@ -1407,13 +1440,18 @@ def run_tournament(
     - If ``sim.n_players_list`` has one element, runs that N and returns total games (int).
     - If it has multiple elements, runs them all and returns the **sum** of total games.
     """
+    _bind_game_profile(cfg, oracle_game_profile)
+    return _dispatch_tournament(cfg, force=force, oracle_game_profile=oracle_game_profile)
+
+
+def _bind_game_profile(cfg: AppConfig, oracle_game_profile: GameProfile | None) -> None:
+    from farkle.utils.scientific_invocation import current
+
     profile_sha256 = oracle_game_profile.sha256 if oracle_game_profile is not None else None
     if cfg._game_profile_sha256 != profile_sha256:
-        if cfg._run_lineage_sha256 is not None:
+        if cfg._run_lineage_sha256 is not None or current() is not None:
             raise ValueError("game-profile identity does not match the authenticated run lineage")
         cfg._game_profile_sha256 = profile_sha256
-
-    return _dispatch_tournament(cfg, force=force, oracle_game_profile=oracle_game_profile)
 
 
 @stage_action("simulation", also=())
@@ -1475,8 +1513,73 @@ def _dispatch_tournament(
     return int(sum(totals.values()))
 
 
-@stage_action("simulation", also=())
+def simulation_roster_manifest(
+    cfg: AppConfig, strategies: list[ThresholdStrategy] | None = None
+) -> tuple[pd.DataFrame, str | None]:
+    """Validate the requested ordered roster against any sealed root mapping."""
+    from farkle.simulation.strategies import StopAtStrategy
+
+    if strategies is None:
+        strategies, _, _ = _resolve_strategies(cfg, None)
+    ordered_roster = (
+        freshness_sha256(
+            {
+                "ordered_roster": [
+                    (
+                        type(s).__name__,
+                        s.strategy_id,
+                        s.heuristic if isinstance(s, StopAtStrategy) else None,
+                    )
+                    for s in strategies
+                ]
+            }
+        )
+        if all(
+            type(s) in (ThresholdStrategy, StopAtStrategy) and s.strategy_id is not None
+            for s in strategies
+        )
+        else None
+    )
+    manifest = build_strategy_manifest(strategies)
+    manifest_path = cfg.strategy_manifest_root_path()
+    if manifest_path.exists() or sidecar_path(manifest_path).exists():
+        from farkle.utils.frozen_h2h import validated_root_strategy_manifest
+
+        original = validated_root_strategy_manifest(cfg)
+        if original.stage_identity.immutable_design_identities.get(
+            "stage_dependencies_v1"
+        ) != cfg.stage_config_sha("simulation"):
+            raise ValueError(
+                f"Incompatible strategy manifest producer at {manifest_path}; use a new output root"
+            )
+        old_order = original.stage_identity.immutable_design_identities.get(
+            "ordered_builtin_roster_v1"
+        )
+        if old_order is not None and old_order != ordered_roster:
+            raise ValueError("Ordered strategy roster differs; use a new output root")
+        _validate_manifest_matches(manifest, manifest_path, label="Strategy")
+    return manifest, ordered_roster
+
+
 def run_single_n(
+    cfg: AppConfig,
+    n: int,
+    strategies: list[ThresholdStrategy] | None = None,
+    *,
+    force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
+) -> int:
+    _bind_game_profile(cfg, oracle_game_profile)
+    from farkle.utils.manifest import publication_lock
+
+    with publication_lock(cfg.n_dir(n) / "simulation"):
+        return _run_single_n(
+            cfg, n, strategies, force=force, oracle_game_profile=oracle_game_profile
+        )
+
+
+@stage_action("simulation", also=())
+def _run_single_n(
     cfg: AppConfig,
     n: int,
     strategies: list[ThresholdStrategy] | None = None,
@@ -1498,28 +1601,35 @@ def run_single_n(
 
     # --- Output paths and pre-scheduling plan publication ---
     results_dir = cfg.results_root
-    manifest = build_strategy_manifest(strategies)
+    manifest, ordered_roster = simulation_roster_manifest(cfg, strategies)
     manifest_path = cfg.strategy_manifest_root_path()
-    if manifest_path.exists() or sidecar_path(manifest_path).exists():
-        from farkle.utils.frozen_h2h import validated_root_strategy_manifest
-
-        original = validated_root_strategy_manifest(cfg)
-        if original.stage_identity.immutable_design_identities.get(
-            "stage_dependencies_v1"
-        ) != cfg.stage_config_sha("simulation"):
-            raise ValueError(
-                f"Incompatible strategy manifest producer at {manifest_path}; use a new output root"
-            )
-        _validate_manifest_matches(manifest, manifest_path, label="Strategy")
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
-    if not force and simulation_is_complete(cfg, n):
+    if simulation_is_complete(cfg, n):
         LOGGER.info("Simulation already complete; preserving published outputs for %sp", n)
         return total_games
     workload_plan_path = n_dir / "simulation_workload_plan.json"
     row_dir = _resolve_row_output_dir(cfg, n)
     metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
+    if force and (
+        simulation_done_path(cfg, n).exists()
+        or sidecar_path(workload_plan_path).exists()
+        or any(
+            directory is not None
+            and (
+                sidecar_path(directory / name).exists()
+                or any(directory.glob("*.parquet.sidecar.json"))
+            )
+            for directory, name in (
+                (row_dir, "manifest.jsonl"),
+                (metric_chunk_dir, "metrics_manifest.jsonl"),
+            )
+        )
+    ):
+        # A separately located frozen pair may depend on this cell. Take the
+        # checked resume path even when the caller requested recomputation.
+        force = False
     if not force:
         _cleanup_interrupted_simulation_staging_files(
             n_dir=n_dir,
@@ -1549,6 +1659,8 @@ def run_single_n(
         extra={"stage": "simulation", **workload_plan.to_dict()},
     )
     if workload_plan.cap_exceeded:
+        if sidecar_path(workload_plan_path).exists():
+            raise WorkloadCapExceeded(workload_plan)
         write_workload_plan(workload_plan_path, workload_plan, temp_dir=cfg.io.temp_dir)
         LOGGER.error(
             "Tournament workload blocked by configured cap",
@@ -1612,6 +1724,7 @@ def run_single_n(
                         manifest_path,
                         n_players=n,
                         operation="publish_strategy_manifest",
+                        ordered_roster=ordered_roster,
                         support_counts=sorted({int(value) for value in cfg.sim.n_players_list}),
                     ),
                 )
@@ -1933,8 +2046,19 @@ def run_single_n(
     return total_games
 
 
-@stage_action("simulation", also=())
 def run_multi(
+    cfg: AppConfig,
+    player_counts: Sequence[int] | None = None,
+    *,
+    force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
+) -> dict[int, int]:
+    _bind_game_profile(cfg, oracle_game_profile)
+    return _run_multi(cfg, player_counts, force=force, oracle_game_profile=oracle_game_profile)
+
+
+@stage_action("simulation", also=())
+def _run_multi(
     cfg: AppConfig,
     player_counts: Sequence[int] | None = None,
     *,

@@ -114,7 +114,21 @@ def run_streaming_shard(
             }
         )
     if manifest_sidecar is None:
-        append_manifest_line(manifest_path, record)
+        if (
+            sidecar is not None
+            and sidecar.producer == "simulation"
+            and sidecar.artifact_contract_version == 3
+        ):
+            from farkle.utils.manifest import publication_lock
+
+            with publication_lock(Path(manifest_path)):
+                if sidecar_path(manifest_path).exists():
+                    raise ValueError(
+                        f"Cannot append to sealed simulation manifest: {manifest_path}"
+                    )
+                append_manifest_line(manifest_path, record)
+        else:
+            append_manifest_line(manifest_path, record)
         return record
 
     manifest = Path(manifest_path)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 from farkle.orchestration.run_contexts import (
     RootPairRunContext,
@@ -228,3 +230,62 @@ def audit_invocation(snapshot: AuthenticatedGraphSnapshot, run_id: str) -> dict[
         "lifecycle_inventory": str(folder / "inventory.json"),
         "lifecycle_sha256": snapshot.lifecycle_sha256,
     }
+
+
+def audit_published_launch(
+    root: Path, event: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read an original producer launch through its owning manifest event."""
+    folder = invocation_dir(root, event["run_id"])
+    path = folder / "invocation.json"
+    if Path(event["invocation_record"]).resolve() != path.resolve():
+        raise ValueError(f"foreign invocation record: {path}")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != event["invocation_sha256"]:
+        raise ValueError(f"retained invocation digest differs: {path}")
+    receipt = json.loads(data)
+    if (
+        receipt["version"] != 1
+        or receipt["run_id"] != folder.name
+        or receipt["current"] != {name: sha256_file(folder / name) for name in _FILES}
+        or receipt["previous"] != {name: _digest(folder / "previous" / name) for name in _FILES}
+    ):
+        raise ValueError(f"incomplete retained invocation: {folder}")
+    for index, (_, _, digest) in enumerate(receipt["previous_completion_stamps"]):
+        if _digest(folder / "previous" / f"{index}.stamp") != digest:
+            raise ValueError(f"historical completion differs: {folder}")
+    context = load_run_context(
+        folder / "run_context.json", active_config_path=folder / "active_config.yaml"
+    )
+    if (
+        event["run_lineage_sha256"] != context["run_lineage_sha256"]
+        or event["config_sha"] != context["public_config_sha256"]
+        or Path(context["resolved_paths"]["results_root"]).resolve() != root.resolve()
+    ):
+        raise ValueError(f"invocation event disagrees with its retained context: {path}")
+    return context, receipt
+
+
+def audit_parent_lifecycle(
+    root: Path, run_id: str, receipt: Mapping[str, Any], context: Mapping[str, Any], expected: str
+) -> None:
+    """Authenticate the original root lifecycle named by a historical pair."""
+    folder = invocation_dir(root, run_id) / "lifecycle"
+    inventory = json.loads((folder / "inventory.json").read_bytes())
+    lineage = context["run_lineage_sha256"]
+    stamps = inventory["completion_stamps"]
+    digests = [sha256_file(folder / f"{index}.stamp") for index in range(len(stamps))]
+    if (
+        not stamps
+        or inventory["version"] != 1
+        or inventory["run_context_file_sha256"] != receipt["current"]["run_context.json"]
+        or inventory["run_context_identity_sha256"] != context["run_context_sha256"]
+        or inventory["run_lineage_sha256"] != lineage
+        or [stamp[:2] for stamp in stamps]
+        != [stamp[:2] for stamp in receipt["previous_completion_stamps"]]
+        or digests != [stamp[2] for stamp in stamps]
+        or inventory["lifecycle_sha256"] != expected
+        or freshness_sha256({"run_lineage_sha256": lineage, "completion_stamps": digests})
+        != expected
+    ):
+        raise ValueError(f"historical parent lifecycle differs: {folder}")

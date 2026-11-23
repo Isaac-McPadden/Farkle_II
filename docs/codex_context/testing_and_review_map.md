@@ -13,6 +13,7 @@ timings are in [development history](../development_history.md).
 | Rows/turns/scoring | `unit/game/test_engine*.py`, `test_scoring*.py`; `unit/analysis/test_all_player_metrics.py` |
 | Authentication/recovery | `unit/utils/test_artifact_contract.py`, `test_partitioned_stage.py`, `test_authenticated_graph.py`; `unit/analysis/test_release_audit.py` |
 | Scientific freshness | `unit/utils/test_scientific_identity.py` covers scoped producers, numerical builds and unclassified evidence. `unit/utils/test_release_identity_v3.py` and `unit/analysis/test_stage_runner.py` exercise publication and completion. |
+| Mixed-revision release | `unit/utils/test_cross_revision_resume.py` exercises a documentation commit, a dirty producer, an engine edit hidden from Git status, and a changed engine revision in temporary checkouts. `unit/orchestration/test_seed_workflows.py` checks the final gate. `unit/analysis/test_h2h_authorization.py` checks frozen consent and terminal blocks. |
 | Active invocation | `unit/utils/test_scientific_invocation.py` covers protected file measurements, runtime and import drift, and preflight child attestation. The staging-drift regression in `unit/utils/test_release_identity_v3.py` checks both canonical files after rejection. |
 | Outcomes/precision | `unit/analysis/test_outcome_distributions.py`, `test_outcome_publication.py`, `test_outcome_precision.py` |
 | RNG preflight/monitoring | `unit/analysis/test_batch_monitor.py`, `test_rng_monitor.py`; the raw integration oracle exercises full preflight |
@@ -37,6 +38,15 @@ ignored historical seeds-54/55 dataset; retain it without regenerating results.
 
 These execute bounded simulations. Run them for implementation/release changes,
 not merely documentation cleanup.
+
+The pipeline health report records the versioned revision decision under
+`release_audit.revision_policy`. Version 1 requires a fresh byte audit of the
+two roots and pair. A mixed release also requires a complete chain of clean
+launches linked from the pipeline manifest, local producer commit objects,
+and matching scoped scientific dependencies. Missing historical receipts or
+an unclassified Git checkout filter make that run ineligible. A topology
+change must satisfy the applicable RNG preflight. Integrated Phase 4
+qualification uses all three oracles above.
 
 ## Static and release checks
 

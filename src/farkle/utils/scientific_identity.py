@@ -295,6 +295,11 @@ def live_components(
     from farkle.utils.scientific_runtime import numerical_environment
 
     stage = producer.stage
+    if stage == "trueskill" and producer.scope == "root":
+        for k in cfg.sim.n_players_list:
+            keeper = cfg.n_dir(k) / f"keepers_{k}.npy"
+            if keeper.exists():
+                raise ValueError(f"Unclassified external TrueSkill keeper selection at {keeper}")
     deps = dependencies_for(producer)
     native_threads = (
         cfg.resources.native_threads_per_worker
@@ -361,6 +366,7 @@ class WorkerDependencies:
     expected: str
     placement: str = ""
     components: dict[str, Any] | None = None
+    launch_digests: dict[str, str] | None = None
 
     def attach(self) -> None:
         from farkle.utils.scientific_invocation import attach_worker
@@ -393,6 +399,7 @@ def worker_dependencies() -> WorkerDependencies | None:
         stage_dependency_sha256(cfg, stage),
         process_placement(cfg, stage),
         describe_components(pin.components(cfg, stage_producer(cfg, stage))) if pin else None,
+        dict(pin.launch_digests) if pin else None,
     )
 
 

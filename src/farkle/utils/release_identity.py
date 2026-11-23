@@ -63,6 +63,7 @@ from farkle.utils.authenticated_contract import (
     load_authenticated_sidecar,
     load_immutable_manifest_sidecar,
     make_stage_identity,
+    producer_code_identity,
     publish_immutable_manifest_bytes_atomic,
     publish_staged_authenticated_artifact_atomic,
     resolve_code_identity,
@@ -570,7 +571,9 @@ def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
 
 def scientific_artifact_binding(source: AuthenticatedSidecar, code: CodeIdentity) -> str:
     origin = source.stage_identity.immutable_design_identities.get("publication_science_v1")
-    if origin is None or source.stage_identity.code != code:
+    from farkle.utils.scientific_reuse import compatible_producer
+
+    if origin is None or not compatible_producer(source.stage_identity, code):
         raise ArtifactContractError(
             f"Unclassified or incompatible upstream producer science at {source.artifact.location}"
         )
@@ -583,15 +586,19 @@ def _scientific_source_bindings(
     manifests: Sequence[ManifestRootIdentity],
     source_paths: Mapping[str, Path],
     manifest_paths: Mapping[str, tuple[Path, Path]],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], list[StageIdentity]]:
     """Propagate producer science separately from the exact v3 provenance edges."""
+    from farkle.utils.scientific_reuse import compatible_producer
+
     bindings: dict[str, str] = {}
+    upstream_stages: list[StageIdentity] = []
     for source in sources:
         metadata = load_authenticated_sidecar(source_paths[source.logical_role])
         if metadata.sidecar_contract_sha256 != source.sidecar_contract_sha256:
             raise ArtifactContractError(
                 f"scientific input changed during capture: {source.logical_role}"
             )
+        upstream_stages.append(metadata.stage_identity)
         bindings[source.logical_role] = scientific_artifact_binding(metadata, code)
     for manifest in manifests:
         path, _ = manifest_paths[manifest.logical_role]
@@ -600,7 +607,7 @@ def _scientific_source_bindings(
         if (
             origin is None
             or upstream.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
-            or upstream.stage_identity.code != code
+            or not compatible_producer(upstream.stage_identity, code)
         ):
             raise ArtifactContractError(
                 f"Missing or incompatible scientific manifest identity at {path}"
@@ -608,10 +615,11 @@ def _scientific_source_bindings(
         members = upstream.stage_identity.immutable_design_identities.get("manifest_members_v1")
         if members is None:
             raise ArtifactContractError(f"Unclassified scientific manifest members at {path}")
+        upstream_stages.append(upstream.stage_identity)
         bindings[manifest.logical_role] = identity_sha256(
             {"producer": origin, "location": manifest.location, "members": members}
         )
-    return bindings
+    return bindings, upstream_stages
 
 
 def _bind_publication_science(
@@ -626,30 +634,84 @@ def _bind_publication_science(
     source_paths: Mapping[str, Path],
     manifest_paths: Mapping[str, tuple[Path, Path]],
 ) -> None:
+    from farkle.utils.scientific_reuse import publication_closure
+
     components = cfg.stage_config_sha(stage)
+    bindings, upstream = _scientific_source_bindings(
+        code, sources, manifests, source_paths, manifest_paths
+    )
+    designs.update(
+        publication_closure(
+            cfg,
+            stage,
+            components,
+            upstream,
+            classified_leaf=(stage == "simulation" and "ordered_builtin_roster_v1" in designs)
+            or (stage == "rng_diagnostics" and "preflight_design_v2" in designs),
+        )
+    )
     designs["stage_dependencies_v1"] = components
-    designs["publication_science_v1"] = identity_sha256(
+    designs["publication_science_v1"] = publication_science_digest(
+        stage,
+        components,
+        method,
+        versions,
+        designs,
+        bindings,
+        has_sources=bool(sources),
+        has_manifests=bool(manifests),
+    )
+
+
+def publication_science_controls(
+    stage: str,
+    method: MethodContract,
+    designs: Mapping[str, str],
+    *,
+    has_sources: bool,
+    has_manifests: bool,
+) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in designs.items()
+        if key.startswith("control:")
+        and not (
+            ".done.json:" in key
+            and has_sources
+            and (
+                (stage == "metrics" and method.procedure.startswith("outcome_"))
+                or (method.procedure == "ingest_simulation_rows" and has_manifests)
+            )
+        )
+    }
+
+
+def publication_science_digest(
+    stage: str,
+    components: str,
+    method: MethodContract,
+    versions: VersionIdentity,
+    designs: Mapping[str, str],
+    bindings: Mapping[str, str],
+    *,
+    has_sources: bool,
+    has_manifests: bool,
+) -> str:
+    """Hash the typed scientific publication and its authenticated direct inputs."""
+    return identity_sha256(
         {
             "version": 1,
             "stage_dependencies": components,
             "method": method,
             "versions": versions,
-            "sources": _scientific_source_bindings(
-                code, sources, manifests, source_paths, manifest_paths
+            "sources": bindings,
+            "controls": publication_science_controls(
+                stage,
+                method,
+                designs,
+                has_sources=has_sources,
+                has_manifests=has_manifests,
             ),
-            "controls": {
-                key: value
-                for key, value in designs.items()
-                if key.startswith("control:")
-                and not (
-                    ".done.json:" in key
-                    and sources
-                    and (
-                        (stage == "metrics" and method.procedure.startswith("outcome_"))
-                        or (method.procedure == "ingest_simulation_rows" and manifests)
-                    )
-                )
-            },
         }
     )
 
@@ -757,6 +819,25 @@ def publish_staged_v3_from_metadata(
         value = getattr(method, name)
         if value is not None:
             designs[name] = value
+    ordered_roster = (metadata.method_contract.get("parameters") or {}).get(
+        "ordered_builtin_roster_v1"
+    )
+    if (
+        stage_key == "simulation"
+        and method.procedure == "publish_strategy_manifest"
+        and isinstance(ordered_roster, str)
+    ):
+        designs["ordered_builtin_roster_v1"] = ordered_roster
+    if (
+        stage_key == "rng_diagnostics"
+        and method.procedure == "first_release_rng_evidence"
+        and final_path == cfg.rng_preflight_dir() / "plan.json"
+    ):
+        plan = read_json_file_with_retry(staged_path)
+        if plan.get("schema_version") == 2 and plan.get(
+            "scientific_dependencies_v1"
+        ) == cfg.stage_config_sha(stage_key):
+            designs["preflight_design_v2"] = identity_sha256(plan)
     config_identity = producer_config_identity(cfg, stage_key)
     code = cfg._code_identity
     if code is None:
@@ -804,20 +885,16 @@ def publish_staged_v3_from_metadata(
     return _compatibility_view(final_path, metadata=metadata, authenticated=authenticated)
 
 
-@numerical_observation()
-def publish_native_manifest_v3(
+def native_manifest_contract(
     path: Path,
     *,
     cfg: AppConfig,
     stage_key: str,
-    entries: list[ManifestEntry],
     source_paths: list[Path],
     operation: str,
     player_counts: list[int],
-    native_records: Sequence[Mapping[str, Any]] | None = None,
-    member_science: str | None = None,
-) -> None:
-    """Publish native manifest bytes with a coordinate-sorted immutable root."""
+) -> tuple[ArtifactSidecar, VersionIdentity, MethodContract]:
+    """Resolve the typed method and versions for a native shard inventory."""
 
     synthetic = ArtifactSidecar(
         artifact_contract_version=3,
@@ -860,6 +937,32 @@ def publish_native_manifest_v3(
         metadata=synthetic,
     )
     method = _typed_method(cfg, synthetic, method_version=method_version)
+    return synthetic, versions, method
+
+
+@numerical_observation()
+def publish_native_manifest_v3(
+    path: Path,
+    *,
+    cfg: AppConfig,
+    stage_key: str,
+    entries: list[ManifestEntry],
+    source_paths: list[Path],
+    operation: str,
+    player_counts: list[int],
+    native_records: Sequence[Mapping[str, Any]] | None = None,
+    member_science: str | None = None,
+    member_dependencies: Mapping[str, str] | None = None,
+) -> None:
+    """Publish native manifest bytes with a coordinate-sorted immutable root."""
+    synthetic, versions, method = native_manifest_contract(
+        path,
+        cfg=cfg,
+        stage_key=stage_key,
+        source_paths=source_paths,
+        operation=operation,
+        player_counts=player_counts,
+    )
     sources, manifests, captured_source_paths, _, designs = _capture_inputs(synthetic)
     if cfg._run_lineage_sha256 is not None:
         designs["run_lineage_sha256"] = cfg._run_lineage_sha256
@@ -901,6 +1004,8 @@ def publish_native_manifest_v3(
                 for e in sorted(entries, key=lambda e: e.coordinate)
             ]
         )
+    if member_dependencies:
+        designs.update(member_dependencies)
     designs["manifest_members_v1"] = member_science
     stage_identity = make_stage_identity(
         stage_key=stage_key,
@@ -1048,6 +1153,12 @@ def _root_owned_candidate(
     root: Path,
     location: CanonicalArtifactLocation,
 ) -> Path | None:
+    for parent in getattr(cfg, "_source_root_configs", ()):
+        if parent.results_root == root:
+            try:
+                return location.path(parent)
+            except (KeyError, ValueError):
+                return None
     if location.stage_key == "simulation":
         return root / location.relative_path
     folder = cfg.root_input_stage_folder(location.stage_key)
@@ -1155,6 +1266,57 @@ def _require_current_output_versions(
             )
 
 
+def require_authenticated_output_versions(
+    cfg: AppConfig, path: Path, sidecar: AuthenticatedSidecar
+) -> None:
+    _require_current_output_versions(
+        sidecar.versions,
+        cfg=cfg,
+        stage_key=sidecar.stage_identity.stage_key,
+        metadata=_compatibility_view(path, authenticated=sidecar),
+    )
+
+
+def completion_producer_identity(
+    cfg: AppConfig,
+    stage_key: str,
+    versions: VersionIdentity,
+    output_sidecars: Mapping[str, str],
+    code: CodeIdentity,
+) -> StageIdentity:
+    """Reconstruct a completion from its producer and exact live output inventory."""
+    designs = dict(output_sidecars)
+    # Exact output-sidecar hashes retain their original producer lineages.
+    # A later invocation may validate those publications under a new lifecycle.
+    if stage_key == "reporting":
+        designs["release_profile_v1"] = identity_sha256(cfg.profile)
+    if cfg._game_profile_sha256 is not None:
+        designs["game_profile_sha256"] = cfg._game_profile_sha256
+    config_identity = producer_config_identity(cfg, stage_key)
+    designs["stage_dependencies_v1"] = cfg.stage_config_sha(stage_key)
+    method_version = next(iter(versions.method_versions.values()))
+    method = MethodContract(
+        procedure=f"{stage_key}_authenticated_completion",
+        method_version=method_version,
+        baseline="stage_output_inventory",
+        replication_unit="stage_run",
+        conditioning="authenticated_complete_outputs",
+        root_seeds=tuple(sorted({int(value) for value in cfg.sim.seed_list or [cfg.sim.seed]})),
+        player_counts=tuple(sorted({int(value) for value in cfg.sim.n_players_list})),
+        required_player_counts=tuple(sorted({int(value) for value in cfg.sim.n_players_list})),
+    )
+    return make_stage_identity(
+        stage_key=stage_key,
+        stage_cache_key_version=cfg.stage_cache_key_version(stage_key),
+        stage_config=config_identity,
+        versions=versions,
+        code=code,
+        method_contract=method,
+        upstream_identity_sha256=(),
+        immutable_design_identities=dict(sorted(designs.items())),
+    )
+
+
 def _completion_contract(
     cfg: AppConfig,
     *,
@@ -1183,12 +1345,6 @@ def _completion_contract(
     # stage-health consumers intentionally do not rediscover ad-hoc input
     # lists.
     designs: dict[str, str] = {}
-    # Exact output-sidecar hashes retain their original producer lineages.
-    # A later invocation may validate those publications under a new lifecycle.
-    if stage_key == "reporting":
-        designs["release_profile_v1"] = identity_sha256(cfg.profile)
-    if cfg._game_profile_sha256 is not None:
-        designs["game_profile_sha256"] = cfg._game_profile_sha256
     for path in output_files:
         adjacent = sidecar_path(path)
         if not adjacent.is_file():
@@ -1229,12 +1385,7 @@ def _completion_contract(
             designs[f"output:{location.relative_path}"] = sidecar_sha
             continue
         sidecar = verification.artifact(path, deep=deep_verify_outputs)
-        _require_current_output_versions(
-            sidecar.versions,
-            cfg=cfg,
-            stage_key=stage_key,
-            metadata=_compatibility_view(path, authenticated=sidecar),
-        )
+        require_authenticated_output_versions(cfg, path, sidecar)
         location = derive_canonical_location(cfg, path, stage_key=stage_key)
         if sidecar.artifact.location != location:
             raise ArtifactContractError(f"artifact scope/path identity mismatch: {path}")
@@ -1250,34 +1401,8 @@ def _completion_contract(
 
     versions = sidecars[0].versions if sidecars else first_manifest_versions
     assert versions is not None
-    config_identity = producer_config_identity(cfg, stage_key)
-    designs["stage_dependencies_v1"] = cfg.stage_config_sha(stage_key)
-    code = cfg._code_identity
-    if code is None:
-        code = resolve_code_identity(
-            Path(__file__).resolve().parents[3],
-            policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
-        )
-    method_version = next(iter(versions.method_versions.values()))
-    method = MethodContract(
-        procedure=f"{stage_key}_authenticated_completion",
-        method_version=method_version,
-        baseline="stage_output_inventory",
-        replication_unit="stage_run",
-        conditioning="authenticated_complete_outputs",
-        root_seeds=tuple(sorted({int(value) for value in cfg.sim.seed_list or [cfg.sim.seed]})),
-        player_counts=tuple(sorted({int(value) for value in cfg.sim.n_players_list})),
-        required_player_counts=tuple(sorted({int(value) for value in cfg.sim.n_players_list})),
-    )
-    stage_identity = make_stage_identity(
-        stage_key=stage_key,
-        stage_cache_key_version=cfg.stage_cache_key_version(stage_key),
-        stage_config=config_identity,
-        versions=versions,
-        code=code,
-        method_contract=method,
-        upstream_identity_sha256=(),
-        immutable_design_identities=dict(sorted(designs.items())),
+    stage_identity = completion_producer_identity(
+        cfg, stage_key, versions, designs, producer_code_identity(cfg)
     )
 
     candidate_paths = _expanded_files([*inputs, *output_files])
@@ -1298,6 +1423,9 @@ def _completion_contract(
 
     @cache
     def roots() -> list[Path]:
+        declared = getattr(cfg, "_source_root_configs", ())
+        if declared:
+            return [parent.results_root for parent in declared]
         pair_root = cfg.analysis_dir.parent
         if not pair_root.is_dir():
             return []
@@ -1395,6 +1523,7 @@ def write_v3_stage_completion(
             else CompletionState.BLOCKED_BY_CAP.value
         ),
         outputs=identities,
+        completion_producer_v1=stage_identity.code,
     )
     # Read the graph afresh after staging the stamp, before making success observable.
     validation_fd, temporary = make_staged_path(

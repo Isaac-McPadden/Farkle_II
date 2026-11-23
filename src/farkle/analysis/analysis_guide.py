@@ -1054,12 +1054,14 @@ def guide_product_reusable(
             "reporting"
         ):
             return False
+        from farkle.utils.scientific_reuse import compatible_producer
+
         current_code = cfg._code_identity or resolve_code_identity(
             Path(__file__).resolve().parents[3],
             policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
         )
         if (
-            authenticated.stage_identity.code != current_code
+            not compatible_producer(authenticated.stage_identity, current_code)
             or authenticated.versions.method_versions.get("analysis_guide_method_version") != 1
             or authenticated.versions.method_versions.get("structure_report_contract_version") != 11
         ):

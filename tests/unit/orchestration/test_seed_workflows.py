@@ -86,6 +86,69 @@ def test_existing_pair_identity_conflict_fails_before_resume_publication(
         )
 
 
+def test_cross_revision_admission_authenticates_external_pair_inputs(tmp_path):
+    from dataclasses import replace
+
+    from tests.helpers.artifact_sidecars import clean_test_code_identity
+
+    from farkle.orchestration.run_contexts import write_run_context_atomic
+    from farkle.orchestration.seed_utils import write_active_config
+    from farkle.utils.scientific_invocation import scientific_invocation
+
+    roots = (_context(tmp_path, 11), _context(tmp_path, 22))
+    pair = RootPairRunContext.from_root_contexts(roots, pair_root=tmp_path / "pair")
+    old = clean_test_code_identity()
+    write_run_context_atomic(pair, code_identity=old, parent_lifecycle_roots=("1" * 64, "2" * 64))
+    write_active_config(pair.config, pair.pair_root)
+    previous = pair.run_context_path.read_bytes()
+    newer = replace(old, commit="c" * 40)
+    pair.config._code_identity = newer
+    pair.config.sim.n_jobs = 2
+    assign_config_sha(pair.config)
+    with scientific_invocation([(pair.config, "h2h_power")]):
+        two_seed_pipeline._require_existing_resume_identity(
+            pair.pair_root, cfg=pair.config, code_identity=newer
+        )
+        moved = RootPairRunContext.from_root_contexts(
+            (roots[0], _context(tmp_path / "different", 22)), pair_root=pair.pair_root
+        )
+        with pytest.raises(RuntimeError, match="input paths"):
+            two_seed_pipeline._require_existing_resume_identity(
+                pair.pair_root, cfg=moved.config, code_identity=newer
+            )
+    assert pair.run_context_path.read_bytes() == previous
+
+
+def test_cross_revision_root_admission_preserves_analysis_layout(tmp_path):
+    from dataclasses import replace
+
+    from tests.helpers.artifact_sidecars import clean_test_code_identity
+
+    from farkle.orchestration.run_contexts import write_run_context_atomic
+    from farkle.orchestration.seed_utils import write_active_config
+    from farkle.utils.scientific_invocation import scientific_invocation
+
+    context = _context(tmp_path, 11)
+    cfg = context.config
+    original = clean_test_code_identity()
+    write_run_context_atomic(context, code_identity=original)
+    write_active_config(cfg, context.results_root)
+    newer = replace(original, commit="c" * 40)
+    cfg._code_identity = newer
+    cfg.sim.n_jobs = 2
+    assign_config_sha(cfg)
+    with scientific_invocation([(cfg, "simulation")]):
+        two_seed_pipeline._require_existing_resume_identity(
+            context.results_root, cfg=cfg, code_identity=newer
+        )
+        moved = _context(tmp_path, 11).config
+        moved.io.analysis_subdir = "other_analysis"
+        with pytest.raises(RuntimeError, match="layout"):
+            two_seed_pipeline._require_existing_resume_identity(
+                context.results_root, cfg=moved, code_identity=newer
+            )
+
+
 def test_run_per_root_analysis_stops_before_h2h(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -387,13 +450,25 @@ def test_pipeline_health_is_not_rewritten_for_heartbeats(
     assert "timing_summary" in writes[1]
 
 
-@pytest.mark.parametrize("root_development", [False, True])
+@pytest.mark.parametrize(
+    "root_development,foreign,qualified,receipts",
+    [
+        (False, False, True, False),
+        (True, False, True, False),
+        (False, True, False, False),
+        (False, True, True, True),
+        (False, True, True, False),
+    ],
+)
 @pytest.mark.parametrize("audit_fails", [False, True])
 def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     audit_fails: bool,
     root_development: bool,
+    foreign: bool,
+    qualified: bool,
+    receipts: bool,
 ) -> None:
     first = _context(tmp_path, 11)
     second = _context(tmp_path, 22)
@@ -465,6 +540,36 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
         lambda targets, **_kwargs: calls.append(tuple(targets))
         or {
             "status": "failed" if audit_fails else "passed",
+            "foreign_producer_count": int(foreign),
+            "revision_policy": {
+                "version": 1,
+                "qualifying_commit": code.commit,
+                "foreign_publications": int(foreign),
+                # A verifier may release a graph produced entirely before its own revision.
+                "producer_commits": ["b" * 40] if foreign else [code.commit],
+                "invocation_records": (
+                    [
+                        {
+                            "record": str(tmp_path / commit / "invocation.json"),
+                            "sha256": "c" * 64,
+                            "code_identity": {
+                                "commit": commit,
+                                "state": "clean",
+                                "policy": code.policy,
+                            },
+                        }
+                        for commit in (code.commit, "b" * 40)
+                    ]
+                    if receipts
+                    else []
+                ),
+                "status": (
+                    ("qualified_mixed" if foreign else "single_revision")
+                    if qualified
+                    else "ineligible"
+                ),
+                "reasons": [] if qualified else ["missing clean producer launch"],
+            },
             "failures": ["bad artifact hash"] if audit_fails else [],
             "run_contexts": {},
             "internal_roots": [{"label": "root_11"}, {"label": "root_22"}, {"label": "pair"}],
@@ -501,9 +606,10 @@ def test_final_release_gate_executes_one_top_level_audit_with_three_internal_roo
     )
 
     assert result["status"] == ("failed" if audit_fails else "passed")
-    assert result["release_eligible"] is (not audit_fails and not root_development)
+    eligible = not audit_fails and not root_development and qualified and (not foreign or receipts)
+    assert result["release_eligible"] is eligible
     assert result["production_eligible"] is True
-    assert bool(result["release_ineligibility_reasons"]) is (audit_fails or root_development)
+    assert bool(result["release_ineligibility_reasons"]) is not eligible
     assert result["top_level_invocations"] == 1
     assert len(result["internal_roots"]) == 3
     assert len(calls) == 1

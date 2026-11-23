@@ -61,6 +61,32 @@ def test_launch_snapshot_survives_execution_and_documentation_changes(tmp_path, 
         publication_boundary()
 
 
+def test_standalone_pair_runner_pins_both_root_input_chains(tmp_path, small_environment):
+    from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+    from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+
+    def root(seed):
+        cfg = AppConfig()
+        cfg.sim.seed, cfg.sim.seed_list = seed, [seed]
+        cfg.io.results_dir_prefix = tmp_path / str(seed)
+        return SeedRunContext.from_config(cfg)
+
+    pair = RootPairRunContext.from_root_contexts((root(11), root(22)), pair_root=tmp_path / "pair")
+
+    def check(_cfg):
+        pin = current()
+        assert pin is not None
+        for stage in ("metrics", "trueskill", "simulation"):
+            for seed in (11, 22):
+                assert f"reuse_v1/root/{stage}/{seed}" in pin.launch_digests
+        assert "reuse_v1/pair/trueskill/11,22" in pin.launch_digests
+
+    StageRunner.run(
+        [StagePlanItem("candidate_freeze", check)],
+        StageRunContext(pair.config, tmp_path / "manifest.jsonl", "pair"),
+    )
+
+
 def test_numerical_and_spawn_placement_mismatch(small_environment):
     cfg = AppConfig()
     with (
@@ -286,3 +312,38 @@ def test_spawned_worker_rejects_changed_scientific_configuration(tmp_path):
             if child.is_alive():
                 child.terminate()
                 child.join()
+
+
+def test_unowned_rating_keeper_selection_prevents_launch(tmp_path, small_environment):
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.sim.n_players_list = [2]
+    keeper = cfg.n_dir(2) / "keepers_2.npy"
+    keeper.parent.mkdir(parents=True)
+    np.save(keeper, np.array([1, 2]))
+    with (
+        pytest.raises(ValueError, match="Unclassified external TrueSkill keeper"),
+        scientific_invocation([(cfg, "trueskill")]),
+    ):
+        pytest.fail("unclassified rating input was admitted")
+
+
+def test_preflight_keeps_target_worker_topology_across_revisions():
+    from farkle.analysis.rng_preflight import _preflight_design
+
+    plan = {
+        "schema_version": 2,
+        "code": {"commit": "old"},
+        "scientific_dependencies_v1": "a" * 64,
+        "environment": {"scratch": "old", "simulation_workers": 2},
+        "target_config": {"io": {}},
+    }
+    other = {
+        **plan,
+        "code": {"commit": "new"},
+        "target_config": {"io": {"temp_dir": "new"}},
+        "environment": {"scratch": "new", "simulation_workers": 2},
+    }
+    assert _preflight_design(plan) == _preflight_design(other)
+    other["environment"]["simulation_workers"] = 4
+    assert _preflight_design(plan) != _preflight_design(other)

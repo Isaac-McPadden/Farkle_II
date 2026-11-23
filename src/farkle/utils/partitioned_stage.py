@@ -257,6 +257,22 @@ def _stamp_payload(
         "output_sha256": _sha256_file(output),
         "unit_metadata": dict(unit_metadata),
     }
+    if (
+        sidecar_path(output).is_file()
+        and json.loads(sidecar_path(output).read_bytes()).get("artifact_contract_version") == 3
+    ):
+        from farkle.utils.authenticated_contract import load_authenticated_sidecar
+        from farkle.utils.scientific_reuse import closure
+
+        side = load_authenticated_sidecar(output)
+        if closure(side.stage_identity):
+            original = replace(
+                identity, code_identity_sha256=identity_sha256(asdict(side.stage_identity.code))
+            )
+            payload["code_identity_sha256"] = original.code_identity_sha256
+            payload["stage_identity_sha256"] = original.sha256
+            payload["unit_stamp_schema_version"] = 2
+            payload["unit_sidecar_sha256"] = _sha256_file(sidecar_path(output))
     payload["stamp_sha256"] = _identity_sha256(payload)
     return payload
 
@@ -306,16 +322,44 @@ def _validate_unit(
     try:
         payload = json.loads(stamp_path.read_text(encoding="utf-8"))
         recorded = payload.pop("stamp_sha256")
+        version = payload["unit_stamp_schema_version"]
+        produced = identity
+        if version == 2:
+            from farkle.utils.authenticated_contract import load_authenticated_sidecar
+            from farkle.utils.scientific_invocation import current
+            from farkle.utils.scientific_reuse import compatible_producer
+
+            side = load_authenticated_sidecar(output)
+            if (
+                payload["unit_sidecar_sha256"] != _sha256_file(sidecar_path(output))
+                or side.artifact.content_sha256 != payload["output_sha256"]
+            ):
+                return None
+            if identity_sha256(asdict(side.stage_identity.code)) != payload["code_identity_sha256"]:
+                return None
+            if payload["code_identity_sha256"] != identity.code_identity_sha256:
+                pin = current()
+                if pin is None:
+                    return None
+                cfg = next(iter(pin.configs.values()))
+                code = producer_code_identity(cfg)
+                if identity_sha256(
+                    asdict(code)
+                ) != identity.code_identity_sha256 or not compatible_producer(
+                    side.stage_identity, code
+                ):
+                    return None
+                produced = replace(identity, code_identity_sha256=payload["code_identity_sha256"])
         valid = (
             recorded == _identity_sha256(payload)
-            and payload["unit_stamp_schema_version"] == 1
+            and version in (1, 2)
             and payload["completion_state"] == "complete_valid"
             and payload["stage_name"] == identity.stage_name
-            and payload["stage_identity_sha256"] == identity.sha256
+            and payload["stage_identity_sha256"] == produced.sha256
             and payload["root_seed"] == identity.root_seed
             and payload["input_identities"] == [list(item) for item in identity.input_identities]
             and payload["statistical_config_sha256"] == identity.statistical_config_sha256
-            and payload["code_identity_sha256"] == identity.code_identity_sha256
+            and payload["code_identity_sha256"] == produced.code_identity_sha256
             and payload["output_schema_version"] == identity.schema_version
             and payload["method_version"] == identity.method_version
             and payload["unit_key"] == list(unit.key)
@@ -348,6 +392,12 @@ def _quarantine_invalid_unit(
     root: Path, unit: PartitionedUnit, *, output_prefix: str = "units"
 ) -> None:
     output = _output_path(root, unit, output_prefix=output_prefix)
+    from farkle.utils.scientific_reuse import sealed_root_input
+
+    if sealed_root_input(output):
+        # The authenticated publisher verifies the candidate without moving
+        # either retained file out from under a downstream consumer.
+        return
     _quarantine_paths(root, (output, _stamp_path(output)))
 
 
@@ -538,11 +588,15 @@ def validate_final_manifest(
         with path.open("rb") as handle:
             header_line = handle.readline()
             header = json.loads(header_line)
+            original = identity
+            header_code = header["stage_identity"]["code_identity_sha256"]
+            if header_code != identity.code_identity_sha256:
+                original = replace(identity, code_identity_sha256=header_code)
             if (
                 header.get("type") != "header"
                 or header.get("manifest_schema_version") != 1
-                or header.get("stage_identity") != _json_identity(identity)
-                or header.get("stage_identity_sha256") != identity.sha256
+                or header.get("stage_identity") != _json_identity(original)
+                or header.get("stage_identity_sha256") != original.sha256
             ):
                 return None
             digest = hashlib.sha256(header_line)
@@ -557,10 +611,22 @@ def validate_final_manifest(
                     output_prefix=output_prefix,
                     validator=validator,
                 )
-                if stamp is None or entry != _manifest_entry(unit, stamp):
+                if (
+                    stamp is None
+                    or entry != _manifest_entry(unit, stamp)
+                    or (
+                        original != identity
+                        and (
+                            stamp["unit_stamp_schema_version"] != 2
+                            or header_code != stamp["code_identity_sha256"]
+                        )
+                    )
+                ):
                     return None
                 digest.update(line)
                 count += 1
+            if original != identity and not count:
+                return None
             trailer = json.loads(handle.readline())
             if handle.read(1) or trailer != {
                 "type": "completion",
@@ -569,7 +635,7 @@ def validate_final_manifest(
             }:
                 return None
             return digest.hexdigest(), count
-    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
@@ -686,7 +752,9 @@ def run_partitioned_stage(
                     },
                 )
             return result
-        if manifest_path.exists():
+        from farkle.utils.scientific_reuse import sealed_root_input
+
+        if manifest_path.exists() and not sealed_root_input(manifest_path):
             _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
 
     reused = 0

@@ -8,7 +8,7 @@ import json
 import math
 import os
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
@@ -45,7 +45,10 @@ from farkle.utils.artifacts import (
 )
 from farkle.utils.authenticated_contract import (
     AuthenticatedContractError,
+    CodeIdentity,
+    SourceArtifactIdentity,
     load_authenticated_sidecar,
+    producer_code_identity,
 )
 from farkle.utils.frozen_h2h import (
     BUILTIN_ENGINE,
@@ -435,7 +438,7 @@ def _minimum_block_games(
     raise RuntimeError("H2H exact power search failed to find a finite allocation")
 
 
-def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
+def _load_frozen_family(cfg: AppConfig) -> dict[str, Any]:
     manifest_path = cfg.h2h_candidate_family_manifest_path()
     membership_path = cfg.h2h_candidate_family_path()
     for path in (manifest_path, membership_path):
@@ -449,22 +452,28 @@ def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     membership_schema = pq.read_schema(membership_path)
     require_strategy_id_field(membership_schema, "strategy", context=str(membership_path))
-    membership = pq.read_table(membership_path).to_pandas()
     candidates = manifest.get("candidates")
     family_hash = manifest.get("family_hash")
     if not isinstance(candidates, list) or len(candidates) < 2:
         raise ValueError("frozen candidate manifest must contain at least two candidates")
     if not isinstance(family_hash, str) or len(family_hash) != 64:
         raise ValueError("frozen candidate manifest has an invalid family hash")
-    selected = sorted(
-        membership.loc[membership["final_family"].astype(bool), "strategy"].astype(int).tolist()
-    )
-    if selected != sorted(int(candidate) for candidate in candidates):
+    remaining = {int(candidate) for candidate in candidates}
+    if len(remaining) != len(candidates):
+        raise ValueError("frozen candidate manifest repeats a strategy")
+    for batch in pq.ParquetFile(membership_path).iter_batches(
+        columns=["family_hash", "final_family", "strategy"], batch_size=8192
+    ):
+        membership = batch.to_pandas()
+        if not membership["family_hash"].astype(str).eq(family_hash).all():
+            raise ValueError("candidate membership rows disagree with the frozen family hash")
+        for strategy in membership.loc[membership["final_family"].astype(bool), "strategy"]:
+            if int(strategy) not in remaining:
+                raise ValueError("candidate manifest and membership artifact disagree")
+            remaining.remove(int(strategy))
+    if remaining:
         raise ValueError("candidate manifest and membership artifact disagree")
-    hashes = set(membership["family_hash"].astype(str))
-    if hashes != {family_hash}:
-        raise ValueError("candidate membership rows disagree with the frozen family hash")
-    return manifest, membership
+    return manifest
 
 
 def _roots_from_manifest(manifest: Mapping[str, Any]) -> tuple[int, ...]:
@@ -564,7 +573,7 @@ def _block_id(schedule_hash: str, pair_id: int, root_seed: int, order: int) -> s
     return hashlib.sha256(value).hexdigest()[:24]
 
 
-def _schedule_frame(
+def _schedule_rows(
     *,
     candidates: list[int],
     family_hash: str,
@@ -576,8 +585,7 @@ def _schedule_frame(
     target_power: float,
     worst_power: float,
     game_profile_sha256: str | None,
-) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
+) -> Iterator[dict[str, Any]]:
     max_attempts = math.ceil(max_attempt_multiplier * block_games)
     for pair_id, (strategy_a, strategy_b) in enumerate(combinations(sorted(candidates), 2)):
         for root_index, root_seed in enumerate(roots):
@@ -614,14 +622,31 @@ def _schedule_frame(
                 }
                 if game_profile_sha256 is not None:
                     row["game_profile_sha256"] = game_profile_sha256
-                rows.append(row)
-    frame = pd.DataFrame(rows)
-    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
-        frame[column] = canonical_strategy_ids(
-            frame[column],
-            context=f"H2H schedule {column}",
-        )
-    return frame
+                yield row
+
+
+def _configured_schedule_hash(
+    cfg: AppConfig,
+    family_hash: str,
+    roots: tuple[int, ...],
+    alpha_per_pair: float,
+    block_games: int,
+    design: Mapping[str, Any],
+) -> str:
+    return _schedule_hash(
+        frozen_design=design,
+        family_hash=family_hash,
+        roots=roots,
+        effect=cfg.head2head.practical_delta,
+        family_alpha=cfg.head2head.family_alpha,
+        alpha_per_pair=alpha_per_pair,
+        target_power=cfg.head2head.target_power,
+        scenarios=tuple(float(value) for value in H2H_SEAT1_ADVANTAGE_SCENARIOS),
+        block_games=block_games,
+        max_attempt_multiplier=float(cfg.head2head.max_attempt_multiplier),
+        min_candidate_completion_rate=float(cfg.head2head.min_candidate_completion_rate),
+        game_profile_sha256=cfg._game_profile_sha256,
+    )
 
 
 def _planning_sidecar_common(
@@ -675,7 +700,7 @@ def _publish_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HSch
     if not 0.0 <= cfg.head2head.min_candidate_completion_rate <= 1.0:
         raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
     frozen_family_inputs(cfg)
-    family, _membership = _load_frozen_family(cfg)
+    family = _load_frozen_family(cfg)
     candidates = [int(value) for value in family["candidates"]]
     family_hash = str(family["family_hash"])
     roots = _roots_from_manifest(family)
@@ -720,19 +745,8 @@ def _publish_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HSch
     max_attempt_multiplier = float(cfg.head2head.max_attempt_multiplier)
     max_attempts_per_block = math.ceil(max_attempt_multiplier * block_games)
     maximum_total_attempts = max_attempts_per_block * len(roots) * 2 * pair_count
-    schedule_hash = _schedule_hash(
-        frozen_design=design,
-        family_hash=family_hash,
-        roots=roots,
-        effect=cfg.head2head.practical_delta,
-        family_alpha=cfg.head2head.family_alpha,
-        alpha_per_pair=alpha_per_pair,
-        target_power=cfg.head2head.target_power,
-        scenarios=scenarios,
-        block_games=block_games,
-        max_attempt_multiplier=max_attempt_multiplier,
-        min_candidate_completion_rate=float(cfg.head2head.min_candidate_completion_rate),
-        game_profile_sha256=cfg._game_profile_sha256,
+    schedule_hash = _configured_schedule_hash(
+        cfg, family_hash, roots, alpha_per_pair, block_games, design
     )
     total_blocks = pair_count * len(roots) * 2
     cap = cfg.head2head.total_game_cap
@@ -793,18 +807,24 @@ def _publish_h2h_schedule(cfg: AppConfig, *, force: bool, engine: str) -> H2HSch
         plan["game_profile_sha256"] = cfg._game_profile_sha256
     power_path = cfg.h2h_power_plan_path()
     schedule_path = cfg.h2h_block_manifest_path()
-    schedule = _schedule_frame(
-        candidates=candidates,
-        family_hash=family_hash,
-        schedule_hash=schedule_hash,
-        roots=roots,
-        block_games=block_games,
-        max_attempt_multiplier=max_attempt_multiplier,
-        alpha_per_pair=alpha_per_pair,
-        target_power=cfg.head2head.target_power,
-        worst_power=worst_power,
-        game_profile_sha256=cfg._game_profile_sha256,
+    schedule = pd.DataFrame(
+        _schedule_rows(
+            candidates=candidates,
+            family_hash=family_hash,
+            schedule_hash=schedule_hash,
+            roots=roots,
+            block_games=block_games,
+            max_attempt_multiplier=max_attempt_multiplier,
+            alpha_per_pair=alpha_per_pair,
+            target_power=cfg.head2head.target_power,
+            worst_power=worst_power,
+            game_profile_sha256=cfg._game_profile_sha256,
+        )
     )
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        schedule[column] = canonical_strategy_ids(
+            schedule[column], context=f"H2H schedule {column}"
+        )
     family_sources = [
         cfg.strategy_manifest_root_path(),
         cfg.h2h_candidate_family_manifest_path(),
@@ -1353,7 +1373,19 @@ def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
     )
 
 
-def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
+@dataclass(frozen=True)
+class _BlockResumeIdentity:
+    code: CodeIdentity
+    dependencies: str
+    schedule_code: CodeIdentity
+    schedule: SourceArtifactIdentity
+
+
+def _read_authenticated_block(
+    path: Path,
+    block: Mapping[str, Any],
+    identity: _BlockResumeIdentity | None = None,
+) -> dict[str, Any] | None:
     if not path.exists():
         return None
     validate_artifact_sidecar(
@@ -1427,14 +1459,41 @@ def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str,
     )
     if str(row["completion_status"]) != str(expected["completion_status"]):
         raise ValueError(f"H2H block checkpoint has an invalid completion status: {path}")
+    if identity is not None:
+        from farkle.utils.scientific_reuse import compatible_producer
+
+        metadata = load_authenticated_sidecar(path)
+        if (
+            metadata.source_artifacts != (identity.schedule,)
+            or metadata.stage_identity.immutable_design_identities.get("stage_dependencies_v1")
+            != identity.dependencies
+            or not compatible_producer(metadata.stage_identity, identity.code)
+        ):
+            raise AuthenticatedContractError(
+                f"H2H block producer or frozen schedule differs at {path}"
+            )
+        if row[
+            "completion_status"
+        ] not in _TERMINAL_BLOCK_STATUSES and metadata.stage_identity.code not in (
+            identity.code,
+            identity.schedule_code,
+        ):
+            raise AuthenticatedContractError(
+                f"Advancing the partial H2H block at {path} would discard its producer provenance; "
+                "resume this prefix with its producer revision or use a new output root"
+            )
     return row
 
 
-def _read_existing_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
+def _read_existing_block(
+    path: Path,
+    block: Mapping[str, Any],
+    identity: _BlockResumeIdentity | None = None,
+) -> dict[str, Any] | None:
     """Return one valid checkpoint or classify only its coordinate as pending."""
 
     try:
-        return _read_authenticated_block(path, block)
+        return _read_authenticated_block(path, block, identity)
     except (
         ArtifactContractError,
         OSError,
@@ -1810,9 +1869,19 @@ def _execute_blocks(
         int(cast(Any, pair_id)): int(count)
         for pair_id, count in schedule.groupby("pair_id", sort=True).size().items()
     }
+    from farkle.utils.authenticated_contract import capture_source_artifact_unbound
+    from farkle.utils.release_identity import _source_role
+
+    schedule_owner = load_authenticated_sidecar(schedule_path)
+    resume_identity = _BlockResumeIdentity(
+        producer_code_identity(cfg),
+        cfg.stage_config_sha("h2h_execute"),
+        schedule_owner.stage_identity.code,
+        capture_source_artifact_unbound(schedule_path, logical_role=_source_role(schedule_owner)),
+    )
     terminal_blocks_by_pair = dict.fromkeys(blocks_per_pair, 0)
     for record, path in zip(records, block_paths, strict=True):
-        checkpoint = _read_existing_block(path, record)
+        checkpoint = _read_existing_block(path, record, resume_identity)
         if checkpoint is None:
             pending.append(record)
         else:
@@ -2203,7 +2272,7 @@ def _execute_blocks(
     if scope is not None:
         scope.update(phase="h2h_final_validation", state="authenticating")
     for record, path in zip(records, block_paths, strict=True):
-        block_row = _read_existing_block(path, record)
+        block_row = _read_existing_block(path, record, resume_identity)
         if block_row is None or str(block_row["completion_status"]) not in (
             _TERMINAL_BLOCK_STATUSES
         ):

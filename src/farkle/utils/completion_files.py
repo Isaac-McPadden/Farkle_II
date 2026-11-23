@@ -53,11 +53,20 @@ def _json_mapping(path: Path) -> Mapping[str, object] | None:
 
 def _is_partition_unit_contract(path: Path, output: Path) -> bool:
     payload = _json_mapping(path)
-    relative_output = payload.get("relative_output") if payload is not None else None
+    if payload is None:
+        return False
+    version = payload.get("unit_stamp_schema_version")
+    fields = _UNIT_STAMP_FIELDS
+    if version == 2:
+        digest = payload.get("unit_sidecar_sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            return False
+        fields = fields | {"unit_sidecar_sha256"}
+    elif version != 1:
+        return False
+    relative_output = payload.get("relative_output")
     return bool(
-        payload is not None
-        and set(payload) == _UNIT_STAMP_FIELDS
-        and payload.get("unit_stamp_schema_version") == 1
+        set(payload) == fields
         and payload.get("completion_state") == "complete_valid"
         and isinstance(relative_output, str)
         and Path(relative_output).name == output.name
@@ -73,7 +82,7 @@ def _is_operational_stage_completion(path: Path) -> bool:
     payload = _json_mapping(path)
     return bool(
         payload is not None
-        and set(payload) == _STAGE_COMPLETION_FIELDS
+        and set(payload) - {"completion_producer_v1"} == _STAGE_COMPLETION_FIELDS
         and payload.get("lifecycle_contract_version") == 1
         and payload.get("state")
         in {

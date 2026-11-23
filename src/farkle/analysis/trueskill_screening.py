@@ -252,6 +252,37 @@ class ScreeningRatingCell:
     game_rows_path: Path | None = None
 
 
+def _validate_published_rating(cfg: AppConfig, cell: ScreeningRatingCell) -> None:
+    from farkle.utils.authenticated_contract import producer_code_identity
+    from farkle.utils.scientific_reuse import compatible_producer, immutable_input_error
+
+    published = load_authenticated_sidecar(cell.ratings_path) if is_v3_config(cfg) else None
+    if published is not None and (
+        not compatible_producer(published.stage_identity, producer_code_identity(cfg))
+        or (
+            published.method_contract.root_seeds == tuple(cfg.sim.seed_list or [cfg.sim.seed])
+            and published.stage_identity.immutable_design_identities.get("stage_dependencies_v1")
+            != cfg.stage_config_sha("trueskill")
+        )
+        or (
+            cell.game_rows_path is not None
+            and not exact_direct_sources(cell.ratings_path, [cell.game_rows_path])
+        )
+    ):
+        raise immutable_input_error(cell.ratings_path)
+    validate_artifact_sidecar(
+        cell.ratings_path,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "sequential_rating",
+            "player_counts": [cell.k],
+            "seed_scope": "single_root",
+            "conditioning": TRUESKILL_CONDITIONING,
+            "method_contract": trueskill_method_contract("sequential_rating"),
+        },
+    )
+
+
 def publish_rating_cell_contract(
     cfg: AppConfig,
     cell: ScreeningRatingCell,
@@ -277,17 +308,7 @@ def publish_rating_cell_contract(
     table = pq.read_table(cell.ratings_path)
     _validate_rating_support(table, cell.k)
     if sidecar_path(cell.ratings_path).exists():
-        validate_artifact_sidecar(
-            cell.ratings_path,
-            expected={
-                "scope": ArtifactScope.BY_K.value,
-                "operation": "sequential_rating",
-                "player_counts": [cell.k],
-                "seed_scope": "single_root",
-                "conditioning": TRUESKILL_CONDITIONING,
-                "method_contract": trueskill_method_contract("sequential_rating"),
-            },
-        )
+        _validate_published_rating(cfg, cell)
         if (
             expected_sidecar_sha256 is not None
             and sha256_file(sidecar_path(cell.ratings_path)) != expected_sidecar_sha256
@@ -408,17 +429,7 @@ def build_percentile_contribution(
     elif set(coordinates) != {(root, k) for root in roots for k in cfg.sim.n_players_list}:
         raise ValueError("TrueSkill rating cells do not cover configured root/k support")
     for cell in cells:
-        validate_artifact_sidecar(
-            cell.ratings_path,
-            expected={
-                "scope": ArtifactScope.BY_K.value,
-                "operation": "sequential_rating",
-                "player_counts": [cell.k],
-                "seed_scope": "single_root",
-                "conditioning": TRUESKILL_CONDITIONING,
-                "method_contract": trueskill_method_contract("sequential_rating"),
-            },
-        )
+        _validate_published_rating(cfg, cell)
         producer = load_authenticated_sidecar(cell.ratings_path)
         if (
             producer.method_contract.root_seeds != (cell.root_seed,)

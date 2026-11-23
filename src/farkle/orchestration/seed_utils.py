@@ -62,8 +62,11 @@ def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
 
 
 def seed_has_completion_markers(cfg: AppConfig) -> bool:
-    """Return True when all simulation outputs are present for this seed."""
-    return all(runner.simulation_is_complete(cfg, n) for n in cfg.sim.n_players_list)
+    """Accept a completed configured tournament only for the requested roster."""
+    if not all(runner.simulation_is_complete(cfg, n) for n in cfg.sim.n_players_list):
+        return False
+    runner.simulation_roster_manifest(cfg)
+    return True
 
 
 def resolve_seed_pair_args(

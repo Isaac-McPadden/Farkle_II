@@ -64,15 +64,17 @@ def _publish(
     *,
     sources: list[Path] | None = None,
     method_contract: dict[str, object] | None = None,
+    operation: str | None = None,
 ) -> Path:
     path = cfg.scope_path("metrics", ArtifactScope.BY_K, name, k=2)
+    operation = operation or f"publish_{Path(name).stem}"
     metadata = make_artifact_sidecar(
         cfg,
         path,
         producer="metrics",
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
-        operation=f"publish_{Path(name).stem}",
+        operation=operation,
         baseline="chance_rate_by_k",
         replication_unit="attempted_game",
         conditioning="all_attempted_games",
@@ -85,7 +87,7 @@ def _publish(
             method_contract
             or {
                 "kind": "operation",
-                "procedure": f"publish_{Path(name).stem}",
+                "procedure": operation,
                 "parameters": {"method_version": 2},
             },
         ),
@@ -126,6 +128,28 @@ def test_drift_during_staging_preserves_authenticated_pair(v3_cfg, monkeypatch):
         )
         _publish(v3_cfg, "unit.parquet")
     assert (path.read_bytes(), sidecar_path(path).read_bytes()) == saved
+    validate_authenticated_artifact_unbound(path)
+
+
+def test_immutable_publication_resumes_between_data_and_sidecar(v3_cfg, monkeypatch):
+    name = "interrupted.parquet"
+    path = v3_cfg.scope_path("metrics", ArtifactScope.BY_K, name, k=2)
+    adjacent = sidecar_path(path)
+    install = authenticated_contract._install_once
+
+    def interrupt(source, destination):
+        if Path(destination) == adjacent:
+            raise InterruptedError("before first sidecar")
+        install(source, destination)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(authenticated_contract, "_install_once", interrupt)
+        with pytest.raises(InterruptedError, match="before first sidecar"):
+            _publish(v3_cfg, name, operation="aggregate_player_batch_statistics")
+    assert path.exists() and not adjacent.exists()
+    installed = path.stat().st_mtime_ns
+    _publish(v3_cfg, name, operation="aggregate_player_batch_statistics")
+    assert path.stat().st_mtime_ns == installed
     validate_authenticated_artifact_unbound(path)
 
 

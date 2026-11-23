@@ -172,11 +172,12 @@ def resolve_cap_authorization(
         except (ArtifactContractError, AuthenticatedContractError):
             existing = None
         if existing is not None:
+            from farkle.utils.scientific_reuse import compatible_producer
+
             metadata = load_authenticated_sidecar(path)
-            if (
-                cfg._code_identity is not None
-                and metadata.stage_identity.code != cfg._code_identity
-            ):
+            from farkle.utils.authenticated_contract import producer_code_identity
+
+            if not compatible_producer(metadata.stage_identity, producer_code_identity(cfg)):
                 raise ValueError("H2H authorization belongs to different code identity")
             validate_authorization(existing, plan)
             validate_authorization_sources(

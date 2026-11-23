@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -508,7 +509,6 @@ def test_trueskill_cell_authenticated_reuse_matrix(
     root = cfg.trueskill_stage_dir
     block = cfg.n_dir(2)
     block.mkdir(parents=True)
-    np.save(block / "keepers_2.npy", np.array([1, 2], dtype=np.int32))
     source = cfg.ingested_rows_curated(2)
     games = pa.table(
         {
@@ -571,37 +571,30 @@ def test_trueskill_cell_authenticated_reuse_matrix(
         player_count=2,
     )
 
-    if mutation == "source":
-        publish_v3_parquet(
-            cfg,
-            source,
-            pa.concat_tables([games, games.slice(0, 1)]),
+    if mutation in {"source", "schema", "conditioning"}:
+        # A supported publisher preserves the original root. Install a distinct
+        # authenticated fixture out of band to exercise the consumer independently.
+        import shutil
+
+        changed = make_authenticated_v3_config(tmp_path / "other", name="trueskill", root_seed=11)
+        table = games
+        if mutation == "source":
+            table = pa.concat_tables([games, games.slice(0, 1)])
+        if mutation == "schema":
+            table = games.append_column("fixture_schema_marker", pa.array([1, 1], type=pa.int8()))
+        other = publish_v3_parquet(
+            changed,
+            changed.ingested_rows_curated(2),
+            table,
             stage_key="curate",
             producer="curate",
             operation="curate_game_rows",
-        )
-    elif mutation == "schema":
-        publish_v3_parquet(
-            cfg,
-            source,
-            games.append_column(
-                "fixture_schema_marker",
-                pa.array([1, 1], type=pa.int8()),
+            conditioning=(
+                "termination_status == completed" if mutation == "conditioning" else "unconditional"
             ),
-            stage_key="curate",
-            producer="curate",
-            operation="curate_game_rows",
         )
-    elif mutation == "conditioning":
-        publish_v3_parquet(
-            cfg,
-            source,
-            games,
-            stage_key="curate",
-            producer="curate",
-            operation="curate_game_rows",
-            conditioning="termination_status == completed",
-        )
+        shutil.copyfile(other, source)
+        shutil.copyfile(sidecar_path(other), sidecar_path(source))
     elif mutation in {"parameter", "code"}:
         freshness = "d" * 64
     elif mutation == "output":
@@ -641,17 +634,25 @@ def test_trueskill_cell_authenticated_reuse_matrix(
         original_save(path, ratings)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rt, "_save_ratings_parquet", counted_save)
-    rt._rate_block_worker(
-        str(block),
-        str(root),
-        "_seed11",
-        batch_rows=10,
-        resume=mutation != "force",
-        row_data_dir=str(cfg.curate_stage_dir),
-        curated_rows_name=cfg.curated_rows_name,
-        cell_freshness_sha256=freshness,
-        root_seed=11,
+    # A conflicting published rating, or corrupted original bytes/sidecar,
+    # must survive a failed replay for inspection.
+    outcome = (
+        pytest.raises(RuntimeError, match="Immutable scientific input")
+        if mutation in {"source", "output", "sidecar"}
+        else nullcontext()
     )
+    with outcome:
+        rt._rate_block_worker(
+            str(block),
+            str(root),
+            "_seed11",
+            batch_rows=10,
+            resume=mutation != "force",
+            row_data_dir=str(cfg.curate_stage_dir),
+            curated_rows_name=cfg.curated_rows_name,
+            cell_freshness_sha256=freshness,
+            root_seed=11,
+        )
     assert writes == 0 if mutation == "unchanged" else writes > 0
 
 

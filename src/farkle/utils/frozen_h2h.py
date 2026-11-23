@@ -20,10 +20,17 @@ from farkle.utils.authenticated_contract import (
     AuthenticatedContractError,
     AuthenticatedSidecar,
     SourceArtifactIdentity,
+    StageIdentity,
     derive_canonical_location,
     load_authenticated_completion,
     producer_code_identity,
     validate_authenticated_artifact_unbound,
+)
+from farkle.utils.scientific_reuse import (
+    ROOT_INPUT_OPERATIONS,
+    compatible_producer,
+    immutable_input_error,
+    sealed_root_input,
 )
 from farkle.utils.stage_completion import stage_done_path
 from farkle.utils.strategy_ids import canonical_strategy_ids
@@ -117,7 +124,7 @@ def validated_root_strategy_manifest(cfg: AppConfig) -> AuthenticatedSidecar:
     )
     if metadata.method_contract.procedure != "publish_strategy_manifest":
         raise ArtifactMismatchError(f"Unexpected strategy manifest operation at {path}")
-    if metadata.stage_identity.code != producer_code_identity(cfg):
+    if not compatible_producer(metadata.stage_identity, producer_code_identity(cfg)):
         raise ArtifactMismatchError(
             f"Strategy manifest at {path} belongs to different code; use a new output root"
         )
@@ -156,7 +163,7 @@ def authenticated_strategy_design(
             origin = source.stage_identity.immutable_design_identities.get("publication_science_v1")
             if origin is None or source.method_contract.procedure != "candidate_family_freeze":
                 raise ValueError(f"unclassified frozen family input at {member}")
-            if source.stage_identity.code != metadata.stage_identity.code:
+            if not compatible_producer(source.stage_identity, producer_code_identity(cfg)):
                 raise ValueError("strategy mapping and frozen family belong to different code")
             if len(source.source_artifacts) != 2 or (
                 contribution_edges is not None and contribution_edges != source.source_artifacts
@@ -190,7 +197,7 @@ def authenticated_strategy_design(
                 or edge.sidecar_contract_sha256 != item.sidecar_contract_sha256
                 or edge.sidecar_sha256 != sha256_file(sidecar_path(contribution))
                 or recorded.pop(role, None) != contribution_science(contribution, item)
-                or item.stage_identity.code != metadata.stage_identity.code
+                or not compatible_producer(item.stage_identity, producer_code_identity(cfg))
             ):
                 raise ValueError(f"frozen family {role} scientific contribution differs")
         return {
@@ -327,6 +334,35 @@ def frozen_family_inputs(cfg: AppConfig) -> dict[Path, AuthenticatedSidecar]:
     return bound
 
 
+def same_publication(original: AuthenticatedSidecar, proposed: AuthenticatedSidecar) -> bool:
+    old, new = original.stage_identity, proposed.stage_identity
+    return (
+        original.artifact == proposed.artifact
+        and original.source_artifacts == proposed.source_artifacts
+        and original.manifest_roots == proposed.manifest_roots
+        and original.method_contract == proposed.method_contract
+        and same_production(old, new)
+    )
+
+
+def same_production(old: StageIdentity, new: StageIdentity) -> bool:
+    def design(stage: StageIdentity) -> dict[str, str]:
+        return {
+            k: v for k, v in stage.immutable_design_identities.items() if k != "run_lineage_sha256"
+        }
+
+    return (
+        old.stage_key == new.stage_key
+        and old.stage_cache_key_version == new.stage_cache_key_version
+        and old.stage_config == new.stage_config
+        and old.versions == new.versions
+        and old.method_contract_sha256 == new.method_contract_sha256
+        and old.upstream_identity_sha256 == new.upstream_identity_sha256
+        and design(old) == design(new)
+        and compatible_producer(old, new.code)
+    )
+
+
 def reuse_frozen_input(
     cfg: AppConfig, proposed: AuthenticatedSidecar
 ) -> AuthenticatedSidecar | None:
@@ -353,6 +389,18 @@ def reuse_frozen_input(
                 f"Immutable root strategy manifest differs at {path}; use a new output root"
             )
         return previous_strategy
+    if proposed.method_contract.procedure in ROOT_INPUT_OPERATIONS or (
+        location.stage_key in {"simulation", "ingest", "curate", "metrics", "trueskill"}
+        and sealed_root_input(path)
+    ):
+        if not sidecar_path(path).exists():
+            return None
+        from farkle.utils.authenticated_contract import load_authenticated_sidecar
+
+        previous_input = load_authenticated_sidecar(path)
+        if not same_publication(previous_input, proposed):
+            raise immutable_input_error(path)
+        return previous_input
     # Candidate freeze can consume explicit contribution paths in either of
     # these scopes. The actual pinned paths come from the planning sidecars.
     if location.scope not in {"cross_seed", "across_k"} and location.stage_key not in {
@@ -388,19 +436,7 @@ def reuse_frozen_input(
         )
         if old != new
     ]
-    if (
-        differences == ["design or lineage"]
-        and original.source_artifacts
-        and previous.immutable_design_identities.get("publication_science_v1") is not None
-        and {
-            k: v
-            for k, v in previous.immutable_design_identities.items()
-            if k != "run_lineage_sha256"
-        }
-        == {k: v for k, v in stage.immutable_design_identities.items() if k != "run_lineage_sha256"}
-    ):
-        # All original bytes, exact source edges, method and Git checks above agree.
-        # Retain the producer sidecar, including the lineage under which it was issued.
+    if same_publication(original, proposed):
         return original
     raise ArtifactMismatchError(
         f"Frozen H2H input {path} differs in {', '.join(differences) or 'sidecar identity'} "

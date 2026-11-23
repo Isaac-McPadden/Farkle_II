@@ -63,7 +63,7 @@ _COMMON = (
         completion_files copy_on_write csv_files frozen_h2h logging manifest os_memory parallel
         partitioned_stage progress random release_identity schema_helpers sinks source_snapshot
         stage_completion stats strategy_ids streaming_loop telemetry timing types writer yaml_helpers
-        scientific_dependencies scientific_identity scientific_runtime scientific_files scientific_invocation""",
+        scientific_reuse scientific_dependencies scientific_identity scientific_runtime scientific_files scientific_invocation""",
     )
     | _modules("analysis/", "__init__ stage_registry stage_runner")
     | _modules("simulation/", "__init__ strategies")
@@ -333,6 +333,7 @@ RUNTIME_FIELDS = PROVENANCE_FIELDS | frozenset(
         "_game_profile_sha256",
         "_resource_limiter_mode",
         "_analysis_root_override",
+        "_source_root_configs",
         "_root_input_layout_override",
     }
 )

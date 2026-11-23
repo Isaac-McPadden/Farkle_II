@@ -12,6 +12,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -189,7 +190,40 @@ def publish_staged_file_atomic(
     def install(staged: Path) -> None:
         publication_boundary()
         if invalidate_sidecar:
-            sidecar_path(destination).unlink(missing_ok=True)
+            adjacent = sidecar_path(destination)
+            rating = (
+                re.fullmatch(r"ratings_[0-9]+_seed[0-9]+\.parquet", destination.name) is not None
+            )
+            if adjacent.exists():
+                from farkle.utils.authenticated_contract import load_authenticated_sidecar
+                from farkle.utils.scientific_reuse import (
+                    ROOT_INPUT_OPERATIONS,
+                    immutable_input_error,
+                )
+
+                raw = read_json_file_with_retry(adjacent)
+                if raw.get("artifact_contract_version") == 3:
+                    previous = load_authenticated_sidecar(destination)
+                    if previous.method_contract.procedure in ROOT_INPUT_OPERATIONS:
+                        digest = previous.artifact.content_sha256
+                        if sha256_file(staged) != digest or sha256_file(destination) != digest:
+                            raise immutable_input_error(destination)
+                        return
+                if rating:
+                    raise immutable_input_error(destination)
+                adjacent.unlink()
+            # A rating worker installs the canonical data before the parent
+            # seals it. Competing workers must never replace those first bytes.
+            if rating:
+                from farkle.utils.authenticated_contract import _install_once
+                from farkle.utils.scientific_reuse import immutable_input_error
+
+                try:
+                    _install_once(staged, destination)
+                except FileExistsError:
+                    if sha256_file(staged) != sha256_file(destination):
+                        raise immutable_input_error(destination) from None
+                return
         replace_operation(staged, destination)
 
     destination.parent.mkdir(parents=True, exist_ok=True)

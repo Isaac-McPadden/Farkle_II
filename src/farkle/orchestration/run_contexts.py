@@ -65,6 +65,9 @@ class SeedRunContext:
 class RunContextConfig(AppConfig):
     """Config wrapper with run-specific path overrides."""
 
+    _source_root_configs: tuple[AppConfig, ...] = field(
+        default=(), init=False, repr=False, compare=False
+    )
     _analysis_root_override: Path | None = field(default=None, init=False, repr=False)
     _root_input_layout_override: StageLayout | Mapping[str, str] | None = field(
         default=None, init=False, repr=False
@@ -197,6 +200,7 @@ class RootPairRunContext:
             root_input_layout=input_layout_override,
             stage_layout=resolve_root_pair_stage_layout(pair_base),
         )
+        run_cfg._source_root_configs = tuple(context.config for context in root_contexts)
         return cls(
             root_pair=root_pair,
             root_contexts=root_contexts,
@@ -213,6 +217,26 @@ def _code_payload(code_identity: CodeIdentity) -> dict[str, object]:
         "state": code_identity.state,
         "dirty_fingerprint_sha256": code_identity.dirty_fingerprint_sha256,
     }
+
+
+def resume_namespace(cfg: AppConfig, root: Path) -> str:
+    return identity_sha256(
+        {
+            "roots": cfg.sim.seed_list or [cfg.sim.seed],
+            "root": str(root.resolve()),
+            "analysis": str(cfg.analysis_dir.resolve()),
+            "layout": cfg.stage_layout.to_resolved_layout(),
+            "source_roots": [
+                (
+                    str(parent.results_root.resolve()),
+                    str(parent.analysis_dir.resolve()),
+                    parent.stage_layout.to_resolved_layout(),
+                )
+                for parent in getattr(cfg, "_source_root_configs", ())
+            ],
+            "game_profile": cfg._game_profile_sha256,
+        }
+    )
 
 
 def configure_run_lineage(
@@ -240,21 +264,38 @@ def configure_run_lineage(
     roots = (
         list(context.root_pair) if isinstance(context, RootPairRunContext) else [int(context.seed)]
     )
-    lineage = {
-        "run_context_contract_version": 2,
-        "context_kind": "root_pair" if isinstance(context, RootPairRunContext) else "root",
-        "roots": roots,
-        "parent_lifecycle_roots": list(parent_lifecycle_roots),
-        "stage_layout_identity_sha256": identity_sha256(cfg.stage_layout.to_resolved_layout()),
-        "code_identity": _code_payload(code_identity),
-    }
-    if resolved_game_profile_sha256 is not None:
-        lineage["game_profile_sha256"] = resolved_game_profile_sha256
-    lineage_sha = identity_sha256(lineage)
+    lineage_sha = run_lineage_digest(
+        roots,
+        parent_lifecycle_roots,
+        cfg.stage_layout.to_resolved_layout(),
+        code_identity,
+        resolved_game_profile_sha256,
+    )
     cfg._code_identity = code_identity
     cfg._run_lineage_sha256 = lineage_sha
     cfg._game_profile_sha256 = resolved_game_profile_sha256
     return lineage_sha
+
+
+def run_lineage_digest(
+    roots: list[int],
+    parent_lifecycle_roots: tuple[str, ...],
+    resolved_layout: list[dict[str, str | int]],
+    code_identity: CodeIdentity,
+    game_profile_sha256: str | None,
+) -> str:
+    """Reconstruct the immutable root or pair lineage carried by a producer."""
+    lineage = {
+        "run_context_contract_version": 2,
+        "context_kind": "root_pair" if len(roots) == 2 else "root",
+        "roots": roots,
+        "parent_lifecycle_roots": list(parent_lifecycle_roots),
+        "stage_layout_identity_sha256": identity_sha256(resolved_layout),
+        "code_identity": _code_payload(code_identity),
+    }
+    if game_profile_sha256 is not None:
+        lineage["game_profile_sha256"] = game_profile_sha256
+    return identity_sha256(lineage)
 
 
 def write_run_context_atomic(
@@ -401,6 +442,7 @@ def write_run_context_atomic(
     }
     payload = {
         "run_context_contract_version": RUN_CONTEXT_CONTRACT_VERSION,
+        "reuse_namespace_v1": resume_namespace(cfg, context.run_context_path.parent),
         "implementation_contract": implementation_contract(),
         "run_lineage_sha256": lineage_sha,
         "public_config_sha256": cfg.config_sha,

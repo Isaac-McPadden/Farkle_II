@@ -170,7 +170,9 @@ class StageRunner:
             if item.completion_stamp is not None
             or context.config.stage_layout.folder_for(item.name) is not None
         ]
-        with scientific_invocation(configured_producers(context.config, stages)):
+        with scientific_invocation(
+            configured_producers(context.config, stages, include_source_roots=True)
+        ):
             return StageRunner._run(plan, context, raise_on_failure=raise_on_failure)
 
     @staticmethod

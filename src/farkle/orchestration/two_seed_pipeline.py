@@ -14,6 +14,7 @@ from typing import Any, Callable, Sequence, TypeVar, cast
 from farkle import analysis
 from farkle.analysis.h2h_authorization import H2HAuthorizationRequired
 from farkle.analysis.release_audit import (
+    REVISION_RELEASE_POLICY_VERSION,
     AuthenticatedReleaseAuditTarget,
     audit_authenticated_release_graphs,
 )
@@ -714,7 +715,9 @@ def _require_existing_resume_identity(
     cfg: AppConfig,
     code_identity: CodeIdentity,
 ) -> None:
-    """Reject an incompatible existing pair before any resume publication."""
+    """Reject an incompatible result namespace before any resume publication."""
+
+    from farkle.orchestration.run_contexts import resume_namespace
 
     context_path = resume_context_path(pair_root)
     if not context_path.is_file():
@@ -735,6 +738,18 @@ def _require_existing_resume_identity(
         )
     if payload.get("code_identity") != current_code:
         conflicts.append(f"code identity {payload.get('code_identity')} != {current_code}")
+    if "reuse_namespace_v1" in payload:
+        from farkle.orchestration.run_contexts import load_run_context
+        from farkle.utils.scientific_invocation import current
+
+        verified = load_run_context(
+            context_path, active_config_path=context_path.with_name("active_config.yaml")
+        )
+        if verified["reuse_namespace_v1"] != resume_namespace(cfg, pair_root):
+            conflicts.append("ordered roots, input paths, layout or game profile changed")
+        elif current() is not None:
+            # Admission to the namespace does not authorize any artifact or plan.
+            return
     if conflicts:
         raise RuntimeError(
             "existing authenticated result identity prevents exact resume before publication: "
@@ -859,6 +874,36 @@ def _final_release_gate(
     profile = resolved_profile_metadata(pair_context.config)
     release_reasons = list(profile["production_ineligibility_reasons"])
     diagnostic_limitations: list[str] = []
+    revision_policy = audit_result.get("revision_policy", {})
+    foreign = audit_result.get("foreign_producer_count")
+    if (
+        type(foreign) is not int
+        or foreign < 0
+        or revision_policy.get("version") != REVISION_RELEASE_POLICY_VERSION
+        or revision_policy.get("qualifying_commit") != code_identity.commit
+        or revision_policy.get("foreign_publications") != foreign
+        or revision_policy.get("status") != ("qualified_mixed" if foreign else "single_revision")
+        or revision_policy.get("reasons") != []
+    ):
+        release_reasons.extend(
+            revision_policy.get("reasons") or ["release revision policy was not satisfied"]
+        )
+    elif foreign:
+        commits = set(revision_policy.get("producer_commits", ()))
+        recorded = {
+            record["code_identity"]["commit"]
+            for record in revision_policy.get("invocation_records", ())
+            if record.get("sha256")
+            and record.get("record")
+            and record.get("code_identity", {}).get("policy")
+            == CodeIdentityPolicy.RELEASE_CLEAN.value
+            and record["code_identity"].get("state") == "clean"
+        }
+        if (
+            not commits.difference({code_identity.commit})
+            or not (commits | {code_identity.commit}) <= recorded
+        ):
+            release_reasons.append("mixed release lacks manifest-linked clean producer revisions")
     if not code_release_eligible:
         release_reasons.append("release requires release-clean code identity")
     if failures or audit_result.get("status") != "passed":
@@ -887,6 +932,7 @@ def _final_release_gate(
         "release_ineligibility_reasons": sorted(set(release_reasons)),
         "diagnostic_limitations": sorted(set(diagnostic_limitations)),
         "accepted_release_identity": [3, 2, 2, 2, 2, 2],
+        "revision_policy": revision_policy,
         "artifact_roots": [str(target.snapshot.graph_root) for target in targets],
         "run_contexts": audit_result["run_contexts"],
         "top_level_invocations": audit_result["top_level_invocations"],
@@ -925,6 +971,10 @@ def _run_pipeline_observed(
             cfg=launch_pair.config,
             code_identity=code_identity,
         )
+        for root in launch_pair.root_contexts:
+            _require_existing_resume_identity(
+                root.results_root, cfg=root.config, code_identity=code_identity
+            )
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     health_path = pair_root / "pipeline_health.json"
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")

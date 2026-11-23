@@ -66,7 +66,12 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
+from farkle.utils.authenticated_contract import (
+    CodeIdentity,
+    CodeIdentityPolicy,
+    load_authenticated_sidecar,
+    resolve_code_identity,
+)
 from farkle.utils.parallel import (
     ResourceFailureError,
     StageParallelPolicy,
@@ -589,6 +594,37 @@ def _done_stamp_matches(
 ) -> bool:
     """Return whether a cell stamp authenticates its current source and output."""
 
+    if stamp is not None and stamp.freshness_sha256 != freshness:
+        # Raw cursors and unsealed ratings remain exact-revision only.
+        from farkle.utils.scientific_invocation import current
+        from farkle.utils.scientific_reuse import launch_matches
+
+        pin = current()
+        if (
+            pin is None
+            or not stamp.sidecar_sha256
+            or not sidecar_path(parquet_path).is_file()
+            or stamp.sidecar_sha256 != sha256_file(sidecar_path(parquet_path))
+        ):
+            return False
+        rating = load_authenticated_sidecar(parquet_path)
+        cfg = next(
+            (
+                cfg
+                for (owner, seed, _), cfg in pin.configs.items()
+                if owner.stage == "trueskill" and owner.scope == "root" and seed == root_seed
+            ),
+            None,
+        )
+        if (
+            cfg is None
+            or not launch_matches(rating.stage_identity)
+            or rating.method_contract.procedure != "sequential_rating"
+            or freshness != _trueskill_cell_freshness(cfg)
+        ):
+            return False
+        freshness = _trueskill_cell_freshness(cfg, code=rating.stage_identity.code)
+
     return bool(
         stamp is not None
         and stamp.version == 4
@@ -850,7 +886,14 @@ def _rate_block_worker(
     per_player_dir = _per_player_dir(root, player_count)
     per_player_dir.mkdir(parents=True, exist_ok=True)
     keep_path = block / f"keepers_{player_count}.npy"
-    keepers = np.load(keep_path).tolist() if keep_path.exists() else []
+    from farkle.utils.scientific_invocation import current
+
+    if current() is not None:
+        if keep_path.exists():
+            raise ValueError(f"Unclassified external TrueSkill keeper selection at {keep_path}")
+        keepers: list[str] = []
+    else:
+        keepers = np.load(keep_path).tolist() if keep_path.exists() else []
     keepers = [_normalize_strategy_id(k) for k in keepers]
     keeper_set = set(keepers)
 
@@ -1474,22 +1517,21 @@ def _resolve_root_row_data_dir(cfg: AppConfig) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def _trueskill_cell_freshness(cfg: AppConfig) -> str:
+def _trueskill_cell_freshness(cfg: AppConfig, *, code: CodeIdentity | None = None) -> str:
     """Bind resumable cells to scoped producer dependencies and the Git guard."""
 
-    code_identity = cfg._code_identity or resolve_code_identity(
-        _REPO_ROOT.parent,
-        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
-    )
+    from farkle.utils.authenticated_contract import producer_code_identity
+
+    producer = code or producer_code_identity(cfg)
     return freshness_sha256(
         {
             "stage": "trueskill_cell",
             "stage_config_sha": cfg.stage_config_sha("trueskill"),
             "cache_key_version": cfg.stage_cache_key_version("trueskill"),
             "cell_dependency_version": 2,
+            "code_identity": asdict(producer),
             "trueskill_cell_method_version": TRUESKILL_CELL_METHOD_VERSION,
             "ordered_input_contract": "exact_parquet_bytes_in_declared_row_order",
-            "code_identity": asdict(code_identity),
         }
     )
 
@@ -1538,6 +1580,8 @@ def _seal_rating_cell_completion(
         stamp,
         sidecar_sha256=sha256_file(sidecar_path(cell.ratings_path)),
     )
+    if sealed == stamp:
+        return stamp
     if cfg.io.temp_dir is None:
         _save_done_stamp(done_path, sealed)
     else:

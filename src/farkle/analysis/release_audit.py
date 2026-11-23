@@ -2,21 +2,36 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import subprocess
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from functools import cache
 from pathlib import Path
 from typing import Any, Callable, Final
 
 from farkle.config import AppConfig, ArtifactScope, compute_config_sha, load_app_config
-from farkle.orchestration.execution_history import audit_invocation
-from farkle.orchestration.run_contexts import load_run_context
+from farkle.orchestration.execution_history import (
+    audit_invocation,
+    audit_parent_lifecycle,
+    audit_published_launch,
+    invocation_dir,
+)
+from farkle.orchestration.run_contexts import load_run_context, resume_namespace, run_lineage_digest
 from farkle.utils.artifact_contract import read_json_file_with_retry, sha256_file
 from farkle.utils.authenticated_contract import (
     AuthenticatedSidecar,
     CanonicalArtifactLocation,
+    CodeIdentity,
+    CodeIdentityPolicy,
     ImmutableManifestSidecar,
+    ManifestEntry,
     canonical_json_bytes,
+    compute_manifest_root,
+    identity_sha256,
     load_immutable_manifest_sidecar,
+    resolve_code_identity,
     validate_authenticated_artifact_unbound,
 )
 from farkle.utils.authenticated_graph import (
@@ -57,6 +72,7 @@ _RETIRED_ENTRY_POINTS: Final = (
 )
 _CANONICAL_SCOPE_PARTS: Final = frozenset(scope.value for scope in ArtifactScope)
 _ACCEPTED_GLOBAL_IDENTITY: Final = (3, 2, 2, 2, 2, 2)
+REVISION_RELEASE_POLICY_VERSION: Final = 1
 
 
 @dataclass(slots=True)
@@ -81,6 +97,7 @@ class _AuditIndex:
     by_path: dict[Path, _IndexedArtifact]
     invalid_paths: set[Path] = field(default_factory=set)
     lookup_count: int = 0
+    completion_producers: dict[Path, CodeIdentity] = field(default_factory=dict)
 
     def resolve(self, location: CanonicalArtifactLocation) -> _IndexedArtifact | None:
         """Resolve one already-canonical location without touching the filesystem."""
@@ -517,7 +534,7 @@ def _audit_completion(path: Path, index: _AuditIndex) -> list[str]:
         payload = read_json_file_with_retry(path)
         if (
             not isinstance(payload, Mapping)
-            or set(payload)
+            or set(payload) - {"completion_producer_v1"}
             != {
                 "lifecycle_contract_version",
                 "stage_identity_sha256",
@@ -532,6 +549,8 @@ def _audit_completion(path: Path, index: _AuditIndex) -> list[str]:
             or not payload["outputs"]
         ):
             raise ValueError("stage completion is not authenticated-v3 complete_valid")
+        if "completion_producer_v1" in payload:
+            index.completion_producers[path] = CodeIdentity(**payload["completion_producer_v1"])
         locations: list[Mapping[str, Any]] = []
         canonical_locations: list[CanonicalArtifactLocation] = []
         for output in payload["outputs"]:
@@ -740,6 +759,703 @@ def _validate_cross_context_provenance(indexes: Iterable[_AuditIndex]) -> list[s
     return failures
 
 
+def _foreign_producers(index: _AuditIndex, expected: CodeIdentity) -> set[str]:
+    paths = {
+        str(record.path)
+        for record in index.by_path.values()
+        if record.metadata is not None and record.metadata.stage_identity.code != expected
+    }
+    paths.update(str(path) for path, code in index.completion_producers.items() if code != expected)
+    return paths
+
+
+@dataclass(frozen=True)
+class _ProducerLaunch:
+    context: dict[str, Any]
+    receipt: dict[str, Any]
+    event: Mapping[str, Any]
+    code: CodeIdentity
+
+    def confirms(self, name: str, digest: str) -> bool:
+        return self.receipt["scientific_launch_v1"]["producers"].get(name) == digest
+
+
+def _producer_launches(
+    target: AuthenticatedReleaseAuditTarget, events: list[dict[str, Any]]
+) -> list[_ProducerLaunch]:
+    root = target.snapshot.run_context_path.parent
+    namespace = resume_namespace(target.cfg, root)
+    launches: list[_ProducerLaunch] = []
+    seen = set()
+    for event in events:
+        if (
+            Path(event["invocation_record"]).resolve()
+            != (invocation_dir(root, event["run_id"]) / "invocation.json").resolve()
+        ):
+            continue
+        context, receipt = audit_published_launch(root, event)
+        run = receipt["run_id"]
+        if run in seen or context.get("reuse_namespace_v1") != namespace:
+            raise ValueError(
+                f"duplicate invocation or incompatible retained namespace at {root}: {run}"
+            )
+        if launches and receipt["previous"] != launches[-1].receipt["current"]:
+            raise ValueError(f"disconnected retained invocation history at {root}: {run}")
+        if not launches and receipt["previous"]["run_context.json"] is not None:
+            raise ValueError(f"missing original invocation before {run} at {root}")
+        code = CodeIdentity(**context["code_identity"])
+        cfg = target.cfg
+        roots = list(cfg.sim.seed_list or ()) if target.snapshot.scope == "pair" else [cfg.sim.seed]
+        if (
+            code.policy != CodeIdentityPolicy.RELEASE_CLEAN.value
+            or code.state != "clean"
+            or not receipt.get("scientific_launch_v1", {}).get("producers")
+            or context["resolved_stage_layout"] != cfg.stage_layout.to_resolved_layout()
+            or context["run_lineage_sha256"]
+            != run_lineage_digest(
+                roots,
+                tuple(context["parent_lifecycle_roots"]),
+                context["resolved_stage_layout"],
+                code,
+                cfg._game_profile_sha256,
+            )
+        ):
+            raise ValueError(f"missing clean producer launch at {root}: {run}")
+        seen.add(run)
+        launches.append(_ProducerLaunch(context, receipt, event, code))
+    if not launches:
+        raise ValueError(f"missing retained producer launches at {root}")
+    history = invocation_dir(root, launches[-1].receipt["run_id"]).parent
+    if seen != {entry.name for entry in history.iterdir()}:
+        raise ValueError(
+            f"pipeline manifest does not account for the retained invocations at {root}"
+        )
+    return launches
+
+
+def _manifest_member_dependencies(
+    cfg: AppConfig, record: _IndexedArtifact, index: _AuditIndex, code: CodeIdentity
+) -> dict[str, str]:
+    """Verify native coordinates against the independently byte-checked shard index."""
+    from farkle.simulation.runner import _resolve_metric_chunk_dir
+    from farkle.utils.release_identity import (
+        native_manifest_contract,
+        publication_science_digest,
+        scientific_artifact_binding,
+    )
+    from farkle.utils.scientific_reuse import closure
+
+    manifest = record.metadata
+    assert isinstance(manifest, ImmutableManifestSidecar)
+    inventories = [
+        (k, operation)
+        for k in cfg.sim.n_players_list
+        for folder, filename, operation in (
+            (cfg.simulation_row_dir(k), "manifest.jsonl", "publish_simulation_row_shard"),
+            (
+                _resolve_metric_chunk_dir(cfg, k),
+                "metrics_manifest.jsonl",
+                "publish_simulation_metric_chunk",
+            ),
+        )
+        if folder is not None and (folder / filename).resolve() == record.path
+    ]
+    if record.location.stage_key != "simulation" or len(inventories) != 1:
+        raise ValueError(f"unclassified manifest member contract at {record.path}")
+    players, procedure = inventories[0]
+    stage = manifest.stage_identity
+    designs = stage.immutable_design_identities
+    _, versions, method = native_manifest_contract(
+        record.path,
+        cfg=cfg,
+        stage_key="simulation",
+        player_counts=[players],
+        source_paths=[],
+        operation="publish_simulation_shard_manifest",
+    )
+    if (
+        stage.upstream_identity_sha256
+        or versions != stage.versions
+        or method.sha256 != stage.method_contract_sha256
+        or publication_science_digest(
+            "simulation",
+            designs["stage_dependencies_v1"],
+            method,
+            versions,
+            designs,
+            {},
+            has_sources=False,
+            has_manifests=False,
+        )
+        != designs.get("publication_science_v1")
+    ):
+        raise ValueError(f"incompatible native manifest producer at {record.path}")
+    inherited: dict[str, str] = {}
+    members = hashlib.sha256(b'{"ordered_members_v1":[')
+
+    def entries() -> Iterable[ManifestEntry]:
+        for position, row in enumerate(iter_manifest(record.path)):
+            path = (record.path.parent / row["path"]).resolve()
+            shard = index.by_path.get(path)
+            if shard is None or not isinstance(shard.metadata, AuthenticatedSidecar):
+                raise ValueError(f"missing audited manifest member: {path}")
+            metadata = shard.metadata
+            artifact = metadata.artifact
+            schema = artifact.arrow_schema
+            if (
+                not closure(metadata.stage_identity)
+                or metadata.stage_identity.stage_key != "simulation"
+                or metadata.method_contract.procedure != procedure
+                or path.parent != record.path.parent
+                or schema is None
+                or row["byte_length"] != artifact.byte_length
+                or row["sidecar_sha256"] != shard.sidecar_sha256
+                or row["data_sha256"] != artifact.content_sha256
+                or row["schema_fingerprint_sha256"] != schema.fingerprint_sha256
+            ):
+                raise ValueError(f"incompatible native manifest member: {path}")
+            inherited.update(closure(metadata.stage_identity))
+            coordinate = next(
+                row[k]
+                for k in ("shuffle_index", "process_block_index", "deterministic_batch_id")
+                if k in row
+            )
+            member = identity_sha256(
+                {
+                    "shard": scientific_artifact_binding(metadata, code),
+                    "coordinates_and_counts": {
+                        k: v for k, v in row.items() if k not in {"path", "sidecar_sha256"}
+                    },
+                }
+            )
+            if position:
+                members.update(b",")
+            members.update(canonical_json_bytes(member))
+            yield ManifestEntry(
+                (coordinate,),
+                path.relative_to(index.root).as_posix(),
+                artifact.content_sha256,
+                row["sidecar_sha256"],
+                schema.fingerprint_sha256,
+            )
+
+    summary = compute_manifest_root(entries())
+    members.update(b"]}")
+    if (
+        summary != manifest.summary
+        or not summary.entry_count
+        or members.hexdigest()
+        != manifest.stage_identity.immutable_design_identities.get("manifest_members_v1")
+    ):
+        raise ValueError(f"unclassified or incompatible manifest inventory at {record.path}")
+    return inherited
+
+
+def _audit_original_parents(
+    cfg: AppConfig, launch: _ProducerLaunch, roots: Mapping[tuple[int, str], _ProducerLaunch]
+) -> None:
+    parents = getattr(cfg, "_source_root_configs", ())
+    if len(parents) != 2 or [p.sim.seed for p in parents] != cfg.sim.seed_list:
+        raise ValueError("historical pair requires both original ordered roots")
+    run_id = launch.receipt["run_id"]
+    for parent, digest in zip(parents, launch.context["parent_lifecycle_roots"], strict=True):
+        original = roots[(parent.sim.seed, run_id)]
+        audit_parent_lifecycle(
+            parent.results_root, run_id, original.receipt, original.context, digest
+        )
+
+
+def _release_git(*args: str, input_bytes: bytes | None = None) -> bytes:
+    from farkle.utils.scientific_invocation import ROOT
+
+    result = subprocess.run(
+        ["git", "--no-replace-objects", *args],
+        cwd=ROOT,
+        input=input_bytes,
+        capture_output=True,
+        env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
+    )
+    if result.returncode:
+        raise ValueError(
+            f"cannot authenticate local Git objects: {result.stderr.decode(errors='replace').strip()}"
+        )
+    return result.stdout
+
+
+def _committed_files(commit: str) -> dict[str, bytes]:
+    """Read original path, mode and blob identities without checking out the producer."""
+    if _release_git("cat-file", "-t", commit).strip() != b"commit":
+        raise ValueError(f"unavailable producer commit: {commit}")
+    files = {}
+    for entry in filter(None, _release_git("ls-tree", "-rz", "--full-tree", commit).split(b"\0")):
+        header, path = entry.split(b"\t", 1)
+        files[os.fsdecode(path)] = header
+    return files
+
+
+def _working_blobs(paths: tuple[str, ...]) -> dict[str, bytes]:
+    """Read the pinned working files themselves, allowing Git's normal text EOL conversion."""
+    encoded = [os.fsencode(path) for path in paths]
+    if any(b"\n" in path or path.startswith(b'"') for path in encoded):
+        raise ValueError("unsupported scientific source pathname")
+    attributes = _release_git(
+        "check-attr",
+        "-z",
+        "--stdin",
+        "filter",
+        "working-tree-encoding",
+        "ident",
+        input_bytes=b"\0".join(encoded) + b"\0",
+    ).split(b"\0")[:-1]
+    if len(attributes) != 9 * len(paths) or any(
+        value not in {b"unspecified", b"unset"} for value in attributes[2::3]
+    ):
+        raise ValueError("unclassified Git checkout transformation on scientific sources")
+    blobs = _release_git("hash-object", "--stdin-paths", input_bytes=b"\n".join(encoded) + b"\n")
+    return dict(zip(paths, blobs.splitlines(), strict=True))
+
+
+def _audit_frozen_execution(cfg: AppConfig, index: _AuditIndex) -> None:
+    """Check every terminal block against the exact consented schedule without dispatch."""
+    import pyarrow.parquet as pq
+
+    from farkle.analysis.candidate_family import verify_family_identity
+    from farkle.analysis.h2h_authorization import (
+        validate_authorization,
+        validate_authorization_sources,
+    )
+    from farkle.analysis.h2h_schedule import (
+        _TERMINAL_BLOCK_STATUSES,
+        _block_path,
+        _configured_roots,
+        _configured_schedule_hash,
+        _load_frozen_family,
+        _read_authenticated_block,
+        _roots_from_manifest,
+        _schedule_rows,
+    )
+    from farkle.utils.frozen_h2h import BUILTIN_ENGINE, verify_frozen_strategy_design
+
+    power, schedule = cfg.h2h_power_plan_path(), cfg.h2h_block_manifest_path()
+    plan = read_json_file_with_retry(power)
+    verify_frozen_strategy_design(cfg, plan)
+    if plan["frozen_design"]["engine"] != BUILTIN_ENGINE:
+        raise ValueError(f"release requires the authorized built-in engine at {power}")
+    family = _load_frozen_family(cfg)
+    verify_family_identity(cfg, family)
+    candidates = family["candidates"]
+    roots = _roots_from_manifest(family)
+    block_games = plan["n_completed_required_per_root_order_block"]
+    pairs = len(candidates) * (len(candidates) - 1) // 2
+    alpha = cfg.head2head.family_alpha / pairs
+    schedule_hash = _configured_schedule_hash(
+        cfg, family["family_hash"], roots, alpha, block_games, plan["frozen_design"]
+    )
+    if (
+        roots != _configured_roots(cfg)
+        or plan["family_hash"] != family["family_hash"]
+        or schedule_hash != plan["schedule_hash"]
+    ):
+        raise ValueError(
+            f"frozen family or schedule identity differs from the scientific design: {power}"
+        )
+    expected = _schedule_rows(
+        candidates=candidates,
+        family_hash=family["family_hash"],
+        schedule_hash=schedule_hash,
+        roots=roots,
+        block_games=block_games,
+        max_attempt_multiplier=cfg.head2head.max_attempt_multiplier,
+        alpha_per_pair=alpha,
+        target_power=cfg.head2head.target_power,
+        worst_power=plan["worst_scenario_achieved_power"],
+        game_profile_sha256=cfg._game_profile_sha256,
+    )
+    authorization = read_json_file_with_retry(cfg.h2h_cap_authorization_path())
+    validate_authorization(authorization, plan, require_ready=True)
+    validate_authorization_sources(authorization, power, schedule)
+    schedule_sha = index.by_path[schedule.resolve()].sidecar_sha256
+    blocks = set()
+    max_attempts = 0
+    for batch in pq.ParquetFile(schedule).iter_batches(batch_size=256):
+        for block in batch.to_pylist():
+            if block != next(expected, None):
+                raise ValueError(f"schedule block differs from its frozen design at {schedule}")
+            path = _block_path(cfg, block).resolve()
+            meta = index.by_path[path].metadata
+            row = _read_authenticated_block(path, block)
+            if (
+                not isinstance(meta, AuthenticatedSidecar)
+                or [s.sidecar_sha256 for s in meta.source_artifacts] != [schedule_sha]
+                or path in blocks
+                or row is None
+                or row["completion_status"] not in _TERMINAL_BLOCK_STATUSES
+                or any(
+                    row[field] != block[field]
+                    for field in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy")
+                )
+            ):
+                raise ValueError(f"block differs from the authorized design: {path}")
+            blocks.add(path)
+            max_attempts += block["max_attempts"]
+    observed = {
+        r.path
+        for r in index.by_path.values()
+        if isinstance(r.metadata, AuthenticatedSidecar)
+        and r.metadata.method_contract.procedure == "simulate_root_order_block"
+    }
+    if (
+        next(expected, None) is not None
+        or blocks != observed
+        or len(blocks) != plan["total_block_count"]
+        or max_attempts != plan["maximum_total_attempts"]
+    ):
+        raise ValueError(f"block inventory differs from authorization at {schedule}")
+
+
+def _audited_scientific_inputs(
+    record: _IndexedArtifact,
+    meta: AuthenticatedSidecar,
+    by_sidecar: Mapping[str, _IndexedArtifact],
+    code: CodeIdentity,
+) -> tuple[dict[str, str], dict[str, str]]:
+    from farkle.utils.release_identity import scientific_artifact_binding
+    from farkle.utils.scientific_reuse import closure
+
+    bindings: dict[str, str] = {}
+    upstream = {}
+    for edge in meta.source_artifacts:
+        source = by_sidecar[edge.sidecar_sha256].metadata
+        if not isinstance(source, AuthenticatedSidecar) or not closure(source.stage_identity):
+            raise ValueError(f"missing scientific input at {record.path}: {edge.logical_role}")
+        upstream.update(closure(source.stage_identity))
+        bindings[edge.logical_role] = scientific_artifact_binding(source, code)
+    for manifest_edge in meta.manifest_roots:
+        manifest = by_sidecar[manifest_edge.sidecar_sha256].metadata
+        if not isinstance(manifest, ImmutableManifestSidecar) or not closure(
+            manifest.stage_identity
+        ):
+            raise ValueError(f"incomplete manifest source at {record.path}")
+        upstream.update(closure(manifest.stage_identity))
+        published = manifest.stage_identity.immutable_design_identities
+        bindings[manifest_edge.logical_role] = identity_sha256(
+            {
+                "producer": published["publication_science_v1"],
+                "location": manifest.location,
+                "members": published["manifest_members_v1"],
+            }
+        )
+    return bindings, upstream
+
+
+def _audit_scientific_leaf(
+    cfg: AppConfig,
+    record: _IndexedArtifact,
+    meta: AuthenticatedSidecar | ImmutableManifestSidecar,
+    digest: str,
+) -> None:
+    stage = meta.stage_identity
+    designs = stage.immutable_design_identities
+    if (
+        isinstance(meta, AuthenticatedSidecar)
+        and stage.stage_key == "simulation"
+        and meta.method_contract.procedure == "publish_strategy_manifest"
+        and record.path == cfg.strategy_manifest_root_path()
+        and designs.get("ordered_builtin_roster_v1")
+    ):
+        from farkle.simulation.runner import simulation_roster_manifest
+
+        simulation_roster_manifest(cfg)
+    elif (
+        isinstance(meta, AuthenticatedSidecar)
+        and stage.stage_key == "rng_diagnostics"
+        and meta.method_contract.procedure == "first_release_rng_evidence"
+        and record.path == cfg.rng_preflight_dir() / "plan.json"
+    ):
+        from farkle.analysis.rng_preflight import _preflight_design, environment
+
+        plan = read_json_file_with_retry(record.path)
+        if (
+            plan["schema_version"] != 2
+            or plan["scientific_dependencies_v1"] != digest
+            or plan["code"] != asdict(stage.code)
+            or plan["topology_extension"]["workers"] != cfg.sim.n_jobs
+            or _preflight_design(plan)
+            != _preflight_design({**plan, "environment": environment(cfg)})
+            or designs.get("preflight_design_v2") != identity_sha256(plan)
+        ):
+            raise ValueError(f"incompatible preflight design at {record.path}")
+    else:
+        raise ValueError(f"unclassified scientific leaf at {record.path}")
+
+
+def _audit_mixed_context(
+    target: AuthenticatedReleaseAuditTarget,
+    index: _AuditIndex,
+    launches: list[_ProducerLaunch],
+    by_sidecar: Mapping[str, _IndexedArtifact],
+    code: CodeIdentity,
+    tree: Callable[[str], dict[str, bytes]],
+    working_blobs: Callable[[tuple[str, ...]], dict[str, bytes]],
+) -> None:
+
+    from farkle.utils.release_identity import (
+        completion_producer_identity,
+        publication_science_controls,
+        publication_science_digest,
+        require_authenticated_output_versions,
+    )
+    from farkle.utils.scientific_dependencies import stage_producer
+    from farkle.utils.scientific_identity import producer_config_identity
+    from farkle.utils.scientific_invocation import current, dependency_key
+    from farkle.utils.scientific_reuse import closure, launch_matches
+
+    cfg = target.cfg
+    roots = cfg.sim.seed_list or [cfg.sim.seed]
+    retained_controls = {
+        (name, digest) for launch in launches for name, digest in launch.receipt["current"].items()
+    }
+    retained_controls.update(
+        (Path(path).name, digest)
+        for launch in launches
+        for _, path, digest in launch.receipt["previous_completion_stamps"]
+        if digest
+    )
+
+    @cache
+    def control_hashes(name: str) -> set[str]:
+        return {
+            sha256_file(p)
+            for p in index.files
+            if p.name == name
+            and name.endswith(".done.json")
+            and not excluded_graph_path(p, index.root)
+        }
+
+    @cache
+    def requirements(stage: str):
+        owner = stage_producer(cfg, stage)
+        return (
+            f"{owner.scope}/{stage}",
+            dependency_key(owner, roots),
+            cfg.stage_config_sha(stage),
+            producer_config_identity(cfg, stage),
+        )
+
+    @cache
+    def verify_git(stage: str, commit: str) -> None:
+        pin = current()
+        assert pin is not None
+        paths = pin.components(cfg, stage_producer(cfg, stage))["implementation"]
+        original, release = tree(commit), tree(code.commit)
+        for path, oid in working_blobs(tuple(sorted(paths))).items():
+            if (
+                path not in release
+                or original.get(path) != release[path]
+                or release[path] not in (b"100644 blob " + oid, b"100755 blob " + oid)
+            ):
+                raise ValueError(
+                    f"producer {commit} has different or untracked {stage} implementation: {path}"
+                )
+
+    for record in index.by_path.values():
+        meta = record.metadata
+        if meta is None:
+            raise ValueError(f"missing verified producer: {record.path}")
+        stage = meta.stage_identity
+        name, key, digest, config = requirements(record.location.stage_key)
+        designs = stage.immutable_design_identities
+        origins = [
+            launch
+            for launch in launches
+            if launch.code == stage.code
+            and launch.context["run_lineage_sha256"] == designs.get("run_lineage_sha256")
+        ]
+        if (
+            stage.code.policy != CodeIdentityPolicy.RELEASE_CLEAN.value
+            or stage.code.state != "clean"
+            or stage.stage_config != config
+            or stage.stage_cache_key_version != cfg.stage_cache_key_version(stage.stage_key)
+            or record.location.path(cfg).resolve() != record.path
+            or designs.get("stage_dependencies_v1") != digest
+            or not designs.get("publication_science_v1")
+            or not origins
+            or not all(launch.confirms(name, digest) for launch in origins)
+        ):
+            raise ValueError(f"missing or incompatible clean producer launch at {record.path}")
+        verify_git(stage.stage_key, stage.code.commit)
+        if isinstance(meta, ImmutableManifestSidecar):
+            upstream = _manifest_member_dependencies(cfg, record, index, code)
+        else:
+            require_authenticated_output_versions(cfg, record.path, meta)
+            if meta.method_contract.root_seeds != tuple(sorted(roots)):
+                raise ValueError(f"scientific producer roots differ at {record.path}")
+            bindings, upstream = _audited_scientific_inputs(record, meta, by_sidecar, code)
+            for control, sha in publication_science_controls(
+                stage.stage_key,
+                meta.method_contract,
+                designs,
+                has_sources=bool(meta.source_artifacts),
+                has_manifests=bool(meta.manifest_roots),
+            ).items():
+                _, filename, _ = control.split(":")
+                if (filename, sha) not in retained_controls and sha not in control_hashes(filename):
+                    raise ValueError(f"unverified scientific control at {record.path}: {control}")
+            if (
+                publication_science_digest(
+                    stage.stage_key,
+                    digest,
+                    meta.method_contract,
+                    meta.versions,
+                    designs,
+                    bindings,
+                    has_sources=bool(meta.source_artifacts),
+                    has_manifests=bool(meta.manifest_roots),
+                )
+                != designs["publication_science_v1"]
+            ):
+                raise ValueError(f"scientific publication preimage differs at {record.path}")
+            if (
+                record.location.stage_key == "h2h_power"
+                and record.path == cfg.h2h_power_plan_path().resolve()
+            ):
+                _audit_frozen_execution(cfg, index)
+        if not upstream:
+            _audit_scientific_leaf(cfg, record, meta, digest)
+        if not launch_matches(stage) or closure(stage) != {**upstream, key: digest}:
+            raise ValueError(f"incomplete or incompatible scientific dependencies at {record.path}")
+
+    for completion in target.snapshot.completions:
+        records = sorted(
+            (index.by_location[item.location] for item in completion.outputs),
+            key=lambda item: str(item.path),
+        )
+        stage_key = records[0].location.stage_key
+        name, _, digest, _ = requirements(stage_key)
+        producer = index.completion_producers.get(completion.path)
+        matching = [
+            launch
+            for launch in launches
+            if launch.code == producer and launch.confirms(name, digest)
+        ]
+        if (
+            producer is None
+            or producer.state != "clean"
+            or producer.policy != CodeIdentityPolicy.RELEASE_CLEAN.value
+            or not matching
+        ):
+            raise ValueError(f"missing clean completion producer at {completion.path}")
+        verify_git(stage_key, producer.commit)
+        versions = next(
+            (r.metadata.versions for r in records if isinstance(r.metadata, AuthenticatedSidecar)),
+            None,
+        )
+        if versions is None:
+            first = records[0].metadata
+            assert isinstance(first, ImmutableManifestSidecar)
+            versions = first.stage_identity.versions
+        output_hashes = {
+            f"output:{r.location.relative_path}": r.sidecar_sha256
+            for r in records
+            if r.sidecar_sha256 is not None
+        }
+        reconstructed = completion_producer_identity(
+            cfg, stage_key, versions, output_hashes, producer
+        )
+        if reconstructed.sha256 != completion.stage_identity_sha256:
+            raise ValueError(f"incompatible completion producer preimage at {completion.path}")
+        if producer != code:
+            previous_contexts = {
+                launch.receipt["current"]["run_context.json"] for launch in matching
+            }
+            if not any(
+                launch.receipt["previous"]["run_context.json"] in previous_contexts
+                and [completion.stage_key, str(completion.path), completion.sha256]
+                in launch.receipt["previous_completion_stamps"]
+                for launch in launches
+            ):
+                raise ValueError(
+                    f"missing original completion in retained history: {completion.path}"
+                )
+
+
+def _revision_policy(
+    targets: tuple[AuthenticatedReleaseAuditTarget, ...],
+    indexes: list[_AuditIndex],
+    events: list[dict[str, Any]],
+    code: CodeIdentity,
+    foreign_count: int,
+    audit_passed: bool,
+) -> dict[str, Any]:
+    from farkle.utils.scientific_files import ScientificDrift
+    from farkle.utils.scientific_invocation import ROOT, current, verify_launch
+
+    commits: set[str] = set()
+    for index in indexes:
+        commits.update(
+            r.metadata.stage_identity.code.commit for r in index.by_path.values() if r.metadata
+        )
+        commits.update(c.commit for c in index.completion_producers.values())
+    evidence = []
+    reasons = []
+    if foreign_count:
+        try:
+            if code.policy != CodeIdentityPolicy.RELEASE_CLEAN.value or code.state != "clean":
+                raise ValueError("mixed revisions require a release-clean invocation")
+            if not audit_passed or current() is None or not events:
+                raise ValueError(
+                    "mixed revisions require a successful independent graph audit and retained scientific launches"
+                )
+            verify_launch()
+            by_sidecar = {
+                r.sidecar_sha256: r
+                for index in indexes
+                for r in index.by_path.values()
+                if r.sidecar_sha256 is not None
+            }
+            trees = cache(_committed_files)
+            roots: dict[tuple[int, str], _ProducerLaunch] = {}
+            working_blobs = cache(_working_blobs)
+            for target, index in zip(targets, indexes, strict=True):
+                launches = _producer_launches(target, events)
+                for launch in launches:
+                    run_id = launch.receipt["run_id"]
+                    if target.snapshot.scope == "root":
+                        roots[(target.cfg.sim.seed, run_id)] = launch
+                    else:
+                        _audit_original_parents(target.cfg, launch, roots)
+                    evidence.append(
+                        {
+                            "record": launch.event["invocation_record"],
+                            "sha256": launch.event["invocation_sha256"],
+                            "code_identity": asdict(launch.code),
+                        }
+                    )
+                _audit_mixed_context(
+                    target, index, launches, by_sidecar, code, trees, working_blobs
+                )
+            verify_launch()
+            if resolve_code_identity(ROOT, policy=CodeIdentityPolicy.RELEASE_CLEAN) != code:
+                raise ValueError("release Git identity changed during mixed-revision qualification")
+        except ScientificDrift:
+            raise
+        except Exception as exc:
+            reasons.append(f"mixed-revision release evidence: {type(exc).__name__}: {exc}")
+    return {
+        "version": REVISION_RELEASE_POLICY_VERSION,
+        "qualifying_commit": code.commit,
+        "foreign_publications": foreign_count,
+        "status": (
+            "ineligible"
+            if reasons or not audit_passed
+            else ("qualified_mixed" if foreign_count else "single_revision")
+        ),
+        "producer_commits": sorted(commits),
+        "invocation_records": evidence,
+        "reasons": reasons,
+    }
+
+
 def audit_authenticated_release_graphs(
     targets: Iterable[AuthenticatedReleaseAuditTarget],
     *,
@@ -763,17 +1479,22 @@ def audit_authenticated_release_graphs(
     if collector is not None:
         collector.bump("graph_audit_invocations")
     failures: list[str] = []
+    launch_events: list[dict[str, Any]] = []
     published: list[tuple[Path, str]] = []
     if invocation is not None:
         run_id, manifest_path = invocation
         try:
+            launch_events = [
+                e for e in iter_manifest(manifest_path) if e.get("event") == "invocation_published"
+            ]
             published = [
                 (Path(event["invocation_record"]).resolve(), event["invocation_sha256"])
-                for event in iter_manifest(manifest_path)
-                if event.get("event") == "invocation_published" and event.get("run_id") == run_id
+                for event in launch_events
+                if event.get("run_id") == run_id
             ]
         except (OSError, ValueError, TypeError, KeyError) as exc:
             failures.append(f"cannot read invocation records from {manifest_path}: {exc}")
+    foreign_producers: set[str] = set()
     run_contexts: dict[str, dict[str, str]] = {}
     root_metrics: list[dict[str, Any]] = []
     indexes: list[_AuditIndex] = []
@@ -796,6 +1517,7 @@ def audit_authenticated_release_graphs(
                 compute_config_sha(target.cfg) != snapshot.public_config_sha256
                 or target.cfg._run_lineage_sha256 != snapshot.run_lineage_sha256
                 or target.cfg._code_identity != snapshot.code_identity
+                or snapshot.code_identity != expected_code_identity
             ):
                 raise SnapshotUseError("current context identity differs from its snapshot")
             persisted = load_run_context(
@@ -844,6 +1566,7 @@ def audit_authenticated_release_graphs(
         )
         root_failures.extend(_validate_audit_index(index))
         root_failures.extend(_compare_snapshot_index(snapshot, index))
+        foreign_producers.update(_foreign_producers(index, expected_code_identity))
         indexes.append(index)
         failures.extend(f"{label} authenticated graph: {failure}" for failure in root_failures)
         root_metrics.append(
@@ -869,6 +1592,15 @@ def audit_authenticated_release_graphs(
         "status": "passed" if not failures else "failed",
         "failures": sorted(failures),
         "run_contexts": run_contexts,
+        "foreign_producer_count": len(foreign_producers),
+        "revision_policy": _revision_policy(
+            ordered_targets,
+            indexes,
+            launch_events,
+            expected_code_identity,
+            len(foreign_producers),
+            not failures,
+        ),
         "internal_roots": root_metrics,
         "top_level_invocations": 1,
     }

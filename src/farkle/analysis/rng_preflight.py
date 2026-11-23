@@ -83,6 +83,15 @@ def environment(cfg: AppConfig) -> dict[str, Any]:
     }
 
 
+def _preflight_design(specification: dict[str, Any]) -> dict[str, Any]:
+    if specification.get("schema_version") != 2:
+        return specification
+    return {
+        **{k: v for k, v in specification.items() if k not in {"code", "target_config"}},
+        "environment": {k: v for k, v in specification["environment"].items() if k != "scratch"},
+    }
+
+
 def _limits() -> None:
     apply_native_thread_limits(StageParallelPolicy(2, 2, 1, 1, 1))
 
@@ -334,7 +343,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> tuple[Path, dict[str, Any]]:
     cfg._code_identity = current_code
     code = asdict(current_code)
     specification = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "scientific_dependencies_v1": cfg.stage_config_sha("rng_diagnostics"),
         "contract_id": CONTRACT_ID,
         "recipe": recipe,
         "capability_recipe": capability,
@@ -404,7 +414,10 @@ def run(cfg: AppConfig, *, force: bool = False) -> tuple[Path, dict[str, Any]]:
     )
     specification = json.loads(json.dumps(specification))
     plan = cfg.rng_preflight_dir() / "plan.json"
-    if force or not reusable(cfg, plan, []) or read(plan) != specification:
+    original = read(plan) if not force and reusable(cfg, plan, []) else None
+    if original is not None and _preflight_design(original) == _preflight_design(specification):
+        specification = original
+    else:
         finish(cfg, plan, specification, [])
     paths = [plan]
     # Entire small coordinate entropy set, rather than adjacent-only comparison.
@@ -568,9 +581,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> tuple[Path, dict[str, Any]]:
         "schema_version": 1,
         "contract_id": CONTRACT_ID,
         "status": "complete_valid",
-        "code_identity": identity_sha256(code),
+        "code_identity": identity_sha256(specification["code"]),
         "workload_identity": identity_sha256(specification),
-        "environment": environment(cfg),
+        "environment": specification["environment"],
         "groups": groups,
         "integrity_and_support": integrity,
         "blind_spot_results": blind,

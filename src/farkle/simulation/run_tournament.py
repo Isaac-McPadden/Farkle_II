@@ -704,13 +704,15 @@ def _read_checkpoint(
         # The low-level API also supports standalone, local legacy checkpoints.
         return cast(dict[str, Any], pickle.loads(path.read_bytes()))
     metadata = validate_authenticated_artifact_metadata(path, cfg=cfg)
+    from farkle.utils.scientific_reuse import compatible_producer
+
     artifact = metadata.artifact
     if (
         artifact.format_identity is None
         or artifact.format_identity.media_type != "application/x-python-pickle"
         or artifact.logical_operation != "publish_simulation_checkpoint"
         or metadata.stage_identity.stage_key != "simulation"
-        or metadata.stage_identity.code != producer_code_identity(cfg)
+        or not compatible_producer(metadata.stage_identity, producer_code_identity(cfg))
     ):
         raise ArtifactMismatchError(f"checkpoint producer identity differs: {path}")
 
@@ -724,7 +726,22 @@ def _read_checkpoint(
     record_authentication_hash(path, len(contents))
     if len(contents) != artifact.byte_length or digest != artifact.content_sha256:
         raise ArtifactMismatchError(f"checkpoint bytes do not match its sidecar: {path}")
-    if validate_sources:
+    foreign = metadata.stage_identity.code != producer_code_identity(cfg)
+    if foreign:
+        # A rolling aggregate may be replaced after resumption. Its original
+        # producer must remain represented by an exact immutable source, or
+        # the caller must reconstruct the aggregate from retained shards.
+        from farkle.utils.authenticated_contract import load_authenticated_sidecar
+
+        if not any(
+            load_authenticated_sidecar(source.artifact.location.path(cfg)).stage_identity.code
+            == metadata.stage_identity.code
+            for source in metadata.source_artifacts
+        ):
+            raise ArtifactMismatchError(
+                f"Rolling checkpoint lacks retained producer evidence: {path}"
+            )
+    if validate_sources or foreign:
         expected_paths = {
             cfg.strategy_manifest_root_path().resolve(),
             (path.parent / "simulation_workload_plan.json").resolve(),
@@ -1076,14 +1093,17 @@ def _restore_partial_aggregate(
         remainder[name] = [item for item in records if item[key] not in saved_units]
 
     for path, additions in repairs:
-        if sidecar_path(path).exists():
-            raise ValueError(f"refusing to repair an immutable simulation manifest: {path}")
-        with atomic_path(str(path), temp_dir=temp_dir) as temporary:
-            if path.is_file():
-                shutil.copyfile(path, temporary)
-                with Path(temporary).open("ab") as handle:
-                    handle.write(b"\n")
-            append_manifest_many(temporary, additions, add_timestamp=False)
+        from farkle.utils.manifest import publication_lock
+
+        with publication_lock(path):
+            if sidecar_path(path).exists():
+                raise ValueError(f"refusing to repair an immutable simulation manifest: {path}")
+            with atomic_path(str(path), temp_dir=temp_dir) as temporary:
+                if path.is_file():
+                    shutil.copyfile(path, temporary)
+                    with Path(temporary).open("ab") as handle:
+                        handle.write(b"\n")
+                append_manifest_many(temporary, additions, add_timestamp=False)
     if not compatible:
         return None
     if (

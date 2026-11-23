@@ -412,12 +412,32 @@ def test_root_stability_parses_each_source_only_for_its_immutable_matrix(
         return original_scan(*args, **kwargs)
 
     monkeypatch.setattr(performance_module, "iter_parquet_tables_by_bytes", counted_scan)
-    build_two_root_stability(cfg, cells)
+    from farkle.analysis.release_audit import (
+        _build_audit_index,
+        _validate_cross_context_provenance,
+        _validate_indexed_artifacts,
+    )
+    from farkle.utils.release_identity import exact_direct_sources
+    from farkle.utils.scientific_invocation import scientific_invocation
+
+    with scientific_invocation([(cfg, "root_stability")]):
+        products = build_two_root_stability(cfg, cells)
+
+    matrices = [cfg.root_stability_matrix_path(cell.root_seed, cell.k) for cell in cells]
+    assert exact_direct_sources(products.across_k, [*[cell.path for cell in cells], *matrices])
 
     assert calls == 0
     # Two bounded passes materialize each fallback matrix; no configured
     # fraction or bootstrap family triggers another source scan.
     assert scans == 2 * len(cells)
+    indexes = []
+    for root in [*(_root_cfg(tmp_path, seed).results_root for seed in (11, 22)), cfg.results_root]:
+        index, errors = _build_audit_index(root)
+        assert not errors
+        assert not _validate_indexed_artifacts(index)
+        indexes.append(index)
+    assert set(matrices) <= indexes[-1].by_path.keys()
+    assert not _validate_cross_context_provenance(indexes)
 
 
 def test_root_stability_rebuilds_corrupt_bootstrap_range_before_reusing_stage(

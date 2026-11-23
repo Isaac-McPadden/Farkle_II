@@ -344,6 +344,47 @@ def _family_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _family_identity(
+    cfg: AppConfig,
+    candidates: list[int],
+    source_identity: dict[str, Any],
+    initial_cutoffs: dict[str, int],
+    final_cutoffs: dict[str, int],
+) -> dict[str, Any]:
+    return {
+        "candidate_family_version": CANDIDATE_FAMILY_VERSION,
+        "source_identity_version": 2,
+        "candidates": candidates,
+        "source_identity": source_identity,
+        "contribution_size": cfg.screening.candidate_contribution_size,
+        "candidate_cap": cfg.head2head.candidate_cap,
+        "candidate_cap_policy": CANDIDATE_CAP_POLICY,
+        "initial_cutoffs": initial_cutoffs,
+        "final_cutoffs": final_cutoffs,
+        "controls": sorted({_strategy_key(value) for value in cfg.screening.controls}),
+        "mandatory_diagnostics": sorted(
+            {_strategy_key(value) for value in cfg.screening.mandatory_diagnostics}
+        ),
+    }
+
+
+def verify_family_identity(cfg: AppConfig, manifest: dict[str, Any]) -> None:
+    expected = _family_identity(
+        cfg,
+        manifest["candidates"],
+        manifest["source_identity"],
+        manifest["initial_cutoffs"],
+        manifest["final_cutoffs"],
+    )
+    if (
+        any(manifest[key] != value for key, value in expected.items())
+        or _family_hash(expected) != manifest["family_hash"]
+    ):
+        raise ValueError(
+            "frozen candidate family differs from its authenticated scientific definition"
+        )
+
+
 def _admission_reasons(
     strategy: int,
     *,
@@ -512,19 +553,7 @@ def freeze_h2h_candidate_family(
     require_input_roles(
         cfg, "candidate_freeze", {f"{role}_contribution" for role in source_identity}
     )
-    identity = {
-        "candidate_family_version": CANDIDATE_FAMILY_VERSION,
-        "source_identity_version": 2,
-        "candidates": candidates,
-        "source_identity": source_identity,
-        "contribution_size": cfg.screening.candidate_contribution_size,
-        "candidate_cap": cfg.head2head.candidate_cap,
-        "candidate_cap_policy": CANDIDATE_CAP_POLICY,
-        "initial_cutoffs": initial_cutoffs,
-        "final_cutoffs": final_cutoffs,
-        "controls": sorted(controls),
-        "mandatory_diagnostics": sorted(diagnostics),
-    }
+    identity = _family_identity(cfg, candidates, source_identity, initial_cutoffs, final_cutoffs)
     family_hash = _family_hash(identity)
     admission_counts = {
         "win_rate_only": len((final_win - final_ts) & family),

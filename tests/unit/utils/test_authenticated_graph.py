@@ -19,10 +19,16 @@ from tests.helpers.artifact_sidecars import (
 import farkle.utils.authenticated_graph as authenticated_graph
 from farkle.analysis.release_audit import (
     AuthenticatedReleaseAuditTarget,
+    _audit_original_parents,
+    _ProducerLaunch,
     audit_authenticated_release_graphs,
 )
 from farkle.config import ArtifactScope, ResourcesConfig
-from farkle.orchestration.execution_history import publish_invocation, retain_lifecycle
+from farkle.orchestration.execution_history import (
+    audit_published_launch,
+    publish_invocation,
+    retain_lifecycle,
+)
 from farkle.orchestration.run_contexts import (
     RootPairRunContext,
     SeedRunContext,
@@ -46,6 +52,7 @@ from farkle.utils.authentication_telemetry import (
     use_authentication_telemetry,
 )
 from farkle.utils.completion_files import CompletionFileKind, CompletionNamespace
+from farkle.utils.manifest import iter_manifest
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -96,7 +103,7 @@ def _build_graph(
             context,
             run_id=run_id,
             code_identity=code,
-            completion_paths=[],
+            completion_paths=[("metrics", cfg.stage_dir("metrics") / "metrics.done.json")],
             manifest_path=manifest_path or tmp_path / "manifest.jsonl",
         )
 
@@ -409,6 +416,18 @@ def test_final_pair_audit_binds_parents_in_configured_order(tmp_path: Path, swap
     )
     retain_lifecycle(snapshot, run_id, [(stage, stamp)])
     targets.append(AuthenticatedReleaseAuditTarget(cfg, snapshot, generation))
+    original_launches = []
+    for target, event in zip(targets, iter_manifest(tmp_path / "manifest.jsonl"), strict=True):
+        context, receipt = audit_published_launch(target.snapshot.run_context_path.parent, event)
+        original_launches.append(_ProducerLaunch(context, receipt, event, code))
+    originals = {
+        (seed, run_id): launch for seed, launch in zip(seeds, original_launches[:2], strict=True)
+    }
+    if swap:
+        with pytest.raises(ValueError, match="historical parent lifecycle"):
+            _audit_original_parents(cfg, original_launches[2], originals)
+    else:
+        _audit_original_parents(cfg, original_launches[2], originals)
     result = audit_authenticated_release_graphs(
         targets,
         expected_code_identity=code,

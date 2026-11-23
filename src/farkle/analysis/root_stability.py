@@ -183,10 +183,11 @@ def _matrix_cell(
 
     _validate_cell_source(cell)
     shared = cell.path.with_name("performance_batch_matrix.npy")
-    candidate = (
-        shared if shared.exists() else cfg.root_stability_matrix_path(cell.root_seed, cell.k)
-    )
-    if shared.exists():
+    fallback = cfg.root_stability_matrix_path(cell.root_seed, cell.k)
+    # Once this pair owns a fallback, a later root publication cannot switch
+    # the source of its already-frozen contribution.
+    candidate = fallback if fallback.exists() or not shared.exists() else shared
+    if candidate == shared:
         validate_artifact_sidecar(
             shared, expected={"operation": "materialize_performance_batch_matrix"}
         )
@@ -214,6 +215,12 @@ def _matrix_cell(
                 stage="root_stability",
                 sidecar_artifacts=[candidate],
             )
+    from farkle.utils.release_identity import exact_direct_sources
+
+    if not exact_direct_sources(candidate, [cell.path]):
+        raise ValueError(
+            f"Root stability matrix does not authenticate its declared batch cell: {candidate}"
+        )
     matrix = np.load(candidate, mmap_mode="r", allow_pickle=False)
     _validate_matrix_array(matrix, path=candidate, k=cell.k)
     roots = np.unique(matrix["root_seed"])
@@ -1733,7 +1740,27 @@ def build_two_root_stability(
             f"two-root inputs must cover every root/k cell; missing={missing}, extra={extra}"
         )
     cell_map = {(cell.root_seed, cell.k): cell for cell in cells}
-    sources = [cell_map[key].path for key in sorted(cell_map)]
+    cfg.validate_resource_contract()
+    policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
+    apply_native_thread_limits(policy)
+    guard = make_process_tree_memory_guard(cfg.resources, guard_type=ProcessTreeMemoryGuard)
+    guard.check_before_schedule(force=True)
+    matrix_cells = {
+        key: _matrix_cell(cfg, cell, force=force, guard=guard)
+        for key, cell in sorted(cell_map.items())
+    }
+    sources_by_k = {
+        k: [
+            path
+            for root in root_pair
+            for path in (
+                matrix_cells[(root, k)].path,
+                cast(Path, matrix_cells[(root, k)].matrix_path),
+            )
+        ]
+        for k in required_k
+    }
+    sources = [path for k in required_k for path in sources_by_k[k]]
     artifacts = _artifact_paths(cfg, required_k)
     done = stage_done_path(cfg.stage_dir("root_stability"), "root_stability")
     stage_current = not force and stage_is_up_to_date(
@@ -1745,16 +1772,6 @@ def build_two_root_stability(
         freshness_key=_root_stability_freshness_key(cfg),
         sidecar_artifacts=list(artifacts.all_paths),
     )
-
-    cfg.validate_resource_contract()
-    policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
-    apply_native_thread_limits(policy)
-    guard = make_process_tree_memory_guard(cfg.resources, guard_type=ProcessTreeMemoryGuard)
-    guard.check_before_schedule(force=True)
-    matrix_cells = {
-        key: _matrix_cell(cfg, cell, force=force, guard=guard)
-        for key, cell in sorted(cell_map.items())
-    }
     if stage_current and _bootstrap_ranges_validate(cfg, matrix_cells, root_pair):
         return artifacts
 
@@ -1804,7 +1821,7 @@ def build_two_root_stability(
             by_k_tables[k],
             path,
             operation="within_k_exposure_combination",
-            sources=[cell_map[(root, k)].path for root in root_pair],
+            sources=sources_by_k[k],
             player_counts=[k],
             grouping_keys=["estimate_scope", "root_seed", "k", "strategy"],
             uncertainty_method="descriptive_fixed_design_batch_ratio_mc_precision",

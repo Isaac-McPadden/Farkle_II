@@ -91,6 +91,45 @@ def test_equal_candidate_ids_cannot_transfer_strategy_authorization(tmp_path, mo
     assert cfg.h2h_cap_authorization_path().read_bytes() == frozen
 
 
+def test_mixed_release_audit_checks_terminal_blocks_and_original_consent(tmp_path, monkeypatch):
+    from farkle.analysis.candidate_family import verify_family_identity
+    from farkle.analysis.release_audit import (
+        _audit_frozen_execution,
+        _build_audit_index,
+        _validate_indexed_artifacts,
+    )
+
+    cfg = _cfg(tmp_path)
+    cfg.head2head.total_game_cap = 1
+    _write_frozen_family(cfg, (1, 2))
+    monkeypatch.setattr(schedule, "_minimum_block_games", lambda **_: 2)
+    monkeypatch.setattr(schedule, "_worst_scenario_power", lambda **_: 0.9)
+    schedule.plan_h2h_schedule(cfg)
+    plan = json.loads(cfg.h2h_power_plan_path().read_bytes())
+    with consent.cap_authorization_policy(override=consent.authorization_token(plan)):
+        schedule.execute_h2h_schedule(cfg)
+    index, failures = _build_audit_index(cfg.results_root.resolve())
+    assert not failures
+    assert not _validate_indexed_artifacts(index)
+    _audit_frozen_execution(cfg, index)
+    family = json.loads(cfg.h2h_candidate_family_manifest_path().read_bytes())
+    family["final_cutoffs"]["win_rate"] += 1
+    with pytest.raises(ValueError, match="candidate family differs"):
+        verify_family_identity(cfg, family)
+    approval = cfg.h2h_cap_authorization_path()
+    original = approval.read_bytes()
+    forged = json.loads(original)
+    forged["block_manifest_sha256"] = "b" * 64
+    approval.write_text(json.dumps(forged))
+    with pytest.raises(ValueError, match="authorization source changed"):
+        _audit_frozen_execution(cfg, index)
+    approval.write_bytes(original)
+    block = next(cfg.h2h_block_results_dir().glob("*.parquet"))
+    block.unlink()
+    with pytest.raises(ValueError, match="block differs"):
+        _audit_frozen_execution(cfg, index)
+
+
 def test_legacy_authorization_reader_preserves_identity_but_cannot_issue_consent(tmp_path):
     from farkle.utils.frozen_h2h import verify_frozen_strategy_design
 
@@ -546,3 +585,131 @@ def test_renewed_consent_with_same_amount_refreshes_exact_provenance(planned) ->
     execute_oracle(cfg, block_runner=lambda *args: pytest.fail("replayed block"))
     failures = audit_sidecar_completeness(cfg.analysis_dir)
     assert len(failures) == 1 and "ineligible for scientific release" in failures[0]
+
+
+def test_external_frozen_pair_retains_root_rating_and_upstream_evidence(tmp_path):
+    import pandas as pd
+    from tests.helpers.artifact_sidecars import make_authenticated_v3_config
+    from tests.helpers.h2h_oracle import write_fixture_contribution
+    from tests.unit.analysis.test_trueskill_screening import (
+        _publish_game_source,
+        _publish_strategy_control,
+        _ratings,
+    )
+
+    from farkle.analysis.candidate_family import freeze_h2h_candidate_family
+    from farkle.analysis.h2h_schedule import plan_h2h_schedule
+    from farkle.analysis.release_audit import (
+        _build_audit_index,
+        _validate_cross_context_provenance,
+        _validate_indexed_artifacts,
+    )
+    from farkle.analysis.run_trueskill import _load_ratings_parquet, _save_ratings_parquet
+    from farkle.analysis.trueskill_screening import (
+        ScreeningRatingCell,
+        build_percentile_contribution,
+        publish_rating_cell_contract,
+    )
+    from farkle.config import ArtifactScope
+    from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+    from farkle.utils.artifact_contract import sha256_file, sidecar_path
+    from farkle.utils.authenticated_contract import load_authenticated_sidecar
+    from farkle.utils.frozen_h2h import verify_frozen_strategy_design
+    from farkle.utils.scientific_invocation import scientific_invocation
+
+    root = tmp_path
+    roots = tuple(
+        SeedRunContext.from_config(
+            make_authenticated_v3_config(root, name=f"root_{seed}", root_seed=seed)
+        )
+        for seed in (11, 17)
+    )
+    pair = RootPairRunContext.from_root_contexts(
+        (roots[0], roots[1]), pair_root=root / "external_pair"
+    ).config
+    pair.screening.candidate_contribution_size = 2
+    stages = [(r.config, s) for r in roots for s in ("simulation", "curate", "trueskill")]
+    stages.extend(
+        (pair, s)
+        for s in (
+            "trueskill",
+            "root_stability",
+            "candidate_freeze",
+            "h2h_power",
+            "h2h_execute",
+            "simulation",
+        )
+    )
+    with scientific_invocation(stages):
+        fixture = _ratings(root / "sample.parquet", {"1": (30.0, 2.0), "2": (20.0, 3.0)})
+        cells = []
+        for context in roots:
+            cfg = context.config
+            _publish_strategy_control(cfg)
+            source_path = _publish_game_source(cfg, 2)
+            rating = cfg.trueskill_rating_path(2, root_seed=cfg.sim.seed)
+            _save_ratings_parquet(rating, _load_ratings_parquet(fixture))
+            cell = ScreeningRatingCell(cfg.sim.seed, 2, rating, source_path)
+            publish_rating_cell_contract(cfg, cell, completed_artifact_sha256=sha256_file(rating))
+            cells.append(cell)
+        contrib = build_percentile_contribution(pair, cells)
+        write_fixture_contribution(
+            pair,
+            pair.root_combined_performance_across_k_path(),
+            pd.DataFrame(
+                {
+                    "strategy": [1, 2],
+                    "complete_support": [True, True],
+                    "across_k_score": [0.7, 0.3],
+                    "estimate_scope": ["combined_roots"] * 2,
+                }
+            ),
+            scope=ArtifactScope.CROSS_SEED,
+            operation="equal_k_mean",
+            seed_scope="root_pair_stability",
+        )
+        freeze_h2h_candidate_family(pair)
+        plan_h2h_schedule(pair)
+        plan = json.loads(pair.h2h_power_plan_path().read_bytes())
+        records = [
+            pair.h2h_candidate_family_manifest_path(),
+            pair.h2h_power_plan_path(),
+            pair.h2h_block_manifest_path(),
+            pair.h2h_cap_authorization_path(),
+            contrib,
+            roots[0].config.strategy_manifest_root_path(),
+        ]
+        originals = [(sha256_file(p), sha256_file(sidecar_path(p))) for p in records]
+        cell = cells[0]
+        path = cell.ratings_path
+
+        def audit():
+            indexes = []
+            for graph in [r.results_root for r in roots] + [root / "external_pair"]:
+                index, _ = _build_audit_index(graph)
+                assert not _validate_indexed_artifacts(index)
+                indexes.append(index)
+            return [m for m in _validate_cross_context_provenance(indexes) if str(contrib) in m]
+
+        assert not audit()
+        previous = load_authenticated_sidecar(path)
+        source = next(
+            s
+            for s in load_authenticated_sidecar(contrib).source_artifacts
+            if s.sidecar_contract_sha256 == previous.sidecar_contract_sha256
+        )
+        values = _load_ratings_parquet(path)
+        times = (path.stat().st_mtime_ns, sidecar_path(path).stat().st_mtime_ns)
+        _save_ratings_parquet(path, values)
+        publish_rating_cell_contract(
+            roots[0].config, cell, completed_artifact_sha256=sha256_file(path)
+        )
+        values["1"].mu += 1
+        with pytest.raises(RuntimeError, match="Immutable scientific input.*new output root"):
+            _save_ratings_parquet(path, values)
+        assert times == (path.stat().st_mtime_ns, sidecar_path(path).stat().st_mtime_ns)
+        assert source.artifact.content_sha256 == sha256_file(path)
+        assert source.sidecar_sha256 == sha256_file(sidecar_path(path))
+        assert originals == [(sha256_file(p), sha256_file(sidecar_path(p))) for p in records]
+        assert not audit()
+        verify_frozen_strategy_design(pair, plan)

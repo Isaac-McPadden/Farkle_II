@@ -32,7 +32,7 @@ import json
 import os
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -119,6 +119,27 @@ else:
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
         fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+
+
+@contextmanager
+def publication_lock(path: Path) -> Iterator[None]:
+    """Serialize writers across atomic renames of a scientific publication.
+
+    Keep the empty lock file at a stable name. Removing it on unlock could
+    allow two processes to lock different inodes for the same publication.
+    The operating system releases the lock if the owner exits.
+    """
+    lock = path.parent / "_execution" / ("._publication_" + path.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = _open_append_fd(lock)
+    try:
+        _lock_fd(fd)
+        try:
+            yield
+        finally:
+            _unlock_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def _write_all(fd: int, data: bytes) -> None:

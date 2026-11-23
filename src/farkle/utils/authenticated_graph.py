@@ -187,7 +187,12 @@ def _capture_completion(stage_key: str, path: Path) -> SnapshotCompletion:
 def excluded_graph_path(path: Path, root: Path) -> bool:
     """Exclude scratch trees, retaining the outcome producer's owned checkpoints."""
     parts = path.relative_to(root).parts
-    retained = {"_outcome_units", "_outcome_precision_ranges", "_seat_behavior_units"}
+    retained = {
+        "_outcome_units",
+        "_outcome_precision_ranges",
+        "_seat_behavior_units",
+        "_root_batch_matrices",
+    }
     return (bool(retained.intersection(parts)) and "quarantine" in parts) or any(
         part.startswith("_") and part not in retained for part in parts
     )

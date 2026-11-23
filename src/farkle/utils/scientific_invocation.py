@@ -50,6 +50,7 @@ class Invocation:
     configs: dict[Owner, AppConfig] = field(default_factory=dict)
     default: tuple[AppConfig, str] | None = None
     pid: int = field(default_factory=os.getpid)
+    launch_digests: dict[str, str] = field(default_factory=dict)
     failure: str = ""
     verified_imports: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     worker: bool = False
@@ -120,6 +121,10 @@ def current() -> Invocation | None:
 
 def _key(cfg: AppConfig, producer: Producer) -> Owner:
     return producer, cfg.sim.seed, tuple(cfg.sim.seed_list or [cfg.sim.seed])
+
+
+def dependency_key(owner: Producer, roots: Sequence[int]) -> str:
+    return f"reuse_v1/{owner.scope}/{owner.stage}/" + ",".join(map(str, roots))
 
 
 def describe_components(values: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +235,7 @@ def scientific_invocation(producers: Sequence[tuple[AppConfig, str]]) -> Iterato
                     _compare(pin, stage, pin.expected[key], values)
                 else:
                     pin.expected[key] = deepcopy(values)
+                    pin.launch_digests[dependency_key(owner, key[2])] = identity_sha256(values)
             pin.imports()
             token = _CURRENT.set(pin)
             stack.callback(_CURRENT.reset, token)
@@ -351,6 +357,12 @@ def attach_worker(expected: WorkerDependencies) -> None:
                     f"Worker {expected.stage} dependencies differ from launch: expected "
                     f"{expected.expected}, observed {identity_sha256(observed)}"
                 )
+            # The parent owns upstream contexts. The worker independently verifies
+            # its own stage before it may consume that admission evidence.
+            if expected.launch_digests:
+                if not pin.launch_digests.items() <= expected.launch_digests.items():
+                    raise ScientificDrift("Worker dependencies differ from parent launch")
+                pin.launch_digests.update(expected.launch_digests)
             pin.worker = True
         except BaseException:
             stack.close()
@@ -359,7 +371,7 @@ def attach_worker(expected: WorkerDependencies) -> None:
 
 
 def configured_producers(
-    cfg: AppConfig, stages: Sequence[str] | None = None
+    cfg: AppConfig, stages: Sequence[str] | None = None, *, include_source_roots: bool = False
 ) -> list[tuple[AppConfig, str]]:
     """Resolve the plan and its upstream checks in the owning layout."""
     definitions = {p.definition.key: p.definition for p in cfg.stage_layout.placements}
@@ -373,7 +385,19 @@ def configured_producers(
             wanted.update(definition.depends_on)
     if any(p.group != "root_pair" for p in definitions.values()):
         wanted.add("simulation")
-    return [(cfg, stage) for stage in sorted(wanted)]
+    producers = [(cfg, stage) for stage in sorted(wanted)]
+    if include_source_roots:
+        root_stages = [
+            root_stage
+            for pair_stage, root_stage in (
+                ("root_stability", "metrics"),
+                ("trueskill", "trueskill"),
+            )
+            if pair_stage in wanted
+        ]
+        for root in getattr(cfg, "_source_root_configs", ()):
+            producers.extend(configured_producers(root, root_stages))
+    return producers
 
 
 def launch_evidence(cfg: AppConfig) -> dict[str, Any]:
@@ -405,6 +429,8 @@ def stage_action(
                 if also is None
                 else [(cfg, key) for key in (stage, *also)]
             )
+            if current() is None and stage in {"candidate_freeze", "h2h_power", "h2h_execute"}:
+                producers = configured_producers(cfg, [stage], include_source_roots=True)
             with scientific_invocation(producers), producer_scope(cfg, stage):
                 return fn(cfg, *args, **kwargs)
 
