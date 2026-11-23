@@ -608,10 +608,19 @@ def assert_pair_h2h_oracle(
     assert _sum(counts, "replacement_attempt_count") == 2
 
     schedule_sidecar = load_authenticated_sidecar(cfg.h2h_block_manifest_path())
-    assert len(schedule_sidecar.source_artifacts) == 2
-    assert {source.artifact.location.stage_key for source in schedule_sidecar.source_artifacts} == {
-        "candidate_freeze"
+    planning_sources = {
+        cfg.h2h_candidate_family_manifest_path(),
+        cfg.h2h_candidate_family_path(),
+        cfg.strategy_manifest_root_path(),
     }
+    for publication in (schedule_sidecar, load_authenticated_sidecar(cfg.h2h_power_plan_path())):
+        assert len(publication.source_artifacts) == len(planning_sources)
+        assert {
+            edge.artifact.location.path(cfg) for edge in publication.source_artifacts
+        } == planning_sources
+    assert plan["frozen_design"]["strategy_artifact_sha256"] == sha256_file(
+        cfg.strategy_manifest_root_path()
+    )
     for path in sorted(cfg.h2h_block_results_dir().glob("*.parquet")):
         metadata = load_authenticated_sidecar(path)
         assert len(metadata.source_artifacts) == 1

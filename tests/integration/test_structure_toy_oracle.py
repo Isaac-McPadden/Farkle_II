@@ -10,6 +10,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
 from tests.helpers.h2h_oracle import execute_oracle, plan_oracle
 from tests.helpers.task7_fixture import publish_task7_reporting_fixture
 from tests.unit.analysis.test_structure_reporting import _publish_rng_inputs
@@ -32,6 +33,7 @@ from farkle.analysis.trueskill_screening import (
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import SEED_PAIR_ANALYSIS_DIRNAME, RunContextConfig
 from farkle.orchestration.seed_utils import base_results_dir, prepare_seed_config
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
@@ -116,6 +118,9 @@ def _cfg(root: Path) -> AppConfig:
     for seed in (11, 22):
         root_cfg = prepare_seed_config(base, seed=seed, base_results_dir=base_results_dir(base))
         _publish_rng_inputs(root_cfg)
+        publish_v3_strategy_manifest(
+            root_cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2, 3))
+        )
         # The pair executes its own frozen plan and publishes its authorization.
         publish_task7_reporting_fixture(root_cfg, include_authorization=False)
     pair_root = root / "results_seed_pair_11_22"
@@ -263,13 +268,6 @@ def _prepare(cfg: AppConfig, root: Path) -> tuple[Any, Any, Any]:
     stability = build_two_root_stability(cfg, _write_root_cells(cfg, root))
     _write_trueskill_contribution(cfg, root)
     family = freeze_h2h_candidate_family(cfg)
-    from tests.helpers.artifact_sidecars import publish_v3_strategy_manifest
-
-    from farkle.simulation.strategies import ThresholdStrategy
-
-    publish_v3_strategy_manifest(
-        cfg, tuple(ThresholdStrategy(strategy_id=sid) for sid in (1, 2, 3))
-    )
     schedule = plan_oracle(cfg)
     return stability, family, schedule
 

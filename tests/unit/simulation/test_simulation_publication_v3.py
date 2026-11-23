@@ -181,7 +181,7 @@ def test_many_shard_publication_and_resume_operation_counts(
     strategy, workload, row_dir = _prepare(cfg, count)
     operations = {"data_hashes": 0, "data_writes": 0, "metadata_validations": 0}
     real_hash = authenticated_contract.sha256_file
-    real_replace = authenticated_contract.replace_file_atomic
+    real_install = authenticated_contract._install_once
     real_metadata = runner.validate_authenticated_artifact_metadata
 
     def counted_hash(path: Path | str, **kwargs: Any) -> str:
@@ -190,11 +190,11 @@ def test_many_shard_publication_and_resume_operation_counts(
             operations["data_hashes"] += 1
         return real_hash(path, **kwargs)
 
-    def counted_replace(source: Path | str, destination: Path | str) -> None:
+    def counted_install(source: Path | str, destination: Path | str) -> None:
         candidate = Path(destination)
         if candidate.name.startswith("rows_") and candidate.suffix == ".parquet":
             operations["data_writes"] += 1
-        real_replace(source, destination)
+        real_install(source, destination)
 
     def counted_metadata(path: Path | str, **kwargs: Any):  # noqa: ANN202
         candidate = Path(path)
@@ -203,7 +203,7 @@ def test_many_shard_publication_and_resume_operation_counts(
         return real_metadata(path, **kwargs)
 
     monkeypatch.setattr(authenticated_contract, "sha256_file", counted_hash)
-    monkeypatch.setattr(authenticated_contract, "replace_file_atomic", counted_replace)
+    monkeypatch.setattr(authenticated_contract, "_install_once", counted_install)
     monkeypatch.setattr(runner, "validate_authenticated_artifact_metadata", counted_metadata)
     for index in range(count):
         _write_shard(
@@ -399,6 +399,8 @@ def test_real_two_worker_tournament_uses_producer_owned_publication(tmp_path: Pa
         cfg.sim.metric_chunk_dir = Path("metric_chunks")
         cfg.sim.expanded_metrics = True
         cfg.sim.n_jobs = workers
+        # The preflight subprocess runs this probe with two fully attested workers.
+        cfg.resources.process_tree_warning_threshold_mb = 1536
         cfg.screening.resolution_delta = 0.9
         cfg.batching.target_batches = 2
         cfg.batching.min_shuffles_per_batch = 1

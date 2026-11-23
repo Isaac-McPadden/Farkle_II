@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
@@ -76,12 +77,10 @@ def inventory(cfg: AppConfig) -> list[dict[str, str | int]]:
     return rows
 
 
-def run(cfg: AppConfig) -> Path:
-    """Write the canonical non-destructive migration report and sidecar."""
-
-    output = cfg.migration_report_path()
+def inventory_payload(cfg: AppConfig) -> dict[str, Any]:
+    """Describe the operational inventory without reading retired artifact contents."""
     ignored = inventory(cfg)
-    payload = {
+    return {
         "migration_report_version": 3,
         "scan_root": str(cfg.results_root),
         "ignored_artifact_count": len(ignored),
@@ -89,6 +88,13 @@ def run(cfg: AppConfig) -> Path:
         "artifacts_deleted": False,
         "current_code_reads_ignored_artifacts": False,
     }
+
+
+def run(cfg: AppConfig) -> Path:
+    """Write the canonical non-destructive migration report and sidecar."""
+
+    output = cfg.migration_report_path()
+    payload = inventory_payload(cfg)
     if output.exists():
         existing = json.loads(output.read_text(encoding="utf-8"))
         if existing == payload:

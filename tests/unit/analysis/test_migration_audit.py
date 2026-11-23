@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from farkle.analysis import migration_audit
+from farkle.analysis.release_audit import _audit_scientific_leaf, _IndexedArtifact
 from farkle.config import AppConfig, IOConfig
-from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.scientific_invocation import scientific_invocation
+from farkle.utils.scientific_reuse import launch_matches
 
 
 def test_migration_audit_inventories_retired_files_without_reading_or_deleting(
@@ -50,3 +56,18 @@ def test_migration_audit_is_idempotent_when_inventory_is_unchanged(tmp_path: Pat
 
     assert second == output
     assert second.stat().st_mtime_ns == first_mtime
+
+
+def test_mixed_audit_requires_the_canonical_migration_inventory(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    with scientific_invocation([(cfg, "reporting")]):
+        output = migration_audit.run(cfg)
+        meta = load_authenticated_sidecar(output)
+        assert launch_matches(meta.stage_identity)
+        record = _IndexedArtifact(output, sidecar_path(output), meta.artifact.location, {}, False)
+        digest = cfg.stage_config_sha("reporting")
+        _audit_scientific_leaf(cfg, record, meta, digest)
+
+        (cfg.results_root / "tiers.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(ValueError, match="migration inventory differs"):
+            _audit_scientific_leaf(cfg, record, meta, digest)

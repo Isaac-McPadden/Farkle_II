@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +28,13 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.authenticated_contract import (
+    load_authenticated_sidecar,
+    producer_code_identity,
+)
+from farkle.utils.frozen_h2h import same_production
 from farkle.utils.parallel import ResourceSafetyError
+from farkle.utils.scientific_identity import producer_config_identity
 from farkle.utils.stage_completion import stage_done_path
 
 
@@ -453,6 +459,39 @@ def test_root_stability_rebuilds_corrupt_bootstrap_range_before_reusing_stage(
 
     rebuilt = np.load(shard, mmap_mode="r", allow_pickle=False)
     assert rebuilt.ndim == 3
+
+
+def test_completed_root_stability_retains_original_range_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg._code_identity = producer_code_identity(cfg)
+    cells = _write_inputs(cfg, tmp_path)
+    artifacts = build_two_root_stability(cfg, cells)
+    original = load_authenticated_sidecar(artifacts.across_k).stage_identity
+    live = replace(original, stage_config=producer_config_identity(cfg, "root_stability"))
+    assert original.stage_config.selected_config != live.stage_config.selected_config
+    assert same_production(original, live)
+
+    # Exercise the partition guard in isolation. The separate cross-revision
+    # fixture verifies stage compatibility under a real documentation commit.
+    monkeypatch.setattr(root_stability_module, "resolved_code_identity_sha256", lambda _: "f" * 64)
+
+    def unexpected_replay(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("replayed completed root stability ranges")
+
+    monkeypatch.setattr(root_stability_module, "_scope_estimates", unexpected_replay)
+    assert build_two_root_stability(cfg, cells) == artifacts
+
+
+def test_root_stability_treats_malformed_completion_as_stale(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    done = tmp_path / "root_stability.done.json"
+    done.write_text("{}", encoding="utf-8")
+    artifacts = root_stability_module._artifact_paths(cfg, [2, 4])
+    assert not root_stability_module._completed_stability_current(
+        cfg, done, [], artifacts, {}, (11, 22)
+    )
 
 
 def test_root_bootstrap_is_invariant_to_range_size_and_worker_count(

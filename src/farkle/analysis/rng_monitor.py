@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence, cast
 
@@ -17,6 +18,7 @@ from farkle.analysis.outcome_distributions import _COUNTS, outcome_support_schem
 from farkle.analysis.outcome_precision import _inputs, _tables, _validate_support
 from farkle.analysis.outcome_publication import (
     _checked,
+    _Design,
     _resolve_design,
     validate_outcome_checkpoints,
 )
@@ -30,10 +32,11 @@ from farkle.analysis.rng_evidence import (
     reusable,
 )
 from farkle.config import AppConfig
-from farkle.utils.artifact_contract import sha256_file, validate_artifact_sidecar
+from farkle.utils.artifact_contract import ArtifactSidecar, sha256_file, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import AuthenticatedContractError, identity_sha256
 from farkle.utils.parallel import process_map, resolve_mp_context, resolve_stage_parallel_policy
+from farkle.utils.release_identity import capture_v3_inputs
 from farkle.utils.stage_completion import (
     CompletionState,
     resolve_stage_state,
@@ -88,14 +91,9 @@ def sentinel_ids(roster: Sequence[int]) -> list[int]:
     )
 
 
-def _monitor_k(cfg: AppConfig, k: int, proof: Path, *, force: bool) -> Path:
-    path = cfg.rng_input_path(f"monitor_units/k{k}.parquet")
-    sources = [*_inputs(cfg, k), proof]
-    if not validate_outcome_checkpoints(cfg.outcome_checkpoint_inventory_path(k)):
-        raise ValueError("production monitor requires complete authenticated outcome checkpoints")
-    if not force and reusable(cfg, path, sources):
-        return path
-    design = _resolve_design(cfg, k)
+def _monitor_task(task: tuple[AppConfig, _Design, Path, ArtifactSidecar]) -> None:
+    cfg, design, path, sidecar = task
+    k = design.k
     budget = int(cfg.resources.stage_batch_bytes["analysis"])
     _validate_support(cfg, design, budget)
     selected = sentinel_ids([s for s, _ in design.roster])
@@ -138,23 +136,15 @@ def _monitor_k(cfg: AppConfig, k: int, proof: Path, *, force: bool) -> Path:
                     }
                 )
     table = pa.Table.from_pylist(rows, schema=monitor_schema())
-    write_parquet_artifact_atomic(
-        table, path, sidecar=metadata(cfg, path, sources, table.schema.names)
-    )
+    write_parquet_artifact_atomic(table, path, sidecar=sidecar)
     write_stage_done(
         stage_done_path(path.parent, path.stem),
-        inputs=sources,
+        inputs=[Path(source) for source in sidecar.source_artifacts],
         outputs=[path],
         cfg=cfg,
         stage="rng_diagnostics",
         sidecar_artifacts=[path],
     )
-    return path
-
-
-def _monitor_task(task: tuple[AppConfig, int, Path, bool]) -> tuple[int, Path]:
-    cfg, k, proof, force = task
-    return k, _monitor_k(cfg, k, proof, force=force)
 
 
 def validate_preflight_inventory(publication: Path) -> bool:
@@ -252,10 +242,8 @@ def run(
         *(proof.parent / entry["path"] for entry in result["sources"]),
         *(path for k in sorted(set(cfg.sim.n_players_list)) for path in _inputs(cfg, k)),
     ]
-    unit_paths = [
-        cfg.rng_input_path(f"monitor_units/k{k}.parquet")
-        for k in sorted(set(cfg.sim.n_players_list))
-    ]
+    ks = sorted(set(cfg.sim.n_players_list))
+    unit_paths = [cfg.rng_input_path(f"monitor_units/k{k}.parquet") for k in ks]
     proof_paths = [proof, *(proof.parent / entry["path"] for entry in result["sources"])]
     outputs = [pe, mc, mr, *unit_paths, *proof_paths]
     exhaustive_outputs: list[Path] = []
@@ -290,22 +278,41 @@ def run(
     # Stale parent completion cannot survive a failed required publication.
     stamp.unlink(missing_ok=True)
     policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis, resources=cfg.resources)
-    jobs = min(len(unit_paths), policy.process_workers)
-    units = [
-        path
-        for _, path in sorted(
-            process_map(
-                _monitor_task,
-                ((cfg, k, proof, force) for k in sorted(set(cfg.sim.n_players_list))),
-                n_jobs=jobs,
-                mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
-                window=jobs,
+    tasks = []
+    for k, path in zip(ks, unit_paths, strict=True):
+        if not validate_outcome_checkpoints(cfg.outcome_checkpoint_inventory_path(k)):
+            raise ValueError(
+                "production monitor requires complete authenticated outcome checkpoints"
             )
-        )
-    ]
-    tables = [pq.read_table(path) for path in units]  # <=16*12 rows per required k
+        sources = [*_inputs(cfg, k), proof]
+        if force or not reusable(cfg, path, sources):
+            # The parent owns the simulation and curate dependencies. Workers
+            # validate support against its design and publish against these exact sources.
+            design = _resolve_design(cfg, k)
+            sidecar = metadata(cfg, path, sources, monitor_schema().names)
+            tasks.append(
+                (
+                    cfg,
+                    design,
+                    path,
+                    replace(sidecar, _captured_v3_inputs=capture_v3_inputs(sidecar)),
+                )
+            )
+    if tasks:
+        jobs = min(len(tasks), policy.process_workers)
+        for _ in process_map(
+            _monitor_task,
+            tasks,
+            n_jobs=jobs,
+            mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+            window=jobs,
+        ):
+            pass
+    tables = [pq.read_table(path) for path in unit_paths]  # <=16*12 rows per required k
     rows = pa.concat_tables(tables)
-    write_parquet_artifact_atomic(rows, mr, sidecar=metadata(cfg, mr, units, rows.schema.names))
+    write_parquet_artifact_atomic(
+        rows, mr, sidecar=metadata(cfg, mr, unit_paths, rows.schema.names)
+    )
     counts = Counter(rows["result"].to_pylist())
     status = (
         "investigate"

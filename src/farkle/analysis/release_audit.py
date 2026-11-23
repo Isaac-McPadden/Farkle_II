@@ -1154,8 +1154,15 @@ def _audit_scientific_leaf(
     meta: AuthenticatedSidecar | ImmutableManifestSidecar,
     digest: str,
 ) -> None:
+    from farkle.utils.release_identity import local_publication_leaf
+
     stage = meta.stage_identity
     designs = stage.immutable_design_identities
+    local_leaf = (
+        local_publication_leaf(cfg, stage.stage_key, meta.method_contract, record.path)
+        if isinstance(meta, AuthenticatedSidecar)
+        else None
+    )
     if (
         isinstance(meta, AuthenticatedSidecar)
         and stage.stage_key == "simulation"
@@ -1185,6 +1192,13 @@ def _audit_scientific_leaf(
             or designs.get("preflight_design_v2") != identity_sha256(plan)
         ):
             raise ValueError(f"incompatible preflight design at {record.path}")
+    elif local_leaf == "exact_roll":
+        return
+    elif local_leaf == "migration_inventory":
+        from farkle.analysis.migration_audit import inventory_payload
+
+        if read_json_file_with_retry(record.path) != inventory_payload(cfg):
+            raise ValueError(f"migration inventory differs at {record.path}")
     else:
         raise ValueError(f"unclassified scientific leaf at {record.path}")
 
@@ -1274,7 +1288,7 @@ def _audit_mixed_context(
         if (
             stage.code.policy != CodeIdentityPolicy.RELEASE_CLEAN.value
             or stage.code.state != "clean"
-            or stage.stage_config != config
+            or stage.stage_config.sha256 != config.sha256
             or stage.stage_cache_key_version != cfg.stage_cache_key_version(stage.stage_key)
             or record.location.path(cfg).resolve() != record.path
             or designs.get("stage_dependencies_v1") != digest

@@ -215,6 +215,50 @@ def test_disabled_exhaustive_keeps_required_stage_and_nonmutating_paths(tmp_path
     assert set(tmp_path.rglob("*")) == before
 
 
+def test_spawned_monitor_uses_the_parent_authenticated_design(tmp_path, monkeypatch):
+    from tests.helpers.artifact_sidecars import make_authenticated_v3_config
+    from tests.helpers.outcome_fixture import publish_outcome_source
+    from tests.unit.analysis.test_outcome_distributions import _row
+
+    from farkle.analysis.outcome_publication import build_outcome_distributions
+    from farkle.config import assign_config_sha
+    from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
+    from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
+    from farkle.utils.scientific_identity import producer_scope
+    from farkle.utils.scientific_invocation import configured_producers, scientific_invocation
+
+    cfg = make_authenticated_v3_config(tmp_path)
+    cfg.sim.row_dir = Path("rows")
+    cfg.analysis.mp_start_method = "spawn"
+    cfg.analysis.n_jobs = cfg.ingest.n_jobs = 1
+    assign_config_sha(cfg)
+    apply_native_thread_limits(
+        resolve_stage_parallel_policy("simulation", cfg.sim, resources=cfg.resources)
+    )
+    process_map = monitor.process_map
+
+    def in_spawned_worker(fn, tasks, *, n_jobs, **kwargs):
+        assert n_jobs == 1  # A single k still exercises the production worker handoff.
+        return process_map(fn, tasks, n_jobs=2, **kwargs)
+
+    monkeypatch.setattr(monitor, "process_map", in_spawned_worker)
+    with scientific_invocation(configured_producers(cfg)):
+        rows = [_row([1000, 900], [10, 20], shuffle=b, width=1) for b in range(3)]
+        publish_outcome_source(cfg, rows, roster=(10, 20), width=1)
+        build_outcome_distributions(cfg, 2)
+        proof = _proof(cfg, monkeypatch)
+        with producer_scope(cfg, "rng_diagnostics"):
+            monitor.run(cfg, exhaustive=False)
+
+    unit = cfg.rng_input_path("monitor_units/k2.parquet")
+    authenticated = validate_authenticated_artifact_unbound(unit, validate_provenance=False)
+    assert {edge.artifact.location.path(cfg) for edge in authenticated.source_artifacts} == {
+        proof,
+        *(p for p in monitor._inputs(cfg, 2) if not p.name.endswith(".done.json")),
+    }
+    assert pq.read_table(unit).num_rows == 24
+
+
 def test_monitor_omission_exact_reuse_and_missing_required_output(tmp_path, monkeypatch):
     cfg = _fixture(tmp_path)
     _proof(cfg, monkeypatch)

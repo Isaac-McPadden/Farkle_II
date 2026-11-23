@@ -11,6 +11,10 @@ from farkle.analysis.roll_enumeration import (
 )
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.release_identity import local_publication_leaf
+from farkle.utils.scientific_invocation import scientific_invocation
+from farkle.utils.scientific_reuse import launch_matches
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -49,7 +53,21 @@ def test_exact_ordered_roll_oracle() -> None:
 
 def test_exact_roll_artifacts_have_diagnostic_sidecars(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    artifacts = build_exact_roll_enumeration(cfg)
+    with scientific_invocation([(cfg, "game_stats")]):
+        artifacts = build_exact_roll_enumeration(cfg)
+        for path in artifacts.all_paths:
+            sidecar = load_authenticated_sidecar(path)
+            assert launch_matches(sidecar.stage_identity)
+            assert (
+                local_publication_leaf(cfg, "game_stats", sidecar.method_contract, path)
+                == "exact_roll"
+            )
+            assert (
+                local_publication_leaf(
+                    cfg, "game_stats", sidecar.method_contract, path.with_name("other.parquet")
+                )
+                is None
+            )
 
     assert pq.read_table(artifacts.summary).num_rows == 6
     for path in artifacts.all_paths:

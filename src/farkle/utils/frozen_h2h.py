@@ -354,7 +354,7 @@ def same_production(old: StageIdentity, new: StageIdentity) -> bool:
     return (
         old.stage_key == new.stage_key
         and old.stage_cache_key_version == new.stage_cache_key_version
-        and old.stage_config == new.stage_config
+        and old.stage_config.sha256 == new.stage_config.sha256
         and old.versions == new.versions
         and old.method_contract_sha256 == new.method_contract_sha256
         and old.upstream_identity_sha256 == new.upstream_identity_sha256

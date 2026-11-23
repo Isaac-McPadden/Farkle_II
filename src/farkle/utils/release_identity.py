@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -622,6 +622,26 @@ def _scientific_source_bindings(
     return bindings, upstream_stages
 
 
+def local_publication_leaf(
+    cfg: AppConfig, stage: str, method: MethodContract, path: Path
+) -> Literal["exact_roll", "migration_inventory"] | None:
+    """Classify canonical publications with no upstream scientific artifacts."""
+    if (
+        stage == "game_stats"
+        and method.procedure == "exact_enumeration"
+        and path.resolve()
+        in (cfg.exact_roll_distribution_path().resolve(), cfg.exact_roll_summary_path().resolve())
+    ):
+        return "exact_roll"
+    if (
+        stage == "reporting"
+        and method.procedure == "inventory_ignored_on_disk_artifacts"
+        and path.resolve() == cfg.migration_report_path().resolve()
+    ):
+        return "migration_inventory"
+    return None
+
+
 def _bind_publication_science(
     cfg: AppConfig,
     stage: str,
@@ -633,6 +653,8 @@ def _bind_publication_science(
     manifests: Sequence[ManifestRootIdentity],
     source_paths: Mapping[str, Path],
     manifest_paths: Mapping[str, tuple[Path, Path]],
+    *,
+    path: Path | None = None,
 ) -> None:
     from farkle.utils.scientific_reuse import publication_closure
 
@@ -647,7 +669,8 @@ def _bind_publication_science(
             components,
             upstream,
             classified_leaf=(stage == "simulation" and "ordered_builtin_roster_v1" in designs)
-            or (stage == "rng_diagnostics" and "preflight_design_v2" in designs),
+            or (stage == "rng_diagnostics" and "preflight_design_v2" in designs)
+            or (path is not None and local_publication_leaf(cfg, stage, method, path) is not None),
         )
     )
     designs["stage_dependencies_v1"] = components
@@ -856,6 +879,7 @@ def publish_staged_v3_from_metadata(
         manifests,
         source_paths,
         manifest_paths,
+        path=final_path,
     )
     upstream = tuple(item.sha256 for item in sources) + tuple(item.sha256 for item in manifests)
     stage_identity = make_stage_identity(

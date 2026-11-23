@@ -206,6 +206,10 @@ def test_run_generates_all_outputs(tmp_path: Path):
     for path in (rare_events_path, shard_path, stats_path):
         validate_artifact_sidecar(path)
 
+    retained = (stamp.read_bytes(), stamp.stat().st_mtime_ns)
+    game_stats.run(cfg)
+    assert (stamp.read_bytes(), stamp.stat().st_mtime_ns) == retained
+
     original = rare_events_path.read_bytes()
     for path in (rare_events_path, shard_path, stats_path):
         sidecar_path(path).unlink()

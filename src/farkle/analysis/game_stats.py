@@ -809,30 +809,27 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             sidecar_artifacts=[rare_events_details_output],
         )
 
+    outputs = [
+        game_length_output,
+        margin_output,
+        combined_game_length_output,
+        combined_margin_output,
+        *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
+        *rare_event_artifacts,
+        *roll_artifacts.all_paths,
+    ]
     memory_guard.check_before_schedule(force=True)
+    if not force and stage_is_up_to_date(
+        stamp_path, inputs=input_paths, outputs=outputs, cfg=cfg, stage="game_stats"
+    ):
+        return
     write_stage_done(
         stamp_path,
         inputs=input_paths,
-        outputs=[
-            game_length_output,
-            margin_output,
-            combined_game_length_output,
-            combined_margin_output,
-            *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
-            *rare_event_artifacts,
-            *roll_artifacts.all_paths,
-        ],
+        outputs=outputs,
         cfg=cfg,
         stage="game_stats",
-        sidecar_artifacts=[
-            game_length_output,
-            margin_output,
-            combined_game_length_output,
-            combined_margin_output,
-            *rare_event_artifacts,
-            *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
-            *roll_artifacts.all_paths,
-        ],
+        sidecar_artifacts=outputs,
     )
 
 

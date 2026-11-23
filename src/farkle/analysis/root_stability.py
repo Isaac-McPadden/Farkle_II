@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Hashable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil, sqrt
 from pathlib import Path
 from typing import Final, cast
@@ -42,6 +42,12 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import (
+    AuthenticatedContractError,
+    CodeIdentity,
+    identity_sha256,
+    load_authenticated_completion,
+)
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
@@ -769,7 +775,12 @@ def _root_bootstrap_units(
 
 
 def _root_bootstrap_identity(
-    cfg: AppConfig, cells: dict[tuple[int, int], RootBatchCell], roots: tuple[int, int], family: str
+    cfg: AppConfig,
+    cells: dict[tuple[int, int], RootBatchCell],
+    roots: tuple[int, int],
+    family: str,
+    *,
+    completion_producer: CodeIdentity | None = None,
 ) -> PartitionedStageIdentity:
     inputs = tuple(
         sorted(
@@ -793,7 +804,11 @@ def _root_bootstrap_identity(
         statistical_config_sha256=cfg.partition_dependency_sha(
             "root_stability", f"root_stability_{family}"
         ),
-        code_identity_sha256=resolved_code_identity_sha256(cfg),
+        code_identity_sha256=(
+            identity_sha256(asdict(completion_producer))
+            if completion_producer is not None
+            else resolved_code_identity_sha256(cfg)
+        ),
         schema_version=1,
         method_version=ROOT_STABILITY_METHOD_VERSION,
     )
@@ -803,6 +818,8 @@ def _bootstrap_ranges_validate(
     cfg: AppConfig,
     cells: dict[tuple[int, int], RootBatchCell],
     roots: tuple[int, int],
+    *,
+    completion_producer: CodeIdentity | None,
 ) -> bool:
     """A root-stage completion is valid only when both range families validate."""
 
@@ -812,7 +829,9 @@ def _bootstrap_ranges_validate(
         validate_final_manifest(
             directory / "partition_manifest.jsonl",
             root=directory,
-            identity=_root_bootstrap_identity(cfg, cells, roots, family),
+            identity=_root_bootstrap_identity(
+                cfg, cells, roots, family, completion_producer=completion_producer
+            ),
             unit_source=unit_source,
         )
         is not None
@@ -1718,6 +1737,38 @@ def _artifact_paths(cfg: AppConfig, required_k: list[int]) -> RootStabilityArtif
     )
 
 
+def _completed_stability_current(
+    cfg: AppConfig,
+    done: Path,
+    sources: list[Path],
+    artifacts: RootStabilityArtifacts,
+    matrix_cells: dict[tuple[int, int], RootBatchCell],
+    root_pair: tuple[int, int],
+) -> bool:
+    try:
+        completion = load_authenticated_completion(done)
+        if not stage_is_up_to_date(
+            done,
+            inputs=sources,
+            outputs=list(artifacts.all_paths),
+            cfg=cfg,
+            stage="root_stability",
+            freshness_key=_root_stability_freshness_key(cfg),
+            sidecar_artifacts=list(artifacts.all_paths),
+        ):
+            return False
+        # The original producer only applies to range verification for an
+        # authenticated complete stage. Recovery writers still use the current pin.
+        return (
+            _bootstrap_ranges_validate(
+                cfg, matrix_cells, root_pair, completion_producer=completion.completion_producer_v1
+            )
+            and load_authenticated_completion(done) == completion
+        )
+    except (AuthenticatedContractError, OSError, KeyError, TypeError, ValueError):
+        return False
+
+
 def build_two_root_stability(
     cfg: AppConfig,
     cells: list[RootBatchCell],
@@ -1763,16 +1814,9 @@ def build_two_root_stability(
     sources = [path for k in required_k for path in sources_by_k[k]]
     artifacts = _artifact_paths(cfg, required_k)
     done = stage_done_path(cfg.stage_dir("root_stability"), "root_stability")
-    stage_current = not force and stage_is_up_to_date(
-        done,
-        inputs=sources,
-        outputs=list(artifacts.all_paths),
-        cfg=cfg,
-        stage="root_stability",
-        freshness_key=_root_stability_freshness_key(cfg),
-        sidecar_artifacts=list(artifacts.all_paths),
-    )
-    if stage_current and _bootstrap_ranges_validate(cfg, matrix_cells, root_pair):
+    if not force and _completed_stability_current(
+        cfg, done, sources, artifacts, matrix_cells, root_pair
+    ):
         return artifacts
 
     by_k_tables, across_by_scope = _scope_estimates(cfg, matrix_cells, root_pair, required_k)
