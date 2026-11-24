@@ -18,10 +18,10 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from queue import Empty, Full
-from typing import Any
+from typing import Any, cast
 
 import psutil
 
@@ -29,6 +29,7 @@ from farkle.utils.parallel import (
     aggregate_memory_sample,
     process_tree_native_thread_count,
     process_tree_rss_bytes,
+    resource_telemetry_v2,
 )
 
 HEARTBEAT_INTERVAL_SECONDS = 45.0
@@ -93,6 +94,17 @@ def _heartbeat_progress_snapshot(
     """
 
     snapshot = dict(progress)
+    recovery = progress.get("recovery")
+    if isinstance(recovery, Mapping):
+        recovery = dict(recovery)
+        started_recovery = recovery.pop("started_monotonic", now)
+        ended_recovery = recovery.pop("ended_monotonic", now)
+        elapsed = max(0.0, float(ended_recovery) - float(started_recovery))
+        recovery["elapsed_seconds"] = elapsed
+        if elapsed:
+            recovery["bytes_per_second"] = int(recovery.get("bytes_processed", 0)) / elapsed
+            recovery["rows_per_second"] = int(recovery.get("rows_replayed", 0)) / elapsed
+        snapshot["recovery"] = recovery
     started = progress.get("observation_started_monotonic")
     if isinstance(started, (int, float)) and not isinstance(started, bool):
         elapsed_seconds = max(0.0, now - started)
@@ -115,6 +127,8 @@ def _heartbeat_progress_snapshot(
         observed = max(int(collected), int(starting) + int(reported))
         snapshot[f"observed_{unit}"] = observed
         if unit == "games":
+            if "reused_attempted_games" in progress:
+                snapshot["observed_newly_simulated_games"] = observed - int(starting)
             planned = progress.get("planned_games")
             if isinstance(planned, (int, float)) and planned > 0:
                 snapshot["observed_percent_complete"] = 100.0 * observed / planned
@@ -159,9 +173,31 @@ def _heartbeat_message(
         context_parts.append(f"scope={execution_scope}")
     parts = [f"Heartbeat: stage={stage}", f"phase={phase}", f"state={state}", *context_parts]
 
-    planned_games = progress.get("planned_games")
-    parent_games = progress.get("completed_games")
-    observed_games = progress.get("observed_games", parent_games)
+    recovering = phase.startswith("simulation_recovery_")
+    recovery = progress.get("recovery")
+    if recovering and isinstance(recovery, Mapping):
+        parts.append(f"operation={recovery['operation']}")
+        for counter, total in (
+            ("files_checked", "total_files"),
+            ("coordinates_checked", "total_coordinates"),
+            ("aggregate_shuffles_restored", "total_coordinates"),
+            ("rows_replayed", "total_rows"),
+        ):
+            value = recovery.get(counter, 0)
+            if value or total in recovery:
+                denominator = f"/{recovery[total]}" if total in recovery else ""
+                parts.append(f"{counter}={value}{denominator}")
+        if recovery.get("bytes_processed"):
+            parts.append(f"bytes_processed={recovery['bytes_processed']}")
+        if recovery.get("bytes_per_second"):
+            parts.append(
+                f"read_rate={float(recovery['bytes_per_second']) / (1024 * 1024):.1f} MiB/s"
+            )
+        if recovery.get("rows_per_second"):
+            parts.append(f"replay_rate={float(recovery['rows_per_second']):.1f} rows/s")
+    planned_games = None if recovering else progress.get("planned_games")
+    parent_games = None if recovering else progress.get("completed_games")
+    observed_games = None if recovering else progress.get("observed_games", parent_games)
     completed_games = (
         int(observed_games)
         if isinstance(observed_games, (int, float)) and not isinstance(observed_games, bool)
@@ -187,10 +223,14 @@ def _heartbeat_message(
         parts.append(f"games={completed_games} (total indeterminate)")
 
     for completed_key, total_key, label in (
-        ("completed_shuffles", "planned_shuffles", "shuffles"),
-        ("completed_chunks", "planned_chunks", "chunks"),
-        ("completed_chunks", "scheduled_chunks", "chunks"),
-        ("durable_units", "total_units", "durable_units"),
+        ()
+        if recovering
+        else (
+            ("completed_shuffles", "planned_shuffles", "shuffles"),
+            ("completed_chunks", "planned_chunks", "chunks"),
+            ("completed_chunks", "scheduled_chunks", "chunks"),
+            ("durable_units", "total_units", "durable_units"),
+        )
     ):
         observed_key = completed_key.replace("completed_", "observed_")
         completed_value = progress.get(observed_key, progress.get(completed_key))
@@ -216,13 +256,23 @@ def _heartbeat_message(
     recent = float(recent_raw) if isinstance(recent_raw, (int, float)) else 0.0
     cumulative = float(cumulative_raw) if isinstance(cumulative_raw, (int, float)) else 0.0
     observed_rate = progress.get("observed_games_per_second")
-    if worker_ahead and isinstance(observed_rate, (int, float)) and observed_rate > 0:
+    if (
+        not recovering
+        and worker_ahead
+        and isinstance(observed_rate, (int, float))
+        and observed_rate > 0
+    ):
         parts.append(f"rate={observed_rate:.1f}/s avg")
-    elif recent > 0 or cumulative > 0:
+    elif not recovering and (recent > 0 or cumulative > 0):
         parts.append(f"rate={max(0.0, recent):.1f}/s recent,{max(0.0, cumulative):.1f}/s avg")
     eta = progress.get("observed_eta_seconds") if worker_ahead else progress.get("eta_seconds")
     eta_text = _duration_text(eta) if determinate else "?"
-    parts.append(f"eta={eta_text if eta_text != '?' else 'indeterminate'}")
+    if not recovering:
+        parts.append(f"eta={eta_text if eta_text != '?' else 'indeterminate'}")
+        if "reused_attempted_games" in progress:
+            parts.append(f"reused_attempted_games={progress['reused_attempted_games']}")
+        if "newly_simulated_games" in progress:
+            parts.append(f"newly_simulated_games={progress['newly_simulated_games']}")
 
     requested = progress.get("requested_workers", "?")
     resolved = progress.get("resolved_workers", "?")
@@ -234,7 +284,7 @@ def _heartbeat_message(
     checkpoint_games = progress.get("latest_checkpoint_games", 0)
     rss = resources.get("process_tree_rss_bytes", 0)
     rss_mib = float(rss) / (1024 * 1024) if isinstance(rss, (int, float)) else 0.0
-    if any(
+    if not recovering and any(
         value != default
         for value, default in ((requested, "?"), (resolved, "?"), (created, 0), (live, 0))
     ):
@@ -242,11 +292,16 @@ def _heartbeat_message(
         parts.append(
             f"mode={progress.get('executor_mode', 'unknown')} pending={pending} in_flight={in_flight}"
         )
-    if checkpoint != "none":
+    if not recovering and checkpoint != "none":
         parts.append(f"checkpoint={checkpoint}@{checkpoint_games}")
+    peak_commit = resources.get("windows_job_committed_memory_peak_bytes")
+    if isinstance(peak_commit, (float, int)):
+        parts.append(f"windows_job_peak_committed_memory={peak_commit / (1024 * 1024):.1f} MiB")
+    if resources.get("scheduler_backpressure_active"):
+        parts.append("scheduler_backpressure=active")
     parts.extend(
         (
-            f"rss={rss_mib:.1f}MiB",
+            f"process_tree_resident_memory={rss_mib:.1f} MiB",
             f"phase_elapsed={_duration_text(scope_elapsed_seconds)}",
             f"run_elapsed={_duration_text(run_elapsed_seconds)}",
         )
@@ -269,27 +324,31 @@ def sample_process_resource_state() -> dict[str, object]:
         aggregate_peak = aggregate.peak_bytes
         aggregate_limit = aggregate.hard_limit_bytes
         aggregate_source = aggregate.source
-    return {
-        "process_tree_rss_bytes": int(rss),
-        "peak_process_tree_rss_bytes": int(rss),
-        "native_threads": int(native_threads),
-        "peak_native_threads": int(native_threads),
-        "aggregate_memory_bytes": int(aggregate_current or 0),
-        "aggregate_memory_current_bytes": aggregate_current,
-        "peak_aggregate_memory_bytes": int(aggregate_peak or aggregate_current or 0),
-        "windows_job_committed_memory_peak_bytes": (
-            int(aggregate_peak or 0) if aggregate_source == "windows_job" else None
-        ),
-        "aggregate_memory_hard_limit_bytes": int(aggregate_limit or 0),
-        "aggregate_memory_source": aggregate_source,
-        "host_available_memory_bytes": int(psutil.virtual_memory().available),
-        "warning_crossings": 0,
-        "rss_warning_active": False,
-        "rss_warning_threshold_bytes": None,
-        "backpressure_seconds": 0.0,
-        "near_hard_boundary": False,
-        "monitoring_error": None,
-    }
+    return resource_telemetry_v2(
+        {
+            "process_tree_rss_bytes": int(rss),
+            "peak_process_tree_rss_bytes": int(rss),
+            "native_threads": int(native_threads),
+            "peak_native_threads": int(native_threads),
+            "aggregate_memory_bytes": int(aggregate_current or 0),
+            "aggregate_memory_current_bytes": aggregate_current,
+            "peak_aggregate_memory_bytes": int(aggregate_peak or aggregate_current or 0),
+            "windows_job_committed_memory_peak_bytes": (
+                int(aggregate_peak or 0)
+                if aggregate_source in {"windows_job", "windows_job_commit_peak"}
+                else None
+            ),
+            "aggregate_memory_hard_limit_bytes": int(aggregate_limit or 0),
+            "aggregate_memory_source": aggregate_source,
+            "host_available_memory_bytes": int(psutil.virtual_memory().available),
+            "warning_crossings": 0,
+            "rss_warning_active": False,
+            "rss_warning_threshold_bytes": None,
+            "backpressure_seconds": 0.0,
+            "near_hard_boundary": False,
+            "monitoring_error": None,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,11 +366,15 @@ class ScopeTimingSummary:
     resource_start: Mapping[str, object]
     resource_end: Mapping[str, object]
     telemetry_error: str | None = None
+    recovery_phases: Mapping[str, object] | None = None
 
     def as_metadata(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
 
-        return asdict(self)
+        payload = asdict(self)
+        if self.recovery_phases is None:
+            payload.pop("recovery_phases")
+        return payload
 
 
 @dataclass(slots=True)
@@ -460,6 +523,7 @@ class SupervisorScope:
         self.scope = scope
         self._registered = registered
         self._summary: ScopeTimingSummary | None = None
+        self._recovery: dict[str, RecoveryProgress] = {}
 
     def update(
         self,
@@ -487,7 +551,71 @@ class SupervisorScope:
                 status=status,
                 registered=self._registered,
             )
+            if self._recovery:
+                self._summary = replace(self._summary, recovery_phases=self.recovery_summary())
+                self._recovery.clear()
         return self._summary
+
+    def reset_recovery(self) -> None:
+        self._recovery.clear()
+
+    def recovery_summary(self) -> dict[str, dict[str, object]]:
+        return {phase: progress.snapshot() for phase, progress in self._recovery.items()}
+
+
+class RecoveryProgress:
+    """Coalesce recovery counters into an existing supervisor scope."""
+
+    def __init__(
+        self, scope: SupervisorScope, phase: str, operation: str, **totals: object
+    ) -> None:
+        self.scope = scope
+        self.phase = f"simulation_recovery_{phase}"
+        self.started = self.last_update = float(scope._recorder._clock())
+        self.counts: dict[str, Any] = {
+            "version": 1,
+            "operation": operation,
+            "started_monotonic": self.started,
+            "files_checked": 0,
+            "coordinates_checked": 0,
+            "rows_replayed": 0,
+            "bytes_processed": 0,
+            **totals,
+        }
+        scope._recovery[self.phase] = self
+        self.publish()
+
+    def advance(
+        self, *, files: int = 0, coordinates: int = 0, rows: int = 0, byte_count: int = 0
+    ) -> None:
+        self.counts["files_checked"] += files
+        self.counts["coordinates_checked"] += coordinates
+        self.counts["rows_replayed"] += rows
+        self.counts["bytes_processed"] += byte_count
+        now = float(self.scope._recorder._clock())
+        if now - self.last_update >= 1.0:
+            self.publish()
+            self.last_update = now
+
+    def publish(self, *, state: str = "working", **progress: object) -> None:
+        self.scope.update(
+            phase=self.phase, state=state, progress={**progress, "recovery": dict(self.counts)}
+        )
+
+    def snapshot(self) -> dict[str, object]:
+        result = _heartbeat_progress_snapshot(
+            {"recovery": self.counts}, elapsed_seconds=0, now=float(self.scope._recorder._clock())
+        )
+        return cast(dict[str, object], result["recovery"])
+
+    def finish(self, *, state: str = "working", **progress: object) -> None:
+        self.counts["ended_monotonic"] = float(self.scope._recorder._clock())
+        self.publish(state=state, **progress)
+
+
+def observe_recovery(phase: str, operation: str, **totals: object) -> RecoveryProgress | None:
+    scope = current_supervisor_scope()
+    return RecoveryProgress(scope, phase, operation, **totals) if scope is not None else None
 
 
 class SupervisorHeartbeatRecorder:

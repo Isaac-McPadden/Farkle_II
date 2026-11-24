@@ -71,10 +71,12 @@ from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.telemetry import (
+    RecoveryProgress,
     WorkerProgressEndpoint,
     current_supervisor_recorder,
     current_supervisor_scope,
     install_worker_progress_endpoint,
+    observe_recovery,
     report_worker_progress,
 )
 from farkle.utils.writer import atomic_path
@@ -900,6 +902,7 @@ def _restore_complete_aggregate(
     if stored_meta.get("completed_process_block_indices") != list(range(1, chunks + 1)):
         return False
 
+    discovery = observe_recovery("discovery", "Reconcile complete aggregate coverage")
     try:
         rows = list(iter_manifest(rows_path)) if rows_path is not None else None
         metrics = list(iter_manifest(metrics_path)) if metrics_path is not None else None
@@ -915,12 +918,25 @@ def _restore_complete_aggregate(
         return False
     if expected is None or receipt != expected:
         return False
+    if discovery is not None:
+        discovery.advance(coordinates=cfg.num_shuffles)
+        discovery.finish()
     # Byte authentication replaces row decoding. A changed shard cannot be
     # consumed by the replay fallback after its sealed bytes fail verification.
+    recovery = observe_recovery(
+        "authentication",
+        "Authenticate shards covered by the complete aggregate",
+        total_files=len(rows or ()) + len(metrics or ()),
+    )
     for path, records in ((rows_path, rows), (metrics_path, metrics)):
         if path is not None and records is not None:
             for record in records:
                 _authenticate_aggregate_shard(path, record)
+                if recovery is not None:
+                    length = record.get("byte_length")
+                    recovery.advance(files=1, byte_count=length if type(length) is int else 0)
+    if recovery is not None:
+        recovery.finish()
     return True
 
 
@@ -1031,6 +1047,7 @@ def _restore_partial_aggregate(
     receipt = stored.get("partial_aggregate")
     if not isinstance(receipt, dict):
         return None
+    discovery = observe_recovery("discovery", "Reconcile partial aggregate coverage")
     try:
         covered = set(receipt["shuffle_indices"])
         wins = _coerce_counter(payload["win_totals"], payload["outcome_counts"])
@@ -1055,9 +1072,15 @@ def _restore_partial_aggregate(
         return None
 
     current: dict[str, list[dict[str, Any]]] = {}
+    if discovery is not None:
+        discovery.advance(coordinates=len(covered))
+        discovery.finish()
     remainder: dict[str, list[dict[str, Any]]] = {}
     repairs: list[tuple[Path, list[dict[str, Any]]]] = []
     compatible = True
+    recovery = observe_recovery(
+        "authentication", "Authenticate shards retained by the partial aggregate"
+    )
     for name, path, key in (
         ("rows", rows_path, "shuffle_index"),
         ("metrics", metrics_path, "process_block_index"),
@@ -1087,10 +1110,16 @@ def _restore_partial_aggregate(
         for record in records:
             if record[key] in saved_units or (rows_path is not None and name == "metrics"):
                 _authenticate_aggregate_shard(path, record)
+                if recovery is not None:
+                    length = record.get("byte_length")
+                    recovery.advance(files=1, byte_count=length if type(length) is int else 0)
         if additions:
             repairs.append((path, additions))
         current[name] = records
         remainder[name] = [item for item in records if item[key] not in saved_units]
+
+    if recovery is not None:
+        recovery.finish()
 
     for path, additions in repairs:
         from farkle.utils.manifest import publication_lock
@@ -1141,6 +1170,16 @@ def _restore_partial_aggregate(
     _reduce_metric_chunk_payloads({0: (extra_sums, extra_squares)}, sums, squares)
     if not _valid_exact_aggregate(cfg, len(durable), wins, sums, squares):
         return None
+    if (
+        restoration := observe_recovery(
+            "restoration",
+            "Restore checkpoint aggregate and its durable complement",
+            checkpoint_shuffles_restored=len(covered),
+            aggregate_shuffles_restored=len(durable),
+            total_coordinates=cfg.num_shuffles,
+        )
+    ) is not None:
+        restoration.finish(state="restored")
     LOGGER.info(
         "Restored partial authenticated simulation aggregate",
         extra={
@@ -1321,7 +1360,12 @@ def _resolve_manifest_record_path(manifest_path: Path, record: Mapping[str, Any]
 
 @contextmanager
 def _open_aggregate_shard(
-    path: Path, record: Mapping[str, Any], *, authenticate: bool, temp_dir: Path | None
+    path: Path,
+    record: Mapping[str, Any],
+    *,
+    authenticate: bool,
+    temp_dir: Path | None,
+    recovery: RecoveryProgress | None = None,
 ) -> Iterator[pq.ParquetFile]:
     if not authenticate:
         yield pq.ParquetFile(path)
@@ -1344,6 +1388,8 @@ def _open_aggregate_shard(
                     )
                 digest.update(chunk)
                 verified.write(chunk)
+                if recovery is not None:
+                    recovery.advance(byte_count=len(chunk))
         record_authentication_hash(path, size)
         if (
             size != record["byte_length"]
@@ -1376,13 +1422,19 @@ def _load_row_manifest_aggregates(
     """
     win_totals = OutcomeCounter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
+    totals = {"total_files": len(records)} if isinstance(records, Sequence) else {}
+    recovery = observe_recovery("reconstruction", f"Replay row shards in {manifest_path}", **totals)
 
     for record in iter_manifest(manifest_path) if records is None else records:
         row_path = _resolve_manifest_record_path(manifest_path, record)
         if not row_path.exists():
             raise FileNotFoundError(f"Missing row shard listed in manifest: {row_path}")
         with _open_aggregate_shard(
-            row_path, record, authenticate=authenticate, temp_dir=temp_dir
+            row_path,
+            record,
+            authenticate=authenticate,
+            temp_dir=temp_dir,
+            recovery=recovery,
         ) as parquet_file:
             for batch in parquet_file.iter_batches():
                 for row in batch.to_pylist():
@@ -1405,7 +1457,13 @@ def _load_row_manifest_aggregates(
                     for label, value in zip(METRIC_LABELS, metrics, strict=True):
                         metric_sums[label][strategy] += float(value)
                         metric_sq_sums[label][strategy] += float(value) * float(value)
+                if recovery is not None:
+                    recovery.advance(rows=batch.num_rows)
+        if recovery is not None:
+            recovery.advance(files=1, coordinates=1)
 
+    if recovery is not None:
+        recovery.finish()
     return win_totals, metric_sums, metric_sq_sums
 
 
@@ -1432,13 +1490,21 @@ def _load_metric_chunk_aggregates(
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
     wins_available = True
     outcomes_available = True
+    totals = {"total_files": len(records)} if isinstance(records, Sequence) else {}
+    recovery = observe_recovery(
+        "reconstruction", f"Replay metric blocks in {manifest_path}", **totals
+    )
 
     for record in iter_manifest(manifest_path) if records is None else records:
         chunk_path = _resolve_manifest_record_path(manifest_path, record)
         if not chunk_path.exists():
             raise FileNotFoundError(f"Missing metric chunk listed in manifest: {chunk_path}")
         with _open_aggregate_shard(
-            chunk_path, record, authenticate=authenticate, temp_dir=temp_dir
+            chunk_path,
+            record,
+            authenticate=authenticate,
+            temp_dir=temp_dir,
+            recovery=recovery,
         ) as parquet_file:
             column_names = set(parquet_file.schema_arrow.names)
             file_has_wins = "wins" in column_names
@@ -1477,6 +1543,13 @@ def _load_metric_chunk_aggregates(
                             wins = int(row["wins"])
                             win_totals.attempted_exposures[strategy] += wins
                             win_totals.completed_exposures[strategy] += wins
+                if recovery is not None:
+                    recovery.advance(rows=batch.num_rows)
+        if recovery is not None:
+            recovery.advance(files=1)
+
+    if recovery is not None:
+        recovery.finish()
 
     if wins_available:
         win_totals.games_completed = int(sum(win_totals.values()))
@@ -1875,6 +1948,11 @@ def run_tournament(
                 # channel reports counts only for its own tournament execution.
                 "worker_completed_games": 0,
                 "worker_completed_shuffles": 0,
+                "completed_games": 0,
+                "completed_shuffles": 0,
+                "recovery": None,
+                "reused_attempted_games": 0,
+                "newly_simulated_games": 0,
                 **policy_metadata,
             },
         )
@@ -1985,6 +2063,29 @@ def run_tournament(
             metrics_path=metrics_manifest_path,
         )
     ):
+        if (
+            restoration := observe_recovery(
+                "restoration",
+                "Restore complete authenticated aggregate",
+                aggregate_shuffles_restored=cfg.num_shuffles,
+                total_coordinates=cfg.num_shuffles,
+            )
+        ) is not None:
+            restoration.finish(state="restored")
+        if recorder is not None and scope is not None:
+            recorder.record_completion_summary(
+                f"{scope.scope}:simulation:k={cfg.n_players}",
+                stage="simulation",
+                summary={
+                    "root_seed": global_seed,
+                    "player_count": cfg.n_players,
+                    "reused_attempted_games": cfg.num_shuffles * cfg.games_per_shuffle,
+                    "reused_shuffles": cfg.num_shuffles,
+                    "newly_simulated_games": 0,
+                    "aggregate_rows_replayed": 0,
+                    "recovery_phases": scope.recovery_summary(),
+                },
+            )
         LOGGER.info(
             "Restored complete authenticated simulation aggregate",
             extra={
@@ -2339,6 +2440,10 @@ def run_tournament(
             "planned_games": total_games,
             "starting_games": starting_games,
             "starting_shuffles": starting_shuffles,
+            "reused_attempted_games": starting_games,
+            "reused_shuffles": starting_shuffles,
+            "newly_simulated_games": max(0, completed_games_now - starting_games),
+            "recovery": None,
             "observation_started_monotonic": telemetry_started,
             "completed_games": completed_games_now,
             "percent_complete": (
@@ -2395,7 +2500,7 @@ def run_tournament(
             else "simulation"
         )
         state = {
-            "schedule_check": "memory_backpressure",
+            "schedule_check": "checking_memory_admission",
             "waiting_on_futures": "waiting_on_futures",
             "cancelling": "cancelling",
             "cancelled": "interrupted_cleanup",
@@ -2748,6 +2853,6 @@ def run_tournament(
         recorder.record_completion_summary(
             f"{scope.scope}:simulation:k={cfg.n_players}",
             stage="simulation",
-            summary=progress_payload(),
+            summary={**progress_payload(), "recovery_phases": scope.recovery_summary()},
         )
     return None

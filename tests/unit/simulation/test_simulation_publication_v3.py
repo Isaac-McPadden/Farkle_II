@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import pickle
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,7 @@ from farkle.utils.authenticated_contract import (
 from farkle.utils.random import RNG_SCHEME_VERSION
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.streaming_loop import run_streaming_shard
+from farkle.utils.telemetry import SupervisorHeartbeatRecorder, use_supervisor_recorder
 
 
 def _plan(cfg: AppConfig, count: int) -> TournamentWorkloadPlan:
@@ -453,6 +456,7 @@ def test_complete_aggregate_restores_without_replaying_or_scheduling(
     aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
     monkeypatch: pytest.MonkeyPatch,
     storage: str,
+    recovery_recorder,
 ) -> None:
     cfg, strategies = aggregate_run
     if storage == "chunks_only":
@@ -479,7 +483,16 @@ def test_complete_aggregate_restores_without_replaying_or_scheduling(
     monkeypatch.setattr(tournament, "_load_row_manifest_aggregates", unexpected)
     monkeypatch.setattr(tournament, "_load_metric_chunk_aggregates", unexpected)
     monkeypatch.setattr(tournament.parallel, "process_map", unexpected)
-    assert runner.run_single_n(cfg, 2, strategies=strategies) == games
+    with recovery_recorder() as recorder:
+        assert runner.run_single_n(cfg, 2, strategies=strategies) == games
+    summary = recorder.summary()["completed_progress"]["simulation:simulation:k=2"]
+    assert summary["newly_simulated_games"] == 0
+    assert summary["reused_attempted_games"] == games
+    assert summary["recovery_phases"]["simulation_recovery_authentication"]["files_checked"] > 0
+    assert (
+        summary["recovery_phases"]["simulation_recovery_restoration"]["aggregate_shuffles_restored"]
+        == 2
+    )
     assert {path: path.read_bytes() for path in original} == original
     assert runner.simulation_is_complete(cfg, 2)
 
@@ -622,7 +635,9 @@ def test_periodic_checkpoint_contains_its_independently_reduced_coverage(
 
 
 def test_interrupted_final_checkpoint_publication_requires_replay(
-    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_recorder,
 ) -> None:
     cfg, strategies = aggregate_run
     tournament = runner.tournament_mod
@@ -649,7 +664,12 @@ def test_interrupted_final_checkpoint_publication_requires_replay(
 
     monkeypatch.setattr(tournament, "_restore_complete_aggregate", unexpected)
     monkeypatch.setattr(tournament, "_play_one_shuffle", unexpected)
-    runner.run_single_n(cfg, 2, strategies=strategies)
+    with recovery_recorder() as recorder:
+        runner.run_single_n(cfg, 2, strategies=strategies)
+    summary = recorder.summary()["completed_progress"]["simulation:simulation:k=2"]
+    assert summary["reused_attempted_games"] == 2
+    assert summary["newly_simulated_games"] == 0
+    assert summary["recovery_phases"]["simulation_recovery_reconstruction"]["rows_replayed"] == 2
     assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
 
 
@@ -662,6 +682,7 @@ def test_partial_aggregate_reduces_only_the_durable_remainder(
     monkeypatch: pytest.MonkeyPatch,
     storage: str,
     incompatible: bool,
+    recovery_recorder,
 ) -> None:
     cfg, strategies = aggregate_run
     if storage == "rows":
@@ -730,13 +751,44 @@ def test_partial_aggregate_reduces_only_the_durable_remainder(
     monkeypatch.setattr(tournament, reducer_name, observe)
     monkeypatch.setattr(tournament, "_play_one_shuffle", no_game)
     cfg.sim.n_jobs = 2
-    runner.run_single_n(cfg, 2, strategies=strategies)
+    with recovery_recorder() as recorder:
+        runner.run_single_n(cfg, 2, strategies=strategies)
+    summary = recorder.summary()["completed_progress"]["simulation:simulation:k=2"]
+    assert summary["reused_attempted_games"] == 4
+    assert summary["newly_simulated_games"] == 0
+    replay_counts = summary["recovery_phases"]["simulation_recovery_reconstruction"]
+    assert replay_counts["files_checked"] == len(observed)
+    assert replay_counts["rows_replayed"] >= len(observed)
     assert observed == ([0, 1, 2, 3] if incompatible else [3, 4] if storage == "chunks" else [2, 3])
     restored = pickle.loads(checkpoint.read_bytes())
     for key in ("win_totals", "outcome_counts", "metric_sums", "metric_square_sums"):
         assert restored[key] == original[key]
     assert {path: path.read_bytes() for path in summaries} == summaries
     assert ("complete_aggregate" in restored["meta"]) is (not incompatible)
+
+
+@pytest.fixture
+def recovery_recorder(monkeypatch: pytest.MonkeyPatch):
+    from farkle.utils import scientific_runtime
+
+    monkeypatch.setattr(
+        scientific_runtime,
+        "numerical_environment",
+        lambda names, **_: ("1" * 64, dict.fromkeys(names, "2" * 64)),
+    )
+
+    @contextmanager
+    def record():
+        recorder = SupervisorHeartbeatRecorder(
+            logging.getLogger("tests.recovery"), run="test", interval_seconds=0
+        )
+        scope = recorder.begin_scope("simulation", run="test", stage="simulation", phase="action")
+        with use_supervisor_recorder(recorder, scope):
+            yield recorder
+        scope.finish(status="success")
+        recorder.close()
+
+    return record
 
 
 @pytest.mark.parametrize("lost_shard", [False, True])
@@ -782,7 +834,9 @@ def test_checkpoint_ahead_of_append_manifest(
 
 
 def test_partial_row_block_rebuilds_its_metric_shard(
-    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]], monkeypatch: pytest.MonkeyPatch
+    aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_recorder,
 ) -> None:
     cfg, strategies = aggregate_run
     cfg.batching.min_shuffles_per_batch = 2
@@ -805,8 +859,12 @@ def test_partial_row_block_rebuilds_its_metric_shard(
         return play(task, **kwargs)
 
     monkeypatch.setattr(runner.tournament_mod, "_play_one_shuffle", observe)
-    runner.run_single_n(cfg, 2, strategies=strategies)
+    with recovery_recorder() as recorder:
+        runner.run_single_n(cfg, 2, strategies=strategies)
     assert scheduled == [3]
+    summary = recorder.summary()["completed_progress"]["simulation:simulation:k=2"]
+    assert summary["reused_attempted_games"] == 3
+    assert summary["newly_simulated_games"] == 1
     metric_dir = runner._resolve_metric_chunk_dir(cfg, 2)
     assert metric_dir is not None
     records = [

@@ -298,7 +298,7 @@ def test_missing_columns_wrong_types_duplicates_and_budget_fail() -> None:
         _accumulate([row, row])
     with pytest.raises(MemoryError, match="one game"):
         outcomes.accumulate_outcome_slice(table, max_bytes=10, **options)
-    with pytest.raises(MemoryError, match="split"):
+    with pytest.raises(MemoryError, match="Split the source slice"):
         outcomes.accumulate_outcome_slice(
             pa.concat_tables([table, table]), max_bytes=4 * 4096 * 4, **options
         )

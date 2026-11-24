@@ -200,6 +200,28 @@ Heartbeat `workers=live/created/resolved` counts refer to the current executor;
 workers become zero while the created count remains available. Intentional
 serial execution runs in the parent and creates no worker processes.
 
+Simulation recovery uses the existing 45-second heartbeat. It reports
+discovery, authentication, checkpoint restoration, and shard reconstruction
+as separate operations. The active operation includes counts for checked
+files or coordinates, restored shuffles, and rows replayed where available.
+Authentication can also report processed bytes and read throughput. Replay
+rows count decoded records, including metric records when replay uses metric
+shards. The parent reports reused attempts and newly simulated games separately.
+Worker observations can run ahead of collected totals. Checkpoint and shard
+evidence continue to govern what can be resumed after an interruption.
+
+`budget_admission_exceeded` identifies deterministic configuration admission
+failures. The Parquet writer diagnostic gives the estimated footer requirement,
+the per-writer allowance, the column estimate, and the controlling setting.
+A lower worker count leaves that allowance unchanged, so this rejection ends
+the attempt directly. Eligible allocator and pressure failures can retry once
+under the existing partition policy. Active scheduler backpressure can clear
+without failing the run.
+
+Resource telemetry version 2 adds descriptive resident-memory fields while
+retaining `process_tree_rss_bytes` and the other legacy fields. Heartbeats label
+resident memory and Windows Job peak committed memory separately in MiB.
+
 For an unattended above-cap stop, read the current immutable power plan's
 `schedule_hash` and `maximum_total_attempts`. Explicit approval is
 `--h2h-authorize PLAN_SHA256:MAX_ATTEMPTS`, placed before `two-seed-pipeline`.

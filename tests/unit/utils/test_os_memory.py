@@ -100,7 +100,12 @@ def test_aggregate_parent_child_and_grandchild_memory_is_constrained() -> None:
     )
 
     assert completed.returncode == os_memory.MEMORY_LIMIT_EXIT_CODE
-    assert "aggregate Job Object memory limit was reached" in completed.stderr
+    assert "Windows Job peak committed memory" in completed.stderr
+    assert "resources.aggregate_memory_hard_limit_mb" in completed.stderr
+    assert any(
+        label in completed.stderr
+        for label in ("suspected_windows_job_limit", "windows_os_allocation_failure")
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="live Job Object test")

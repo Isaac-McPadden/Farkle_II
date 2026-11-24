@@ -48,6 +48,7 @@ from farkle.utils.authenticated_contract import (
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     apply_native_thread_limits,
+    budget_admission_error,
     make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
@@ -708,7 +709,13 @@ class _IngestUnitWriter:
                 source_tables, max_buffer_bytes=buffer_bytes, target_rows=row_limit
             ):
                 if table.nbytes > max_bytes:
-                    raise MemoryError("ingest working batch crossed its configured byte ceiling")
+                    raise budget_admission_error(
+                        "Buffer ingest working batch",
+                        table.nbytes,
+                        max_bytes,
+                        path=staged,
+                        setting="resources.stage_batch_bytes.ingest",
+                    )
                 writer.write_batch(table)
         if writer.rows_written < 1:
             raise ValueError(f"ingest produced zero rows for configured k={n_players}")

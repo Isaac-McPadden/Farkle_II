@@ -44,6 +44,7 @@ from farkle.utils.authenticated_contract import (
     producer_code_identity,
     validate_authenticated_artifact_unbound,
 )
+from farkle.utils.parallel import budget_admission_error
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -153,12 +154,15 @@ def _budget(cfg: AppConfig) -> int:
     return int(cfg.resources.stage_batch_bytes["analysis"])
 
 
+_ANALYSIS_BATCH_SETTING = "resources.stage_batch_bytes.analysis"
+
+
 def _admit_source_footers(cfg: AppConfig) -> None:
     """Bound serialized metadata before Arrow/authentication decodes it.
 
     Projection limits decoded rows, not the footer that describes all row
     groups. Reserve a quarter of the configured allowance for serialized source
-    metadata; native parser overhead remains part of measured process RSS.
+    metadata. Native parser overhead contributes to measured resident memory.
     """
     paths = [cfg.strategy_manifest_root_path()]
     for k in sorted(set(cfg.sim.n_players_list)):
@@ -170,8 +174,14 @@ def _admit_source_footers(cfg: AppConfig) -> None:
         if magic != b"PAR1":
             raise ValueError(f"invalid required Parquet source footer: {path}")
         if size > _budget(cfg) // 4:
-            raise MemoryError(
-                f"source Parquet footer exceeds metadata admission: {path}; increase analysis stage_batch_bytes"
+            raise budget_admission_error(
+                "Read source Parquet footer",
+                size,
+                _budget(cfg) // 4,
+                path=path,
+                setting=_ANALYSIS_BATCH_SETTING,
+                basis="one quarter of the analysis allowance",
+                remedy=f"Review {_ANALYSIS_BATCH_SETTING} against the hard memory limit.",
             )
 
 
@@ -243,7 +253,15 @@ def _resolve_design(cfg: AppConfig, k: int) -> _Design:
         raise ValueError("inconsistent complete outcome workload")
     parquet = pq.ParquetFile(roster_path)
     if parquet.metadata.num_rows * 512 > _budget(cfg):
-        raise MemoryError("outcome roster exceeds admitted metadata budget")
+        raise budget_admission_error(
+            "Build outcome roster",
+            parquet.metadata.num_rows * 512,
+            _budget(cfg),
+            path=roster_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+            basis="512 bytes per row",
+        )
     columns = ["strategy_id"]
     if "multiplicity" in parquet.schema_arrow.names:
         columns.append("multiplicity")
@@ -447,7 +465,9 @@ def _write_rows(
     metadata: dict[str, str] | None = None,
 ) -> None:
     with pq.ParquetWriter(path, schema) as writer:
-        coalescer = _CoalescedWriter(writer.write_table, schema, max(1, budget // 4))
+        coalescer = _CoalescedWriter(
+            writer.write_table, schema, max(1, budget // 4), path=path, budget_divisor=4
+        )
         buffer: list[dict[str, Any]] = []
         for row in rows:
             buffer.append(row)
@@ -464,8 +484,17 @@ def _write_rows(
 class _CoalescedWriter:
     """Bound Arrow buffers separately from Python rows and Parquet footer state."""
 
-    def __init__(self, write: Callable[[pa.Table], Any], schema: pa.Schema, budget: int):
+    def __init__(
+        self,
+        write: Callable[[pa.Table], Any],
+        schema: pa.Schema,
+        budget: int,
+        *,
+        path: Path,
+        budget_divisor: int,
+    ):
         self.write, self.schema, self.budget = write, schema, budget
+        self.path, self.budget_divisor = path, budget_divisor
         self.tables: list[pa.Table] = []
         self.bytes = 0
         self.footer_allowance_used = 0
@@ -474,7 +503,14 @@ class _CoalescedWriter:
         if self.tables and self.bytes + table.nbytes > self.budget:
             self.flush()
         if table.nbytes > self.budget:
-            raise MemoryError("outcome output chunk exceeds its Arrow buffer allowance")
+            raise budget_admission_error(
+                "Buffer Arrow output",
+                table.nbytes,
+                self.budget,
+                path=self.path,
+                setting=_ANALYSIS_BATCH_SETTING,
+                basis=f"one {self.budget_divisor}-way writer share",
+            )
         self.tables.append(table)
         self.bytes += table.nbytes
 
@@ -488,8 +524,18 @@ class _CoalescedWriter:
                 max(1, (table.num_rows + 199999) // 200000) * len(self.schema) * 1024
             )
             if self.footer_allowance_used > self.budget:
-                raise MemoryError(
-                    "outcome Parquet footer exceeds admitted metadata budget; increase analysis stage_batch_bytes"
+                raise budget_admission_error(
+                    "Write Parquet footer",
+                    self.footer_allowance_used,
+                    self.budget,
+                    path=self.path,
+                    setting=_ANALYSIS_BATCH_SETTING,
+                    estimated=True,
+                    basis=f"1,024 bytes per column per estimated row group, {len(self.schema)} columns, "
+                    f"one {self.budget_divisor}-way share per writer",
+                    remedy=f"Increase {_ANALYSIS_BATCH_SETTING} within the hard memory limit "
+                    "or use a smaller workload. "
+                    "Reducing worker count leaves this per-writer allowance unchanged.",
                 )
             self.write(table)
             self.tables.clear()
@@ -511,7 +557,14 @@ class _SliceWriter:
         def push(strategy: int, seat: int, metric: int, value: int, count: int) -> None:
             nonlocal used
             if used >= capacity:
-                raise MemoryError("outcome source slice exceeded admitted record count")
+                raise budget_admission_error(
+                    "Build outcome source slice",
+                    used + 1,
+                    capacity,
+                    path=d.source,
+                    unit="records",
+                    setting=_ANALYSIS_BATCH_SETTING,
+                )
             records[used] = (batch, strategy, seat, metric, value, count)
             used += 1
 
@@ -587,7 +640,15 @@ class _NormalizeWriter:
         # Input is one byte-admitted source unit, not a merged history.
         count = pq.ParquetFile(source).metadata.num_rows
         if count * _RUN_DTYPE.itemsize * 2 > self.budget // 2:
-            raise MemoryError("normalized slice exceeds its record allowance")
+            raise budget_admission_error(
+                "Normalize outcome slice",
+                count * _RUN_DTYPE.itemsize * 2,
+                self.budget // 2,
+                path=source,
+                setting=_ANALYSIS_BATCH_SETTING,
+                estimated=True,
+                basis="two output records per input row",
+            )
         records = np.empty(count * 2, dtype=_RUN_DTYPE)
         used = 0
         for _, sid, seat, metric, value, amount in _read_rows(source, self.budget // 4):
@@ -863,8 +924,15 @@ class _Stages:
         }
         # Metadata also has a budget. Fail explicitly instead of silently growing
         # a Python plan proportional to an arbitrarily large source history.
-        if len(json.dumps([*self.descriptors, descriptor])) * 4 > _budget(cfg):
-            raise MemoryError("outcome checkpoint inventory exceeds admitted metadata budget")
+        estimate = len(json.dumps([*self.descriptors, descriptor])) * 4
+        if estimate > _budget(cfg):
+            raise budget_admission_error(
+                "Build outcome checkpoint inventory",
+                estimate,
+                _budget(cfg),
+                setting=_ANALYSIS_BATCH_SETTING,
+                estimated=True,
+            )
         root = cfg.outcome_units_dir(d.k) / name
         sources = [Path(p) for p in d.inputs] + [self.plan] if source else [self.plan]
         template = _metadata(cfg, d.k, root / "manifest.jsonl", "outcome_unit_manifest", sources)
@@ -1003,8 +1071,10 @@ def _publish_summaries(cfg: AppConfig, d: _Design, merged: Path, publication: Pa
             )
         ]
         coalescers = [
-            _CoalescedWriter(writer.write_batch, schema, _budget(cfg) // 12)
-            for writer, schema in zip(writers, schemas, strict=True)
+            _CoalescedWriter(
+                writer.write_batch, schema, _budget(cfg) // 12, path=path, budget_divisor=12
+            )
+            for writer, schema, path in zip(writers, schemas, paths, strict=True)
         ]
 
         def emit(index: int, row: dict[str, Any]) -> None:
@@ -1182,14 +1252,27 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
             ),
         )
     if budget < plan["minimum_budget"]:
-        raise MemoryError("resume needs the original outcome byte budget or --force to repartition")
+        raise budget_admission_error(
+            "Resume outcome partition plan",
+            plan["minimum_budget"],
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            remedy="Restore the original analysis batch allowance or use --force to repartition.",
+        )
     # Conservative metadata admission precedes construction of the unit list.
     unit_count = d.batches * (
         (d.games_per_batch + plan["rows_per_unit"] - 1) // plan["rows_per_unit"]
     )
     if unit_count * 2048 > budget:
-        raise MemoryError(
-            "outcome source plan exceeds metadata budget; increase analysis stage_batch_bytes"
+        raise budget_admission_error(
+            "Build outcome source plan",
+            unit_count * 2048,
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+            basis="2,048 bytes per unit",
         )
     stages = _Stages(cfg, d, plan_path, force=force)
     units = _source_units(d, plan["rows_per_unit"])

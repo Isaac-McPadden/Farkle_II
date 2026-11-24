@@ -21,6 +21,7 @@ from farkle.utils.manifest import (
     make_run_id,
     validate_manifest_contract,
 )
+from farkle.utils.parallel import classify_resource_exception, describe_resource_failure
 from farkle.utils.scientific_files import ScientificDrift
 from farkle.utils.scientific_identity import producer_scope
 from farkle.utils.scientific_runtime import numerical_observation
@@ -400,6 +401,17 @@ class StageRunner:
                         status = "failed"
                         failed_steps.append(item.name)
                         first_failure = first_failure or exc
+                        classification = classify_resource_exception(exc)
+                        diagnostics: dict[str, object] = {}
+                        if classification is not None:
+                            failure = describe_resource_failure(
+                                exc, classification, operation=item.name
+                            )
+                            diagnostics = {
+                                "failure_classification": classification,
+                                "resource_failure_details": failure.details,
+                                "resource_diagnostic": str(failure),
+                            }
                         context.logger.exception(
                             "Stage failed: %s/%s",
                             context.run_label,
@@ -408,6 +420,7 @@ class StageRunner:
                                 "run": context.run_label,
                                 "step": item.name,
                                 "error": exc,
+                                **diagnostics,
                             },
                         )
                         stage_end_payload = {
@@ -416,6 +429,7 @@ class StageRunner:
                             "stage": item.name,
                             "ok": False,
                             "error": f"{type(exc).__name__}: {exc}",
+                            **diagnostics,
                             **(
                                 {
                                     "missing_outputs": [str(path) for path in exc.missing_outputs],

@@ -254,6 +254,9 @@ def test_duplicate_retried_and_out_of_order_worker_events_do_not_inflate_progres
             "current_player_count": 2,
             "planned_games": 100,
             "completed_games": 40,
+            "starting_games": 10,
+            "reused_attempted_games": 10,
+            "newly_simulated_games": 30,
             "planned_shuffles": 10,
             "completed_shuffles": 4,
             "planned_chunks": 5,
@@ -297,7 +300,9 @@ def test_duplicate_retried_and_out_of_order_worker_events_do_not_inflate_progres
     assert progress["worker_completed_shuffles"] == 3
     assert progress["worker_completed_games"] == 35
     assert progress["completed_games"] == 40
-    assert "games=40/100 (40.0%)" in record.getMessage()
+    assert progress["observed_newly_simulated_games"] == 35
+    assert progress["newly_simulated_games"] == 30
+    assert "observed_games=45/100 (45.0%)" in record.getMessage()
     assert "shuffles=4/10" in record.getMessage()
     assert "chunks=2/5" in record.getMessage()
     assert "seed=?" not in record.getMessage()

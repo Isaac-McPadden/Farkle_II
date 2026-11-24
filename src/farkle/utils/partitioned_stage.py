@@ -33,10 +33,12 @@ from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
     classify_resource_exception,
+    describe_resource_failure,
     make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
+    resource_failure_allows_retry,
 )
 from farkle.utils.telemetry import (
     current_supervisor_recorder,
@@ -309,7 +311,9 @@ def _validated_unit_metadata(
         if classification is not None:
             if isinstance(exc, ResourceFailureError):
                 raise
-            raise ResourceFailureError(classification, str(exc)) from exc
+            raise describe_resource_failure(
+                exc, classification, operation=f"Validate partition output {output}"
+            ) from exc
         return None
     if result is False:
         return None
@@ -484,6 +488,17 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
         ):
             raise PartitionedStageError(f"published unit failed validation: {task.unit.key!r}")
         return task.unit.key
+    except Exception as exc:
+        classification = classify_resource_exception(exc)
+        if classification is None:
+            raise
+        failure = describe_resource_failure(
+            exc, classification, operation=f"{task.identity.stage_name} partition {task.unit.key}"
+        )
+        details = {**failure.details, "stage": task.identity.stage_name, "output_path": str(output)}
+        raise ResourceFailureError(
+            classification, f"{task.identity.stage_name} output {output}. {failure}", details
+        ) from exc
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -650,6 +665,8 @@ def validate_final_manifest(
             }:
                 return None
             return digest.hexdigest(), count
+    except ResourceSafetyError:
+        raise
     except (KeyError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
@@ -973,26 +990,27 @@ def run_partitioned_stage(
             classification = (
                 exc.classification if isinstance(exc, ResourceFailureError) else "resource_safety"
             )
+            retry = attempt_index == 0 and resource_failure_allows_retry(classification)
             attempt_record.update(
                 outcome="resource_failure",
                 failure_classification=classification,
                 error=f"{type(exc).__name__}: {exc}",
+                failure_details=exc.details if isinstance(exc, ResourceFailureError) else {},
+                retry_allowed=retry,
             )
             if scope is not None:
                 scope.update(
                     phase=execution_phase,
-                    state=("resource_retry_pending" if attempt_index == 0 else "resource_failure"),
+                    state="resource_retry_pending" if retry else "resource_failure",
                     progress={
                         "attempt": attempt_index + 1,
                         "effective_workers": effective_workers,
                         "failure_classification": classification,
-                        "next_worker_count": (
-                            max(1, effective_workers // 2) if attempt_index == 0 else None
-                        ),
+                        "next_worker_count": (max(1, effective_workers // 2) if retry else None),
                     },
                 )
-            write_execution_telemetry("retrying" if attempt_index == 0 else "resource_failure")
-            if attempt_index == 1:
+            write_execution_telemetry("retrying" if retry else "resource_failure")
+            if not retry:
                 raise
             retry_workers = max(1, effective_workers // 2)
             attempt_policy = resolve_stage_parallel_policy(
@@ -1063,7 +1081,11 @@ def run_partitioned_stage(
                     default=0,
                 ),
                 "attempt_count": len(execution_attempts),
-                "retry_downshifted": len(execution_attempts) > 1,
+                "retry_downshifted": (
+                    len(execution_attempts) > 1
+                    and execution_attempts[-1]["worker_count"]
+                    < execution_attempts[0]["worker_count"]
+                ),
                 "reconciled_from": "authenticated_partition_manifest",
             },
         )

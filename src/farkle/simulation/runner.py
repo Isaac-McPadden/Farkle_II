@@ -93,6 +93,11 @@ from farkle.utils.stage_completion import (
     resolve_stage_state,
     write_stage_done,
 )
+from farkle.utils.telemetry import (
+    current_supervisor_recorder,
+    current_supervisor_scope,
+    observe_recovery,
+)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -280,10 +285,22 @@ def simulation_done_path(cfg: AppConfig, n_players: int) -> Path:
 
 
 @numerical_observation()
-def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
+def simulation_is_complete(
+    cfg: AppConfig, n_players: int, *, report_recovery: bool = False
+) -> bool:
     """Return whether the per-N completion authenticates current work exactly."""
 
     done_path = simulation_done_path(cfg, n_players)
+    scope = current_supervisor_scope() if report_recovery else None
+    if scope is not None:
+        scope.reset_recovery()
+    recovery = (
+        observe_recovery("authentication", "Check simulation completion")
+        if scope is not None and done_path.is_file()
+        else None
+    )
+    if recovery is not None:
+        recovery.publish(root_seed=cfg.sim.seed, current_player_count=n_players)
     outputs: list[Path] = []
     inputs: list[Path] = []
     if is_v3_config(cfg):
@@ -318,6 +335,7 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
                         cfg,
                         path=path,
                         n_players=n_players,
+                        report_recovery=report_recovery,
                     )
             return any(
                 path.resolve().is_relative_to(cfg.n_dir(n_players).resolve()) for path in outputs
@@ -570,8 +588,15 @@ def _publish_simulation_manifest_v3(
     path: Path,
     n_players: int,
     expected_entry_count: int | None = None,
+    report_recovery: bool = False,
 ) -> None:
+    recovery = observe_recovery("discovery", f"Read inventory {path}") if report_recovery else None
     records = list(iter_manifest(path))
+    if recovery is not None:
+        recovery.finish()
+        recovery = observe_recovery(
+            "authentication", f"Check shard metadata in {path}", total_files=len(records)
+        )
     entries: list[ManifestEntry] = []
     canonical_records: list[tuple[tuple[int, ...], dict[str, Any]]] = []
     member_science: dict[tuple[int | str, ...], str] = {}
@@ -641,6 +666,10 @@ def _publish_simulation_manifest_v3(
             }
         )
         canonical_records.append((coordinate, canonical_record))
+        if recovery is not None:
+            recovery.advance(files=1)
+    if recovery is not None:
+        recovery.finish()
     paired = sorted(
         zip(entries, canonical_records, strict=True), key=lambda item: item[0].coordinate
     )
@@ -1136,6 +1165,9 @@ def _validate_resume_outputs(
     checkpoint_error: Exception | None = None
     checkpoint_sources: set[str] = set()
     if ckpt_path.exists():
+        checkpoint_progress = observe_recovery(
+            "authentication", f"Check checkpoint {ckpt_path}", total_files=1
+        )
         try:
             candidate = tournament_mod._read_checkpoint(
                 ckpt_path,
@@ -1165,6 +1197,9 @@ def _validate_resume_outputs(
                     candidate.get("win_totals", candidate), candidate.get("outcome_counts")
                 )
             payload = candidate
+            if checkpoint_progress is not None:
+                checkpoint_progress.advance(files=1)
+                checkpoint_progress.finish()
         except (
             AuthenticatedContractError,
             OSError,
@@ -1239,6 +1274,11 @@ def _validate_resume_outputs(
     if row_dir is not None:
         manifest_path = row_dir / "manifest.jsonl"
         if manifest_path.exists():
+            recovery = observe_recovery(
+                "discovery",
+                f"Discover and check row shard metadata in {manifest_path}",
+                total_coordinates=n_shuffles,
+            )
             require_manifest_seal(manifest_path)
             expected_seed_by_index = {
                 index: urandom.coordinate_seed(
@@ -1283,6 +1323,11 @@ def _validate_resume_outputs(
                 except (TypeError, ValueError):
                     coordinate_errors += 1
                     continue
+                if recovery is not None:
+                    recovery.advance(
+                        files=int("data_sha256" in record),
+                        coordinates=int(index_int not in seen_indices),
+                    )
                 if index_int in seen_indices:
                     duplicates += 1
                 seen_indices.add(index_int)
@@ -1311,10 +1356,17 @@ def _validate_resume_outputs(
             if unexpected or coordinate_errors:
                 raise ValueError(f"Row manifest mismatch at {manifest_path}; rerun with --force.")
             replay_has_sealed_shards = all_sealed and bool(seen_indices)
+            if recovery is not None:
+                recovery.finish()
 
     if metric_chunk_dir is not None:
         metrics_manifest = metric_chunk_dir / "metrics_manifest.jsonl"
         if metrics_manifest.exists():
+            recovery = observe_recovery(
+                "discovery",
+                f"Discover and check metric block metadata in {metrics_manifest}",
+                total_coordinates=n_shuffles,
+            )
             require_manifest_seal(metrics_manifest)
             coordinate_errors = 0
             seen_batches: set[int] = set()
@@ -1368,12 +1420,19 @@ def _validate_resume_outputs(
                 except (TypeError, ValueError):
                     coordinate_errors += 1
                     continue
+                new_coordinates = (
+                    len(set(shuffle_indices) - seen_shuffle_indices) if recovery is not None else 0
+                )
                 if batch_id in seen_batches:
                     duplicates += 1
                 seen_batches.add(batch_id)
                 if seen_shuffle_indices.intersection(shuffle_indices):
                     duplicates += 1
                 seen_shuffle_indices.update(shuffle_indices)
+                if recovery is not None:
+                    recovery.advance(
+                        files=int("data_sha256" in record), coordinates=new_coordinates
+                    )
                 expected_seeds_for_indices = [
                     urandom.coordinate_seed(
                         urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
@@ -1419,6 +1478,8 @@ def _validate_resume_outputs(
                 )
             if not has_row_manifest:
                 replay_has_sealed_shards = all_sealed and bool(seen_batches)
+            if recovery is not None:
+                recovery.finish()
 
     if checkpoint_error is not None:
         if not replay_has_sealed_shards:
@@ -1607,8 +1668,22 @@ def _run_single_n(
     manifest_path = cfg.strategy_manifest_root_path()
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
-    if simulation_is_complete(cfg, n):
+    if simulation_is_complete(cfg, n, report_recovery=True):
         LOGGER.info("Simulation already complete; preserving published outputs for %sp", n)
+        recorder, scope = current_supervisor_recorder(), current_supervisor_scope()
+        if recorder is not None and scope is not None:
+            recorder.record_completion_summary(
+                f"{scope.scope}:simulation:k={n}",
+                stage="simulation",
+                summary={
+                    "reused_attempted_games": total_games,
+                    "newly_simulated_games": 0,
+                    "reused_shuffles": n_shuffles,
+                    "root_seed": cfg.sim.seed,
+                    "player_count": n,
+                    "recovery_phases": scope.recovery_summary(),
+                },
+            )
         return total_games
     workload_plan_path = n_dir / "simulation_workload_plan.json"
     row_dir = _resolve_row_output_dir(cfg, n)
@@ -1704,6 +1779,12 @@ def _run_single_n(
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
     ):
+        if (scope := current_supervisor_scope()) is not None:
+            scope.update(
+                phase="simulation_recovery_discovery",
+                state="working",
+                progress={"root_seed": cfg.sim.seed, "current_player_count": n, "recovery": None},
+            )
         recovery_checkpoint = _validate_resume_outputs(
             cfg=cfg,
             n_players=n,

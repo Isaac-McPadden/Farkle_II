@@ -518,9 +518,17 @@ def _run_windows_job(
         if child_returncode in known_memory_codes or (
             child_returncode != 0 and peak >= int(effective_bytes * 0.98)
         ):
+            classification = (
+                "windows_os_allocation_failure"
+                if child_returncode in known_memory_codes
+                else "suspected_windows_job_limit"
+            )
             print(
-                "Farkle aggregate Job Object memory limit was reached "
-                f"(peak={peak / _MIB:.1f} MiB, limit={effective_bytes / _MIB:.1f} MiB).",
+                f"Farkle memory status {classification}. Child exit {child_returncode}. "
+                f"Windows Job peak committed memory {peak / _MIB:.1f} MiB. "
+                f"Effective Job limit {effective_bytes / _MIB:.1f} MiB "
+                "(resources.aggregate_memory_hard_limit_mb). "
+                "Reduce concurrent work or check available system commit capacity.",
                 file=sys.stderr,
                 flush=True,
             )
@@ -688,13 +696,22 @@ def _run_cgroup_v2(command: Sequence[str], resources: Any, *, env: Mapping[str, 
             )
     if memory_failure:
         print(
-            "Farkle aggregate cgroup-v2 memory limit was reached; "
-            f"events={json.dumps(after, sort_keys=True)}, cgroup={boundary}",
+            "Farkle memory status cgroup_memory_exhaustion. "
+            f"Effective cgroup-v2 limit {effective_bytes / _MIB:.1f} MiB "
+            "(resources.aggregate_memory_hard_limit_mb). "
+            f"Events {json.dumps(after, sort_keys=True)}. Cgroup {boundary}. "
+            "Reduce concurrent work or check the enclosing cgroup memory limit.",
             file=sys.stderr,
             flush=True,
         )
         return MEMORY_LIMIT_EXIT_CODE
     if child_returncode == -int(getattr(signal, "SIGKILL", 9)):
+        print(
+            "Farkle memory status unconfirmed_sigkill. The child received SIGKILL. "
+            "Check kernel and scheduler logs for its cause.",
+            file=sys.stderr,
+            flush=True,
+        )
         return MEMORY_LIMIT_EXIT_CODE
     return int(child_returncode)
 

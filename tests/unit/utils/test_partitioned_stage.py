@@ -177,6 +177,38 @@ def test_resource_failure_retries_pending_units_once_with_identical_outputs(tmp_
     assert telemetry["attempts"][0]["worker_count"] == 1
 
 
+def _over_budget_writer(unit: PartitionedUnit, path: Path) -> None:
+    raise parallel.budget_admission_error(
+        "Write Parquet footer",
+        2048,
+        1024,
+        path=path,
+        setting="resources.stage_batch_bytes.analysis",
+        estimated=True,
+    )
+
+
+def test_deterministic_budget_failure_does_not_downshift(tmp_path: Path) -> None:
+    with pytest.raises(parallel.ResourceFailureError, match="estimated requirement") as caught:
+        run_partitioned_stage(
+            root=tmp_path,
+            identity=_identity(),
+            unit_source=_unit_source,
+            writer=_over_budget_writer,
+            resources=_resources(),
+            requested_workers=2,
+        )
+    assert caught.value.classification == "budget_admission_exceeded"
+    assert caught.value.details["stage"] == "partitioned_stage"
+    telemetry = json.loads((tmp_path / "_execution" / "execution_telemetry.json").read_text())
+    assert telemetry["final_outcome"] == "resource_failure"
+    assert len(telemetry["attempts"]) == 1
+    assert telemetry["attempts"][0]["worker_count"] == 2
+    assert telemetry["attempts"][0]["failure_details"]["requirement"] == 2048
+    assert not (tmp_path / "partition_manifest.jsonl").exists()
+    assert not list((tmp_path / "units").glob("*.bin"))
+
+
 def test_resource_retry_halves_workers_and_skips_authenticated_units(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

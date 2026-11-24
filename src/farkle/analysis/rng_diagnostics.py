@@ -52,6 +52,7 @@ from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     ResourceSafetyError,
     apply_native_thread_limits,
+    budget_admission_error,
     make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
@@ -1156,10 +1157,19 @@ def _byte_bounded_row_group_units(
     ):
         if ordinal != expected or row_group < 0:
             raise ValueError("RNG route sources must have contiguous valid coordinates")
-        if size < 0 or size > hard_bytes:
+        if size < 0:
             raise ResourceSafetyError(
-                f"RNG source row group {ordinal} projects to {size} expanded bytes; "
-                f"hard limit is {hard_bytes}"
+                f"RNG source row group {ordinal} has an invalid negative byte estimate"
+            )
+        if size > hard_bytes:
+            raise budget_admission_error(
+                f"Admit RNG source row group {ordinal}",
+                size,
+                hard_bytes,
+                path=_source,
+                setting="resources.stage_batch_bytes.rng_diagnostics_route_unit_hard",
+                estimated=True,
+                basis="expanded bytes against the route-unit hard limit",
             )
     width = max(5, len(str(max(0, len(sources) - 1))))
     start = 0
@@ -1319,7 +1329,12 @@ def _iter_open_parquet_row_group_batches(
         for offset in range(0, batch.num_rows, rows_per_slice):
             piece = batch.slice(offset, rows_per_slice)
             if piece.nbytes > batch_bytes and piece.num_rows > 1:
-                raise ResourceSafetyError("projected Arrow slice exceeded byte budget")
+                raise budget_admission_error(
+                    "Buffer projected RNG Arrow slice",
+                    piece.nbytes,
+                    batch_bytes,
+                    setting="resources.stage_batch_bytes.rng_diagnostics_source",
+                )
             yield piece
 
 
@@ -2169,8 +2184,12 @@ def _load_selection_memberships(
                 )
             total_bytes += records.nbytes
             if total_bytes > max_bytes:
-                raise ResourceSafetyError(
-                    f"selected RNG group membership exceeds worker budget: {total_bytes} > {max_bytes}"
+                raise budget_admission_error(
+                    "Read selected RNG group membership",
+                    total_bytes,
+                    max_bytes,
+                    path=path,
+                    setting="resources.stage_batch_bytes.rng_diagnostics_stats",
                 )
             for value in np.unique(partition):
                 chunks[int(value)].append(records[partition == value].copy())

@@ -17,6 +17,7 @@ import pyarrow.parquet as pq
 
 from farkle.analysis.outcome_precision import _read_span, _validate_support
 from farkle.analysis.outcome_publication import (
+    _ANALYSIS_BATCH_SETTING,
     _admit_source_footers,
     _checked,
     _CoalescedWriter,
@@ -40,6 +41,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
+from farkle.utils.parallel import budget_admission_error
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -641,7 +643,9 @@ def _publish_rows(
         sidecar=_metadata(cfg, k, path, "seat_behavior_v1", sources, schema),
         temp_dir=cfg.io.temp_dir,
     ) as writer:
-        coalescer = _CoalescedWriter(writer.write_batch, schema, budget // 4)
+        coalescer = _CoalescedWriter(
+            writer.write_batch, schema, budget // 4, path=path, budget_divisor=4
+        )
         buffer = []
         for row in records:
             buffer.append(row)
@@ -674,8 +678,13 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
     rows_per_unit = budget // (4 * RUN_DTYPE.itemsize * (k + 1))
     tile_size = min(len(d.roster), budget // (4 * (k + 1) * 2 * 2048))
     if min(rows_per_unit, tile_size) < 1:
-        raise MemoryError(
-            "seat behavior needs a larger analysis stage_batch_bytes for one game/tile"
+        raise budget_admission_error(
+            "Plan seat behavior",
+            max(4 * RUN_DTYPE.itemsize * (k + 1), 4 * (k + 1) * 2 * 2048),
+            budget,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+            basis="one game or strategy tile",
         )
     plan = None
     if plan_path.exists():
@@ -722,7 +731,14 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
             ),
         )
     if budget < plan["minimum_budget"]:
-        raise MemoryError("behavior resume needs original allowance or --force to repartition")
+        raise budget_admission_error(
+            "Resume seat behavior plan",
+            plan["minimum_budget"],
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            remedy="Restore the original analysis batch allowance or use --force to repartition.",
+        )
     identity = PartitionedStageIdentity(
         "analysis",
         d.root,
@@ -749,8 +765,16 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
             "identity": asdict(identity),
             "units": [asdict(u) for u in units],
         }
-        if len(json.dumps([*descriptors, descriptor])) * 4 > budget:
-            raise MemoryError("behavior checkpoint metadata exceeds byte allowance")
+        estimate = len(json.dumps([*descriptors, descriptor])) * 4
+        if estimate > budget:
+            raise budget_admission_error(
+                "Build seat behavior checkpoint inventory",
+                estimate,
+                budget,
+                path=root / name,
+                setting=_ANALYSIS_BATCH_SETTING,
+                estimated=True,
+            )
         directory = root / name
         sources = [plan_path, *sources]
         metadata = _metadata(
@@ -787,7 +811,15 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
         (d.games_per_batch + plan["rows_per_unit"] - 1) // plan["rows_per_unit"]
     )
     if unit_count * 4096 > budget:
-        raise MemoryError("behavior slice inventory exceeds metadata allowance")
+        raise budget_admission_error(
+            "Plan seat behavior slices",
+            unit_count * 4096,
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+            basis="4,096 bytes per unit",
+        )
     units = [
         replace(u, relative_output=f"batch-{int(u.key[0]):08d}/slice-{int(u.key[1]):08d}.parquet")
         for u in _source_units(d, plan["rows_per_unit"])

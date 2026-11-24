@@ -85,6 +85,7 @@ from farkle.utils.stage_completion import CompletionState, freshness_sha256, res
 from farkle.utils.telemetry import (
     HEARTBEAT_INTERVAL_SECONDS,
     SupervisorHeartbeatRecorder,
+    current_supervisor_scope,
     use_supervisor_recorder,
 )
 from farkle.utils.writer import atomic_path
@@ -564,6 +565,17 @@ def _run_one_seed(
 
         def run_simulation() -> str:
             if not force and seed_has_completion_markers(root_cfg):
+                scope = current_supervisor_scope()
+                if scope is not None:
+                    telemetry.record_completion_summary(
+                        scope.scope,
+                        stage="simulation",
+                        summary={
+                            "root_seed": seed,
+                            "reused_player_cells": len(root_cfg.sim.n_players_list),
+                            "newly_simulated_games": 0,
+                        },
+                    )
                 return "root_simulation_skipped_complete"
             if oracle_game_profile is None:
                 runner.run_tournament(root_cfg, force=force)

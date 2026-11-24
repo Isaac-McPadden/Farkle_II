@@ -19,6 +19,7 @@ from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    budget_admission_error,
     make_process_tree_memory_guard,
     resolve_stage_parallel_policy,
 )
@@ -461,7 +462,12 @@ def _iter_batch_tables(
             table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
             validate_unconditional_all_player_schema(table.schema)
             if table.nbytes > max_batch_bytes:
-                raise MemoryError("all-player output batch crossed its configured byte ceiling")
+                raise budget_admission_error(
+                    "Buffer all-player output batch",
+                    table.nbytes,
+                    max_batch_bytes,
+                    setting="resources.stage_batch_bytes.all_player_metrics",
+                )
             yield table
 
     stream = iter_parquet_tables_by_bytes(
@@ -474,7 +480,12 @@ def _iter_batch_tables(
     for _row_group, _execution_batch, table in stream:
         memory_guard.check_before_schedule()
         if table.nbytes > max_batch_bytes:
-            raise MemoryError("projected all-player batch crossed its configured byte ceiling")
+            raise budget_admission_error(
+                "Buffer projected all-player batch",
+                table.nbytes,
+                max_batch_bytes,
+                setting="resources.stage_batch_bytes.all_player_metrics",
+            )
         if any(table.column(field.name).null_count for field in _IDENTITY_FIELDS[:3]):
             raise ValueError(
                 f"{source} contains rows without root/k/batch coordinates; rerun simulation"

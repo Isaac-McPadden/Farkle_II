@@ -642,14 +642,16 @@ def test_explicit_resource_policy_is_validated_against_detected_capacity() -> No
         minimum_system_available_memory_mb=8192,
         logical_cpu_budget=15,
     )
-    with pytest.raises(parallel.ResourceSafetyError, match="requested 15, detected 8"):
+    with pytest.raises(parallel.ResourceBudgetError, match="15 logical CPUs.*8 logical CPUs"):
         parallel.resolve_resource_policy(
             resources,
             logical_cpu_count=8,
             total_memory_mb=32768,
             available_memory_mb=20000,
         )
-    with pytest.raises(parallel.ResourceSafetyError, match="exceeds detected memory"):
+    with pytest.raises(
+        parallel.ResourceBudgetError, match="Aggregate hard limit plus system reserve"
+    ):
         parallel.resolve_resource_policy(
             resources,
             logical_cpu_count=16,
@@ -669,7 +671,7 @@ def test_resource_policy_rejects_worker_that_cannot_fit_scheduler_share() -> Non
         estimated_worker_memory_mb={"analysis": 700},
         stage_batch_bytes={"analysis": 4096},
     )
-    with pytest.raises(parallel.ResourceSafetyError, match="scheduler memory share"):
+    with pytest.raises(parallel.ResourceBudgetError, match="worker memory admission"):
         parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
 
 
@@ -773,18 +775,24 @@ def test_process_tree_guard_snapshot_is_read_only(monkeypatch: MonkeyPatch) -> N
         "backpressure_seconds": 1.5,
         "near_hard_boundary": False,
         "monitoring_error": None,
+        "resource_telemetry_version": 2,
+        "process_tree_resident_memory_bytes": 100,
+        "peak_process_tree_resident_memory_bytes": 200,
+        "scheduler_backpressure_active": False,
     }
     assert guard.last_rss_bytes == 100
     assert guard.warning_crossings == 2
 
 
+@pytest.mark.parametrize("source", ["windows_job", "windows_job_commit_peak"])
 def test_windows_job_peak_is_not_labeled_as_instantaneous_commit(
     monkeypatch: MonkeyPatch,
+    source: str,
 ) -> None:
     guard = parallel.ProcessTreeMemoryGuard(aggregate_hard_limit_mb=2304)
     guard._record_aggregate_sample(
         parallel.AggregateMemorySample(
-            source="windows_job",
+            source=source,
             current_bytes=None,
             peak_bytes=400,
             hard_limit_bytes=1_000,
@@ -812,12 +820,17 @@ def test_process_tree_memory_warning_backpressures_until_memory_recedes(
     monkeypatch.setattr(
         parallel, "process_tree_rss_bytes", lambda _pid=None: next(samples) * 1024 * 1024
     )
-    monkeypatch.setattr(parallel.time, "sleep", lambda _seconds: None)
+
+    def while_paused(_seconds: float) -> None:
+        assert guard.snapshot()["scheduler_backpressure_active"] is True
+
+    monkeypatch.setattr(parallel.time, "sleep", while_paused)
 
     assert guard.check_before_schedule(force=True) == 700 * 1024 * 1024
-    assert "exceeded the configured high-water threshold" in caplog.text
+    assert "Process-tree resident memory reached the high-water threshold" in caplog.text
     assert guard.warning_crossings == 1
     assert not guard.warning_emitted
+    assert guard.snapshot()["scheduler_backpressure_active"] is False
 
 
 def test_resource_exceptions_are_separate_from_data_failures() -> None:

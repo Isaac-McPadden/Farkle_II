@@ -427,7 +427,17 @@ def build_parameter_responses(cfg: AppConfig, k: int, *, force: bool = False) ->
         parquet = pq.ParquetFile(path)
         admitted += parquet.metadata.num_rows * 1536
         if admitted > budget:
-            raise MemoryError("parameter response roster exceeds admitted compact-grid budget")
+            from farkle.utils.parallel import budget_admission_error
+
+            raise budget_admission_error(
+                "Build parameter response roster",
+                admitted,
+                budget,
+                path=path,
+                setting="resources.stage_batch_bytes.analysis",
+                estimated=True,
+                basis="1,536 bytes per row across inputs",
+            )
         columns = projections[index] + [
             n
             for n in ("strategy_type", "root_seed", "k", "n_players")

@@ -11,10 +11,10 @@ multiplier.
 The global `--resource-limiters` option selects one of three runtime modes:
 
 - `enabled` (default) applies the complete existing Job/cgroup, memory
-  preflight/admission, RSS backpressure, logical-CPU, worker-memory, and
+  preflight/admission, resident-memory backpressure, logical-CPU, worker-memory, and
   native-thread policy.
 - `memory-only` still establishes the configured aggregate memory boundary and
-  retains reserve checks, worker-memory admission, and RSS backpressure. It
+  retains reserve checks, worker-memory admission, and resident-memory backpressure. It
   ignores `logical_cpu_budget` and `native_threads_per_worker` and preserves
   the caller's native-thread environment.
 - `disabled` runs the real CLI directly, without a new Job/cgroup boundary,
@@ -77,8 +77,10 @@ Inactive effective ceilings are recorded as null rather than being presented
 as enforced.
 
 Strict setup failure exits with code 78 before the real analysis process starts.
-An OS memory event exits the supervisor with code 86 when the backend exposes
-enough evidence to classify it. The two-root health artifact is atomically set
+The supervisor retains exit code 86 for memory-boundary exits. Its diagnostic
+identifies evidence from cgroup OOM counters, Windows native allocation
+status, a suspected Windows Job limit near the committed-memory peak, or an
+unconfirmed Linux SIGKILL. The two-root health artifact is atomically set
 to `running` before work begins, so abrupt termination cannot leave a new
 successful pipeline marker. Existing authenticated units remain reusable;
 temporary and unauthenticated files remain ineligible on resume.
@@ -101,9 +103,9 @@ units, authenticated manifests, and exact resume after interruption. A fixed
 
 Resource handling distinguishes three outcomes:
 
-1. **Warning/backpressure.** Process-tree RSS is diagnostic high-water
-   telemetry. Crossing `process_tree_warning_threshold_mb` pauses new bounded
-   submissions. It is nonfatal and nonsticky: after RSS recedes, submission and
+1. **Warning/backpressure.** Sampled process-tree resident memory drives the
+   high-water warning. Crossing `process_tree_warning_threshold_mb` pauses new
+   submissions. After resident memory recedes, submission and
    valid publication continue. A warning alone never quarantines an
    authenticated unit or manifest.
 2. **Recoverable resource failure.** Persistent high water, loss of the
@@ -112,8 +114,9 @@ Resource handling distinguishes three outcomes:
    or a failed memory monitor stops submission and cancels queued futures.
    Completed atomic units remain eligible for validation and resume. The shared
    partitioned-stage runner makes at most one retry, revalidates all units, and
-   schedules only pending coordinates with `max(1, previous_workers // 2)`.
-   Non-resource exceptions are never retried. Execution-only telemetry records
+   schedules only pending coordinates with `max(1, previous_workers // 2)`
+   for eligible allocation or pressure failures. Budget-admission rejection
+   and failed monitoring require intervention. Execution-only telemetry records
    both policies, the classification, warning/backpressure observations, and
    final outcome outside statistical freshness.
 3. **OS-enforced hard termination.** The Job Object or cgroup is authoritative.
@@ -125,15 +128,15 @@ Resource handling distinguishes three outcomes:
 On Windows, `JOB_OBJECT_LIMIT_JOB_MEMORY` accounts for the job-wide sum of
 committed virtual memory. The worker-side monitor queries
 `QueryInformationJobObject(JobObjectExtendedLimitInformation)` for
-`PeakJobMemoryUsed` and the effective `JobMemoryLimit`; it never interprets RSS
-as Job commit. The supervisor performs the same query after child exit to
-classify a failed process near the boundary. RSS remains useful for reversible
-admission backpressure.
+`PeakJobMemoryUsed` and the effective `JobMemoryLimit`. The supervisor performs
+the same query after child exit to identify failures near the boundary. The sum
+of resident working sets serves as the separate signal for reversible scheduler
+backpressure.
 
 On cgroup v2, `memory.max` remains the hard boundary while `memory.current`,
 `memory.peak`, and `memory.events` provide current/peak accounting and OOM
 classification. When no privileged boundary is available in explicitly
-permissive development mode, portable RSS and host-available sampling remain
+permissive development mode, portable resident-memory and host-available sampling remain
 telemetry/backpressure only and provenance remains labeled `unenforced`.
 
 Sequential two-root execution is fail-fast for both resource and ordinary

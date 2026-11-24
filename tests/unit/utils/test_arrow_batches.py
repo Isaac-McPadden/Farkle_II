@@ -54,7 +54,7 @@ def test_coalescing_byte_ceiling_schema_and_input_admission() -> None:
     )
     assert pa.concat_tables(batches).equals(table)
     assert all(batch.nbytes <= 100 for batch in batches)
-    with pytest.raises(MemoryError, match="input exceeds"):
+    with pytest.raises(MemoryError, match="Coalescing input.*configured allowance"):
         list(coalesce_arrow_tables([table], max_buffer_bytes=10, target_rows=20))
     with pytest.raises(ValueError, match="exact Arrow schema"):
         list(

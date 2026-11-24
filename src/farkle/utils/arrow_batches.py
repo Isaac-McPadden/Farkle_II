@@ -37,7 +37,17 @@ def coalesce_arrow_tables(
         if not table.num_rows:
             continue
         if table.nbytes > max_buffer_bytes or table.num_rows > target_rows:
-            raise MemoryError("coalescing input exceeds its byte or row allowance")
+            from farkle.utils.parallel import budget_admission_error
+
+            exceeds_bytes = table.nbytes > max_buffer_bytes
+            raise budget_admission_error(
+                "Coalescing input",
+                table.nbytes if exceeds_bytes else table.num_rows,
+                max_buffer_bytes if exceeds_bytes else target_rows,
+                unit="bytes" if exceeds_bytes else "rows",
+                setting="max_buffer_bytes" if exceeds_bytes else "target_rows",
+                remedy="Split the input batch within the writer allowance.",
+            )
         if pending and (
             pending_bytes + table.nbytes > max_buffer_bytes
             or pending_rows + table.num_rows > target_rows

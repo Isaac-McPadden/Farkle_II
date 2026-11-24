@@ -31,6 +31,7 @@ from farkle.utils.artifact_contract import (
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    budget_admission_error,
     make_process_tree_memory_guard,
     process_map,
     resolve_mp_context,
@@ -127,6 +128,9 @@ _MIRROR_SCHEMA_VERSION: Final = 1
 _COUNT_FIELDS: Final = _COUNT_SCHEMA.names[5:]
 
 
+_SEAT_BATCH_SETTING = "resources.stage_batch_bytes.seat_analysis (default analysis allowance)"
+
+
 def _seat_bytes(cfg: AppConfig) -> int:
     return int(
         cfg.resources.stage_batch_bytes.get(
@@ -167,7 +171,14 @@ class _SeatTotals:
         self.max_bytes = max_bytes
         self.limit = max_bytes // (512 + 4 * k * 4 * 8)
         if self.limit < 1:
-            raise MemoryError("seat_analysis byte budget cannot hold one strategy")
+            raise budget_admission_error(
+                "Plan seat analysis",
+                512 + 4 * k * 4 * 8,
+                max_bytes,
+                setting=_SEAT_BATCH_SETTING,
+                estimated=True,
+                basis="one strategy",
+            )
         self.positions: dict[int, int] = {}
         self.data = np.zeros((min(128, self.limit), k, 4), dtype=np.int64)
         self.column_totals = [0, 0, 0, 0]
@@ -187,9 +198,13 @@ class _SeatTotals:
         new = [int(strategy) for strategy in unique if int(strategy) not in self.positions]
         required = len(self.positions) + len(new)
         if required > self.limit:
-            raise MemoryError(
-                f"seat_analysis roster needs {required} strategies; byte budget "
-                f"{self.max_bytes} admits {self.limit}; increase resources.stage_batch_bytes"
+            raise budget_admission_error(
+                "Build seat analysis roster",
+                required,
+                self.limit,
+                unit="strategies",
+                setting=_SEAT_BATCH_SETTING,
+                basis=f"{self.max_bytes:,} bytes budgeted",
             )
         if required > len(self.data):
             grown = np.zeros(
@@ -620,7 +635,14 @@ def _game_diagnostics(
                     if (root, k, strategies[0]) not in selfplay and len(
                         selfplay
                     ) >= max_bytes // 512:
-                        raise MemoryError("self-play roster exceeds seat_analysis byte budget")
+                        raise budget_admission_error(
+                            "Build self-play roster",
+                            len(selfplay) + 1,
+                            max_bytes // 512,
+                            unit="entries",
+                            setting=_SEAT_BATCH_SETTING,
+                            basis="512 budgeted bytes per entry",
+                        )
                     cell = selfplay[(root, k, strategies[0])]
                     cell[0] += p1_win
                     cell[1] += 1
@@ -749,7 +771,14 @@ class _MirroredPartitionWriter:
                 if _mirror_partition(a, b, partitions) != partition:
                     continue
                 if len(records) >= self.max_records:
-                    raise MemoryError("mirrored partition exceeds its admitted record budget")
+                    raise budget_admission_error(
+                        "Build mirrored partition",
+                        len(records) + 1,
+                        self.max_records,
+                        path=output,
+                        unit="records",
+                        setting=_SEAT_BATCH_SETTING,
+                    )
                 status = TerminationStatus(values["termination_status"][index])
                 winner = values["winner_seat"][index]
                 if status is TerminationStatus.SAFETY_LIMIT:
@@ -762,9 +791,13 @@ class _MirroredPartitionWriter:
                 orientation = int((first_i, second_i) == (b, a))
                 records.append((a, b, orientation, int(winner == "P1"), len(records)))
         if len(records) > self.max_records:
-            raise MemoryError(
-                "deterministic pair partition exceeds its assigned compact-record budget; "
-                "increase deterministic partitioning before publication"
+            raise budget_admission_error(
+                "Build deterministic pair partition",
+                len(records),
+                self.max_records,
+                path=output,
+                unit="records",
+                setting=_SEAT_BATCH_SETTING,
             )
         if not records:
             pq.write_table(pa.Table.from_pylist([], schema=_MIRROR_SHARD_SCHEMA), output)
@@ -1128,7 +1161,15 @@ def _compact_frame(path: Path, max_bytes: int) -> pd.DataFrame:
     """Admit a small roster summary; never use this reader for batch histories."""
     parquet = pq.ParquetFile(path)
     if parquet.metadata.num_rows * 256 > max_bytes:
-        raise MemoryError(f"seat summary {path} exceeds configured compact-frame budget")
+        raise budget_admission_error(
+            "Read seat summary",
+            parquet.metadata.num_rows * 256,
+            max_bytes,
+            path=path,
+            setting=_SEAT_BATCH_SETTING,
+            estimated=True,
+            basis="256 bytes per row",
+        )
     tables = list(_tables(path, parquet.schema_arrow.names, max_bytes))
     table = (
         pa.concat_tables(tables)

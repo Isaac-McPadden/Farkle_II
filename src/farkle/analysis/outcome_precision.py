@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 
 from farkle.analysis.outcome_distributions import _COUNTS, outcome_support_schema
 from farkle.analysis.outcome_publication import (
+    _ANALYSIS_BATCH_SETTING,
     _admit_source_footers,
     _checked,
     _CoalescedWriter,
@@ -46,6 +47,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
+from farkle.utils.parallel import budget_admission_error
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
@@ -218,8 +220,17 @@ def _admit_parquet(path: Path, schema: pa.Schema, budget: int) -> pq.ParquetFile
     with path.open("rb") as handle:
         handle.seek(-8, 2)
         size, magic = struct.unpack("<I4s", handle.read(8))
-    if magic != b"PAR1" or size > budget // 4:
-        raise MemoryError("precision source footer exceeds metadata admission or is invalid")
+    if magic != b"PAR1":
+        raise ValueError(f"invalid required precision source Parquet footer: {path}")
+    if size > budget // 4:
+        raise budget_admission_error(
+            "Read precision source Parquet footer",
+            size,
+            budget // 4,
+            path=path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            basis="one quarter of the analysis allowance",
+        )
     parquet = pq.ParquetFile(path)
     if parquet.schema_arrow.remove_metadata() != schema:
         raise ValueError("incompatible outcome precision input schema")
@@ -778,8 +789,13 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
     bytes_per_strategy = (k + 1) * max(d.batches * 256, _RANGE_WIDTH * 4 * 32)
     tile_size = min(len(d.roster), budget // (4 * bytes_per_strategy))
     if tile_size < 1 or r * 8 * 8 > budget // 4:
-        raise MemoryError(
-            "precision needs a larger analysis stage_batch_bytes for one strategy or replicate vector"
+        raise budget_admission_error(
+            "Plan outcome precision",
+            max(bytes_per_strategy, r * 8 * 8),
+            budget // 4,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+            basis="one strategy or replicate vector",
         )
     _validate_support(cfg, d, budget)
     root = cfg.outcome_precision_ranges_dir(k)
@@ -827,14 +843,26 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
             plan, plan_path, sidecar=_metadata(cfg, k, plan_path, "outcome_precision_plan", inputs)
         )
     if budget < plan["minimum_budget"]:
-        raise MemoryError(
-            "precision resume needs original byte allowance or --force to repartition"
+        raise budget_admission_error(
+            "Resume outcome precision plan",
+            plan["minimum_budget"],
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            remedy="Restore the original analysis batch allowance or use --force to repartition.",
         )
     tile_size = int(plan["tile_size"])
     tiles = (len(d.roster) + tile_size - 1) // tile_size
     ranges = (r + _RANGE_WIDTH - 1) // _RANGE_WIDTH
     if tiles * (ranges + 2) * 4096 > budget:
-        raise MemoryError("precision unit inventory exceeds metadata allowance")
+        raise budget_admission_error(
+            "Plan precision units",
+            tiles * (ranges + 2) * 4096,
+            budget,
+            path=plan_path,
+            setting=_ANALYSIS_BATCH_SETTING,
+            estimated=True,
+        )
     identity = PartitionedStageIdentity(
         "analysis",
         d.root,
@@ -860,8 +888,16 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
             "identity": asdict(identity),
             "units": [asdict(u) for u in units],
         }
-        if len(json.dumps([*descriptors, descriptor])) * 4 > budget:
-            raise MemoryError("precision checkpoint metadata exceeds analysis allowance")
+        estimate = len(json.dumps([*descriptors, descriptor])) * 4
+        if estimate > budget:
+            raise budget_admission_error(
+                "Build precision checkpoint inventory",
+                estimate,
+                budget,
+                path=directory,
+                setting=_ANALYSIS_BATCH_SETTING,
+                estimated=True,
+            )
         metadata = _metadata(
             cfg, k, directory / "manifest.jsonl", "outcome_precision_manifest", sources
         )
@@ -942,7 +978,9 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
         sidecar=_metadata(cfg, k, output, "outcome_precision", [publication, *summaries]),
         temp_dir=cfg.io.temp_dir,
     ) as writer:
-        coalescer = _CoalescedWriter(writer.write_batch, schema, budget // 4)
+        coalescer = _CoalescedWriter(
+            writer.write_batch, schema, budget // 4, path=output, budget_divisor=4
+        )
         for path in summaries:
             for table in _tables(path, schema, budget):
                 coalescer.write_batch(table.replace_schema_metadata(None))

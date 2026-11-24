@@ -140,7 +140,16 @@ def _slice_row_limit(k: int, max_bytes: int) -> int:
         raise ValueError("outcome byte allowance must be a positive integer")
     limit = max_bytes // (4 * 4096 * k)
     if limit < 1:
-        raise MemoryError(f"outcome slice needs at least {4 * 4096 * k} bytes for one game")
+        from farkle.utils.parallel import budget_admission_error
+
+        raise budget_admission_error(
+            "Plan outcome slice",
+            4 * 4096 * k,
+            max_bytes,
+            setting="max_bytes",
+            estimated=True,
+            basis="one game",
+        )
     return limit
 
 
@@ -292,10 +301,27 @@ def accumulate_outcome_slice(
     _validate_design(root_seed, k, shuffles_per_batch)
     limit = _slice_row_limit(k, max_bytes)
     if table.num_rows > limit:
-        raise MemoryError(f"outcome slice exceeds {limit} admitted games; split the source slice")
+        from farkle.utils.parallel import budget_admission_error
+
+        raise budget_admission_error(
+            "Check outcome slice size",
+            table.num_rows,
+            limit,
+            setting="max_bytes",
+            unit="games",
+            remedy="Split the source slice.",
+        )
     projected = _project(table, k)
     if projected.nbytes > max_bytes // 4:
-        raise MemoryError("outcome projection exceeds its quarter-budget allocation")
+        from farkle.utils.parallel import budget_admission_error
+
+        raise budget_admission_error(
+            "Buffer outcome projection",
+            projected.nbytes,
+            max_bytes // 4,
+            setting="max_bytes",
+            basis="one quarter of the caller's allowance",
+        )
     # Reject malformed variable-length lists before Python expansion.
     if projected["seat_ranks"].null_count or np.any(
         np.asarray(pc.list_value_length(projected["seat_ranks"])) != k

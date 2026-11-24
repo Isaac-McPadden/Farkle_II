@@ -35,7 +35,12 @@ from farkle.config import AppConfig
 from farkle.utils.artifact_contract import ArtifactSidecar, sha256_file, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import AuthenticatedContractError, identity_sha256
-from farkle.utils.parallel import process_map, resolve_mp_context, resolve_stage_parallel_policy
+from farkle.utils.parallel import (
+    budget_admission_error,
+    process_map,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.release_identity import capture_v3_inputs
 from farkle.utils.stage_completion import (
     CompletionState,
@@ -97,8 +102,16 @@ def _monitor_task(task: tuple[AppConfig, _Design, Path, ArtifactSidecar]) -> Non
     budget = int(cfg.resources.stage_batch_bytes["analysis"])
     _validate_support(cfg, design, budget)
     selected = sentinel_ids([s for s, _ in design.roster])
-    if len(selected) * design.batches * len(_COUNTS) * 8 > budget // 4:
-        raise MemoryError("selected monitor vectors exceed the configured byte allowance")
+    vector_bytes = len(selected) * design.batches * len(_COUNTS) * 8
+    if vector_bytes > budget // 4:
+        raise budget_admission_error(
+            "Allocate selected RNG monitor vectors",
+            vector_bytes,
+            budget // 4,
+            setting="resources.stage_batch_bytes.analysis",
+            estimated=True,
+            basis="one quarter of the analysis allowance",
+        )
     values = {sid: np.zeros((design.batches, len(_COUNTS)), dtype=np.int64) for sid in selected}
     for table in _tables(
         cfg.outcome_batch_stats_path(k), outcome_support_schema(batch=True), budget
