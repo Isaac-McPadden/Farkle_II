@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, cast
@@ -100,15 +100,24 @@ def validate_authorization(
 
 
 def validate_authorization_sources(
-    authorization: Mapping[str, Any], power_path: Path, manifest_path: Path
+    authorization: Mapping[str, Any],
+    power_path: Path,
+    manifest_path: Path,
+    *,
+    digest_of: Callable[[Path], str] | None = None,
 ) -> None:
-    """Bind consent to exact immutable files as well as their semantic hashes."""
+    """Check consent's source digests. Execution measures the exact files."""
+    digest_of = digest_of or sha256_file
     for field, path in (
         ("power_plan_sha256", power_path),
         ("block_manifest_sha256", manifest_path),
     ):
-        if authorization.get(field) != sha256_file(path):
+        if authorization.get(field) != digest_of(path):
             raise ValueError(f"H2H authorization source changed: {field}")
+
+
+def cap_allows_plan(plan: Mapping[str, Any], cap: int | None) -> bool:
+    return cap is None or int(plan["maximum_total_attempts"]) <= cap
 
 
 def _publish(cfg: AppConfig, plan: Mapping[str, Any], payload: dict[str, Any]) -> None:
@@ -186,7 +195,6 @@ def resolve_cap_authorization(
             if existing["configured_total_game_cap"] != cap:
                 existing = None
     if existing is None:
-        maximum = int(plan["maximum_total_attempts"])
         existing = {
             "schema_version": 1,
             "power_plan_sha256": sha256_file(cfg.h2h_power_plan_path()),
@@ -204,7 +212,7 @@ def resolve_cap_authorization(
             "authorized_total_game_cap": cap,
             "authorization_source": "configured_cap",
             "execution_authorization": (
-                "ready" if cap is None or maximum <= cap else "blocked_by_cap"
+                "ready" if cap_allows_plan(plan, cap) else "blocked_by_cap"
             ),
         }
         _publish(cfg, plan, existing)

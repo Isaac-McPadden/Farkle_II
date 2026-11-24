@@ -433,14 +433,7 @@ def _write_workload_plan_simulation_output(
             or not exact_direct_sources(path, [strategy_manifest])
         ):
             raise ValueError(f"simulation workload plan identity is stale: {path}")
-        original = json.loads(stored)
-        # These are retained estimates from the producer invocation. Cap,
-        # batch layout, precision and every workload coordinate must still agree.
-        current_plan = plan.to_dict()
-        projections = {"projected_games_per_second", "projected_runtime_seconds"}
-        if original.keys() != current_plan.keys() or any(
-            original[k] != value for k, value in current_plan.items() if k not in projections
-        ):
+        if not workload_plan_matches(json.loads(stored), plan):
             raise ValueError(
                 f"simulation workload plan does not match current configuration: {path}"
             )
@@ -457,6 +450,15 @@ def _write_workload_plan_simulation_output(
         staged.write_bytes(expected)
 
     write_artifact_with_sidecar_atomic(path, sidecar, _write)
+
+
+def workload_plan_matches(original: Mapping[str, Any], plan: TournamentWorkloadPlan) -> bool:
+    """Retained performance projections are independent of the planned workload."""
+    current = plan.to_dict()
+    projections = {"projected_games_per_second", "projected_runtime_seconds"}
+    return original.keys() == current.keys() and all(
+        original[key] == value for key, value in current.items() if key not in projections
+    )
 
 
 def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Path]:

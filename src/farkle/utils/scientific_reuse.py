@@ -30,16 +30,22 @@ def compatible_producer(stage: StageIdentity, code: CodeIdentity) -> bool:
 
 def launch_matches(stage: StageIdentity) -> bool:
     pin = current()
+    return (
+        pin is not None
+        and has_scoped_producer_evidence(stage)
+        and (closure(stage).items() <= pin.launch_digests.items())
+    )
+
+
+def has_scoped_producer_evidence(stage: StageIdentity) -> bool:
+    """A cross-revision closure must contain the artifact's own producer digest."""
     roots = stage.stage_config.selected_config.get("sim.seed_list")
-    if pin is None or not isinstance(roots, (tuple, list)) or not roots:
+    if not isinstance(roots, (tuple, list)) or not roots:
         return False
     evidence = closure(stage)
     suffix = f"/{stage.stage_key}/" + ",".join(map(str, roots))
     own = stage.immutable_design_identities.get("stage_dependencies_v1")
-    return (
-        any(k.endswith(suffix) and v == own for k, v in evidence.items())
-        and evidence.items() <= pin.launch_digests.items()
-    )
+    return any(k.endswith(suffix) and v == own for k, v in evidence.items())
 
 
 def publication_closure(

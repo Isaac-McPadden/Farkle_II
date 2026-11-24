@@ -1613,10 +1613,11 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     always win. Re-loading the same sequence therefore yields identical configs, which
     keeps resume semantics predictable.
     """
+    from farkle.utils.evidence_reader import read_evidence_bytes
+
     data: dict[str, Any] = {}
     for path in overlays:
-        with path.open("r", encoding="utf-8") as fh:
-            overlay = yaml.safe_load(fh) or {}
+        overlay = yaml.safe_load(read_evidence_bytes(path).decode("utf-8")) or {}
         if not isinstance(overlay, Mapping):
             raise TypeError(f"Config file {path} must contain a mapping")
         expanded = expand_dotted_keys(overlay)

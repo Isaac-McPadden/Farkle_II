@@ -168,12 +168,30 @@ Options:
 - `--seed-pair A B`
   Override the two roots in one flag. This is mutually exclusive with
   `--seed-a` and `--seed-b`.
+- `--resume-preview`
+  Inspect the configured results and print the expected recovery actions.
+- `--preview-format text|json`
+  Select the preview output format. The default is `text`.
 
 Example:
 
 ```bash
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
+farkle --config configs/fast_config.yaml two-seed-pipeline --resume-preview --preview-format json
 ```
+
+Preview reports the affected scope, action, first observed reason, and evidence
+path. JSON output includes a `provisional` flag on each decision. Namespace
+admission and absent outputs can be determined directly. Retained publications
+require execution-time checks of the scientific dependencies and artifact
+bytes. Bounded simulation inventories can show complete or incomplete shuffle
+coverage. Larger inventories are deferred to execution.
+
+Preview uses access-time-preserving reads for existing evidence and writes
+its report to stdout. It can inspect a frozen above-cap H2H plan and identify
+the exact authorization token. Execution independently checks the plan and
+records any consent. The final release audit still authenticates both roots
+and the pair from their published bytes.
 
 ## Notes
 

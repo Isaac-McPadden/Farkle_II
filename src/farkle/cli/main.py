@@ -258,6 +258,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recompute even when completion markers exist",
     )
     two_seed_top.add_argument(
+        "--resume-preview", action="store_true", help="Inspect resume evidence without writing"
+    )
+    two_seed_top.add_argument(
+        "--preview-format", choices=("text", "json"), help="Resume preview output (default: text)"
+    )
+    two_seed_top.add_argument(
         "--seed-a",
         type=int,
         help="Override the first seed for dual-seed orchestration",
@@ -329,6 +335,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         or (args.command == "analyze" and args.an_cmd in {"pipeline", "analytics"})
     ):
         parser.error("--h2h-authorize requires two-seed-pipeline or analyze pipeline/analytics")
+    if args.command == "two-seed-pipeline":
+        if args.resume_preview:
+            from farkle.utils.evidence_reader import preview_evidence_reads
+
+            with preview_evidence_reads():
+                _dispatch(args, parser)
+            return
+        if args.preview_format is not None:
+            parser.error("--preview-format requires --resume-preview")
     with cap_authorization_policy(interactive=True, override=args.h2h_authorize):
         try:
             _dispatch(args, parser)
@@ -349,22 +364,24 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
     )
     expected_seed_len = expected_seed_list_length(args.command)
 
-    setup_info_logging()
+    preview = args.command == "two-seed-pipeline" and args.resume_preview
+    if not preview:
+        setup_info_logging()
     log_level = _parse_level(args.log_level)
     root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-
-    LOGGER.info(
-        "CLI arguments parsed",
-        extra={
-            "stage": "cli",
-            "command": args.command,
-            "config_path": str(args.config) if args.config is not None else None,
-            "overrides": list(args.overrides or []),
-            "log_level": logging.getLevelName(root_logger.level),
-            "resource_limiters": args.resource_limiters,
-        },
-    )
+    if not preview:
+        root_logger.setLevel(log_level)
+        LOGGER.info(
+            "CLI arguments parsed",
+            extra={
+                "stage": "cli",
+                "command": args.command,
+                "config_path": str(args.config) if args.config is not None else None,
+                "overrides": list(args.overrides or []),
+                "log_level": logging.getLevelName(root_logger.level),
+                "resource_limiters": args.resource_limiters,
+            },
+        )
 
     cfg: AppConfig | None = None
     rng_lags: tuple[int, ...] | None = None
@@ -402,6 +419,18 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
             cfg.analysis.disable_rng_diagnostics = not compute_rng_diagnostics
         cfg.validate_statistical_contract(require_two_roots=args.command == "two-seed-pipeline")
         assign_config_sha(cfg)
+
+        if preview:
+            from farkle.orchestration.resume_preview import preview_pipeline, render_preview
+
+            report = preview_pipeline(
+                cfg,
+                seed_pair=cfg.sim.require_seed_pair(),
+                force=args.force,
+                h2h_override=args.h2h_authorize,
+            )
+            print(render_preview(report, output_format=args.preview_format or "text"))
+            return
 
         LOGGER.info(
             "Configuration prepared",

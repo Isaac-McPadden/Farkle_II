@@ -233,7 +233,22 @@ def make_run_id(run_label: str) -> str:
     return f"{normalized}_{time.time_ns()}"
 
 
-def _manifest_lines_are_v2(path: Path) -> bool:
+def _lines_are_v2(lines: Iterable[str]) -> bool:
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        record = json.loads(line)
+        if (
+            not isinstance(record, dict)
+            or record.get("event") in LEGACY_MANIFEST_EVENTS
+            or record.get("schema_version") != MANIFEST_SCHEMA_VERSION
+        ):
+            return False
+    return True
+
+
+def _manifest_lines_are_v2(path: Path, *, contents: bytes | None = None) -> bool:
     """Check whether a manifest JSONL file appears to use the v2 event schema.
 
     Args:
@@ -243,30 +258,17 @@ def _manifest_lines_are_v2(path: Path) -> bool:
         ``True`` when the first parseable records look like v2 manifest events.
     """
     try:
+        if contents is not None:
+            return _lines_are_v2(contents.decode("utf-8").splitlines())
         with path.open("r", encoding="utf-8", newline="") as handle:
-            saw_record = False
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                saw_record = True
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    return False
-                if not isinstance(record, dict):
-                    return False
-                event = record.get("event")
-                if event in LEGACY_MANIFEST_EVENTS:
-                    return False
-                if record.get("schema_version") != MANIFEST_SCHEMA_VERSION:
-                    return False
-            return True if saw_record else True
+            return _lines_are_v2(handle)
     except Exception:
         return False
 
 
-def validate_manifest_contract(manifest_path: os.PathLike[str] | str) -> None:
+def validate_manifest_contract(
+    manifest_path: os.PathLike[str] | str, *, contents: bytes | None = None
+) -> None:
     """Reject an incompatible existing manifest without modifying it.
 
     A missing path is valid because the next append creates a new manifest.
@@ -275,7 +277,7 @@ def validate_manifest_contract(manifest_path: os.PathLike[str] | str) -> None:
     """
 
     path = Path(manifest_path)
-    if path.exists() and not _manifest_lines_are_v2(path):
+    if path.exists() and not _manifest_lines_are_v2(path, contents=contents):
         raise ValueError(
             f"Manifest {path} uses a retired or invalid schema; preserve it for "
             "inspection and select a new canonical manifest path"

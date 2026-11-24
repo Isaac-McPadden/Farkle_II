@@ -232,6 +232,24 @@ def _stamp_path(output: Path) -> Path:
     return output.with_name(f"{output.name}.unit.done.json")
 
 
+def read_unit_stamp(output: Path) -> dict[str, Any]:
+    """Read and check the envelope of a durable unit stamp."""
+    from farkle.utils.evidence_reader import read_evidence_bytes
+
+    path = _stamp_path(output)
+    payload = json.loads(read_evidence_bytes(path).decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid durable unit stamp at {path}")
+    recorded = payload.pop("stamp_sha256")
+    if (
+        recorded != _identity_sha256(payload)
+        or payload["unit_stamp_schema_version"] not in (1, 2)
+        or payload["completion_state"] != "complete_valid"
+    ):
+        raise ValueError(f"invalid durable unit stamp at {path}")
+    return {**payload, "stamp_sha256": recorded}
+
+
 def _stamp_payload(
     unit: PartitionedUnit,
     identity: PartitionedStageIdentity,
@@ -320,7 +338,7 @@ def _validate_unit(
     if unit_metadata is None:
         return None
     try:
-        payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+        payload = read_unit_stamp(output)
         recorded = payload.pop("stamp_sha256")
         version = payload["unit_stamp_schema_version"]
         produced = identity
@@ -351,10 +369,7 @@ def _validate_unit(
                     return None
                 produced = replace(identity, code_identity_sha256=payload["code_identity_sha256"])
         valid = (
-            recorded == _identity_sha256(payload)
-            and version in (1, 2)
-            and payload["completion_state"] == "complete_valid"
-            and payload["stage_name"] == identity.stage_name
+            payload["stage_name"] == identity.stage_name
             and payload["stage_identity_sha256"] == produced.sha256
             and payload["root_seed"] == identity.root_seed
             and payload["input_identities"] == [list(item) for item in identity.input_identities]

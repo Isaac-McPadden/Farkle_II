@@ -2280,6 +2280,10 @@ class _CompletionVerification:
             except FileNotFoundError as exc:
                 raise MissingSidecarError(f"missing sidecar for {path}") from exc
             except Exception as exc:
+                from farkle.utils.evidence_reader import EvidenceReadDeferred
+
+                if isinstance(exc, EvidenceReadDeferred):
+                    raise
                 raise CorruptSidecarError(f"corrupt sidecar {adjacent}: {exc}") from exc
         return self._sidecars[adjacent]
 
@@ -2360,6 +2364,31 @@ def classify_authenticated_lifecycle(
     )
 
 
+def require_completion_output_metadata(
+    output: CompletionOutputIdentity,
+    metadata: AuthenticatedSidecar | ImmutableManifestSidecar | None,
+    sidecar_sha256: str,
+    *,
+    stage_config: StageConfigIdentity,
+) -> None:
+    """Check the exact inventory binding shared by preview and lifecycle validation."""
+    name = output.location.relative_path
+    if metadata is None or sidecar_sha256 != output.sidecar_sha256:
+        raise ArtifactMismatchError(f"completion sidecar identity differs for {name}")
+    if metadata.stage_identity.stage_config.sha256 != stage_config.sha256:
+        raise ArtifactMismatchError(f"scoped scientific configuration differs for {name}")
+    if output.manifest is not None:
+        if (
+            not isinstance(metadata, ImmutableManifestSidecar)
+            or metadata.location != output.location
+            or output.manifest.manifest_sha256 != metadata.manifest_sha256
+            or output.manifest.summary != metadata.summary
+        ):
+            raise ArtifactMismatchError(f"completion manifest identity differs for {name}")
+    elif not isinstance(metadata, AuthenticatedSidecar) or metadata.artifact != output.artifact:
+        raise ArtifactMismatchError(f"completion artifact identity differs for {name}")
+
+
 def _classify_loaded_completion(
     completion: AuthenticatedCompletion,
     *,
@@ -2398,6 +2427,9 @@ def _classify_loaded_completion(
         for path, location in expected_paths.items():
             output = recorded[location]
             metadata, sidecar_sha = verification.sidecar(path)
+            require_completion_output_metadata(
+                output, metadata, sidecar_sha, stage_config=expected_stage_identity.stage_config
+            )
             if foreign and (metadata is None or not launch_matches(metadata.stage_identity)):
                 return CompletionState.COMPLETE_STALE
             dependency = expected_stage_identity.immutable_design_identities.get(
@@ -2416,15 +2448,9 @@ def _classify_loaded_completion(
             if output.manifest is not None:
                 if (
                     not isinstance(metadata, ImmutableManifestSidecar)
-                    or metadata.location != location
                     or metadata.stage_identity.versions != expected_stage_identity.versions
                     or not compatible_producer(metadata.stage_identity, current_code)
-                    or metadata.stage_identity.stage_config.sha256
-                    != expected_stage_identity.stage_config.sha256
                     or verification.manifest_sha256(path) != metadata.manifest_sha256
-                    or sidecar_sha != output.sidecar_sha256
-                    or output.manifest.manifest_sha256 != metadata.manifest_sha256
-                    or output.manifest.summary != metadata.summary
                 ):
                     return CompletionState.COMPLETE_STALE
                 continue
@@ -2434,11 +2460,7 @@ def _classify_loaded_completion(
                 not isinstance(metadata, AuthenticatedSidecar)
                 or metadata.artifact.location != location
                 or metadata.versions != expected_stage_identity.versions
-                or sidecar_sha != output.sidecar_sha256
-                or metadata.artifact != output.artifact
                 or not compatible_producer(metadata.stage_identity, current_code)
-                or metadata.stage_identity.stage_config.sha256
-                != expected_stage_identity.stage_config.sha256
             ):
                 return CompletionState.COMPLETE_STALE
             verification.artifact(path, deep=deep_verify_artifacts)

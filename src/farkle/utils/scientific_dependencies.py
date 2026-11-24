@@ -60,7 +60,7 @@ _COMMON = (
         "utils/",
         """__init__ aggregation analysis_shared arrow_batches artifact_contract
         artifacts authenticated_contract authenticated_graph authentication_telemetry
-        completion_files copy_on_write csv_files frozen_h2h logging manifest os_memory parallel
+        completion_files copy_on_write csv_files evidence_reader frozen_h2h logging manifest os_memory parallel
         partitioned_stage progress random release_identity schema_helpers sinks source_snapshot
         stage_completion stats strategy_ids streaming_loop telemetry timing types writer yaml_helpers
         scientific_reuse scientific_dependencies scientific_identity scientific_runtime scientific_files scientific_invocation""",
@@ -70,8 +70,10 @@ _COMMON = (
     | _modules("game/", "__init__ engine scoring scoring_lookup")
 )
 # Standalone entry points outside scientific production.
-_EXCLUDED = _modules("simulation/", "time_farkle watch_game") | _modules(
-    "analysis/", "release_audit"
+_EXCLUDED = (
+    _modules("simulation/", "time_farkle watch_game")
+    | _modules("analysis/", "release_audit")
+    | _modules("orchestration/", "resume_preview")
 )
 
 _ENGINE = _modules("simulation/", "simulation runner run_tournament workload_planner game_profile")

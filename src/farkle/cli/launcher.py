@@ -80,7 +80,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch non-pipeline commands directly and supervise pipeline commands."""
 
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if _protected_command(arguments) is None:
+    command = _protected_command(arguments)
+    if command == "two-seed-pipeline" and "--resume-preview" in arguments:
+        # Preview schedules no workers and needs no OS execution boundary.
+        previous = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            from farkle.cli.main import main as cli_main
+
+            cli_main(arguments)
+        finally:
+            sys.dont_write_bytecode = previous
+        return 0
+    if command is None:
         from farkle.cli.main import main as cli_main
 
         if argv is None:

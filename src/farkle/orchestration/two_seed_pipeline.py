@@ -709,11 +709,16 @@ def _write_pipeline_telemetry(
         )
 
 
+class ResumeIdentityError(RuntimeError):
+    """Existing provenance prevents admission to the result namespace."""
+
+
 def _require_existing_resume_identity(
     pair_root: Path,
     *,
     cfg: AppConfig,
     code_identity: CodeIdentity,
+    prospective: bool = False,
 ) -> None:
     """Reject an incompatible result namespace before any resume publication."""
 
@@ -724,7 +729,7 @@ def _require_existing_resume_identity(
         return
     payload = read_json_file_with_retry(context_path)
     if not isinstance(payload, dict):
-        raise RuntimeError(f"existing pair run context is malformed: {context_path}")
+        raise ResumeIdentityError(f"existing run context is malformed: {context_path}")
     current_code = {
         "commit": code_identity.commit,
         "policy": code_identity.policy,
@@ -743,15 +748,17 @@ def _require_existing_resume_identity(
         from farkle.utils.scientific_invocation import current
 
         verified = load_run_context(
-            context_path, active_config_path=context_path.with_name("active_config.yaml")
+            context_path,
+            active_config_path=context_path.with_name("active_config.yaml"),
+            parsed=payload if prospective else None,
         )
         if verified["reuse_namespace_v1"] != resume_namespace(cfg, pair_root):
             conflicts.append("ordered roots, input paths, layout or game profile changed")
-        elif current() is not None:
+        elif prospective or current() is not None:
             # Admission to the namespace does not authorize any artifact or plan.
             return
     if conflicts:
-        raise RuntimeError(
+        raise ResumeIdentityError(
             "existing authenticated result identity prevents exact resume before publication: "
             + "; ".join(conflicts)
         )
@@ -1436,6 +1443,34 @@ def run_pipeline(
     """Pin both root designs and the pair before starting either root."""
     from farkle.utils.scientific_invocation import configured_producers, scientific_invocation
 
+    pair, policy, code_identity = _prepare_pipeline(
+        cfg, seed_pair, oracle_game_profile=oracle_game_profile
+    )
+    apply_native_thread_limits(policy.simulation)
+    producers = [
+        entry for root in pair.root_contexts for entry in configured_producers(root.config)
+    ]
+    producers.extend(configured_producers(pair.config))
+    with scientific_invocation(producers):
+        _run_pipeline_pinned(
+            cfg,
+            seed_pair=seed_pair,
+            launch_pair=pair,
+            policy_bundle=policy,
+            code_identity=code_identity,
+            force=force,
+            cli_overrides=cli_overrides,
+            oracle_game_profile=oracle_game_profile,
+        )
+
+
+def _prepare_pipeline(
+    cfg: AppConfig,
+    seed_pair: tuple[int, int],
+    *,
+    oracle_game_profile: GameProfile | None = None,
+) -> tuple[RootPairRunContext, _PerSeedPolicyBundle, CodeIdentity]:
+    """Resolve the same paths, config scopes and Git identity for both entry points."""
     if len(set(seed_pair)) != 2:
         raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
     if oracle_game_profile is None:
@@ -1451,7 +1486,6 @@ def run_pipeline(
         ),
     )
     policy = _derive_per_seed_job_budgets(cfg, len(seed_pair))
-    apply_native_thread_limits(policy.simulation)
     roots = tuple(
         SeedRunContext.from_config(
             _build_seed_cfg(cfg, seed_pair=seed_pair, seed=seed, policy_bundle=policy)
@@ -1466,19 +1500,7 @@ def run_pipeline(
     pair = RootPairRunContext.from_root_contexts(
         cast(tuple[SeedRunContext, SeedRunContext], roots), pair_root=seed_pair_root(cfg, seed_pair)
     )
-    producers = [entry for root in roots for entry in configured_producers(root.config)]
-    producers.extend(configured_producers(pair.config))
-    with scientific_invocation(producers):
-        _run_pipeline_pinned(
-            cfg,
-            seed_pair=seed_pair,
-            launch_pair=pair,
-            policy_bundle=policy,
-            code_identity=code_identity,
-            force=force,
-            cli_overrides=cli_overrides,
-            oracle_game_profile=oracle_game_profile,
-        )
+    return pair, policy, code_identity
 
 
 def _run_pipeline_pinned(

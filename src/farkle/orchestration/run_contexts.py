@@ -468,10 +468,18 @@ def write_run_context_atomic(
     return lineage_sha
 
 
-def load_run_context(path: Path, *, active_config_path: Path | None = None) -> dict[str, Any]:
+def load_run_context(
+    path: Path,
+    *,
+    active_config_path: Path | None = None,
+    parsed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Load and authenticate a persisted runtime/layout context."""
+    from farkle.utils.evidence_reader import read_evidence_bytes
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = (
+        json.loads(read_evidence_bytes(path).decode("utf-8")) if parsed is None else dict(parsed)
+    )
     if not isinstance(payload, dict):
         raise ValueError("run context must contain a JSON object")
     recorded = payload.pop("run_context_sha256", None)

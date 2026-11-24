@@ -107,18 +107,22 @@ def retry_transient_io(action: Callable[[], _T]) -> _T:
 
 def read_json_file_with_retry(path: Path | str) -> Any:
     """Read JSON while tolerating transient access and non-atomic remote views."""
+    from farkle.utils.evidence_reader import read_evidence_bytes
 
     source = Path(path)
-    return _read_json_with_retry(source, lambda: json.loads(source.read_text(encoding="utf-8")))
+    return _read_json_with_retry(
+        source, lambda: json.loads(read_evidence_bytes(source).decode("utf-8"))
+    )
 
 
 def read_json_file_with_sha256(path: Path) -> tuple[Any, str]:
     """Parse JSON and fingerprint the exact bytes used for parsing."""
 
     from farkle.utils.authentication_telemetry import record_authentication_hash
+    from farkle.utils.evidence_reader import read_evidence_bytes
 
     def read() -> tuple[Any, str]:
-        contents = path.read_bytes()
+        contents = read_evidence_bytes(path)
         payload = json.loads(contents.decode("utf-8"))
         digest = hashlib.sha256(contents).hexdigest()
         record_authentication_hash(path, len(contents))
