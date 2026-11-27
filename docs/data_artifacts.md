@@ -57,6 +57,14 @@ failures, owned scratch files are cleaned on ordinary success/failure, and
 crash-orphaned scratch files are ignored rather than broadly deleting a shared
 scratch directory. Durable checkpoints keep their canonical names and cadence.
 
+For a replaceable v3 publication, the writer verifies the staged pair and its
+declared inputs before withdrawing the old sidecar. It keeps the prior pair
+under `_execution` until the new sidecar commits. An installation error restores
+the prior pair. If the writer process exits between installations, readers see
+a missing sidecar and the next publication attempt restores the prior pair
+under the writer lock. An interrupted first publication has no prior generation.
+Its unsealed data cannot establish completion.
+
 Streamed ingest rows, row-preserving curated files, rare-event shards and
 counter checkpoints, and auxiliary per-k TrueSkill exports receive the same
 adjacent hash-bound sidecars as final summaries. A no-force resume may publish

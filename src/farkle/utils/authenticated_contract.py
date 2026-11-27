@@ -13,10 +13,11 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
@@ -1629,6 +1630,8 @@ def _validate_unbound_dependencies(
                 or (sidecar_sha or sha256_file(manifest_sidecar_path)) != manifest.sidecar_sha256
                 or loaded_manifest.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
                 or loaded_manifest.summary != manifest.summary
+                or loaded_manifest.location != manifest.location
+                or loaded_manifest.manifest_sha256 != manifest.manifest_sha256
             ):
                 raise ArtifactMismatchError(f"manifest root changed: {manifest.logical_role}")
 
@@ -1653,6 +1656,11 @@ def validate_authenticated_artifact_metadata(
     """
 
     artifact_path = Path(path)
+    verification = _CompletionVerification()
+    try:
+        verification.watch(sidecar_path(artifact_path))
+    except FileNotFoundError as exc:
+        raise MissingSidecarError(f"missing sidecar for {artifact_path}") from exc
     metadata = load_authenticated_sidecar(artifact_path)
     location = metadata.artifact.location
     if expected_location is not None and location != expected_location:
@@ -1662,7 +1670,7 @@ def validate_authenticated_artifact_metadata(
     else:
         _require_unbound_canonical_suffix(artifact_path, location)
     try:
-        byte_length = artifact_path.stat().st_size
+        byte_length = verification.watch(artifact_path).st_size
     except OSError as exc:
         raise ArtifactMismatchError(f"artifact cannot be inspected: {artifact_path}") from exc
     if byte_length != metadata.artifact.byte_length:
@@ -1678,6 +1686,7 @@ def validate_authenticated_artifact_metadata(
         raise ArtifactMismatchError("stage identity does not match")
     if expected_versions is not None and metadata.versions != expected_versions:
         raise ArtifactMismatchError("method/RNG/outcome/schema version identity does not match")
+    verification.require_unchanged()
     return metadata
 
 
@@ -1729,41 +1738,106 @@ def capture_manifest_root(
     )
 
 
+@contextmanager
+def _destination_candidate(staged: Path, destination: Path) -> Iterator[Path]:
+    """Validate the actual installable file, including the copy from external scratch."""
+    if staged.stat().st_dev == destination.parent.stat().st_dev:
+        yield staged
+        return
+
+    fd, local = make_staged_path(destination, prefix="._publish_")
+    try:
+        with (
+            os.fdopen(fd, "wb") as target,
+            _protected_publication_files([staged]) as check_source,
+            staged.open("rb") as source,
+        ):
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+            check_source()
+        yield local
+        # Preserve the staged-publisher API: a successful install consumes the
+        # caller's stage. Frozen reuse leaves it for the caller's normal cleanup.
+        if not local.exists():
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning("Could not remove consumed staging file %s", staged, exc_info=True)
+    finally:
+        local.unlink(missing_ok=True)
+
+
 def _install_manifest(
     staged_data: Path,
     staged_sidecar: Path,
     final_path: Path,
     metadata: ImmutableManifestSidecar,
+    sources: Sequence[SourceArtifactIdentity],
+    paths: Mapping[str, Path],
+    controls: Mapping[str, Path],
 ) -> ImmutableManifestSidecar:
-    from contextlib import nullcontext
-
+    from farkle.utils.frozen_h2h import same_production
     from farkle.utils.manifest import publication_lock
     from farkle.utils.scientific_invocation import publication_transaction
+    from farkle.utils.scientific_reuse import immutable_input_error
 
-    final_sidecar = sidecar_path(final_path)
+    if (
+        set(paths) != {source.logical_role for source in sources}
+        or tuple(source.sha256 for source in sources)
+        != metadata.stage_identity.upstream_identity_sha256
+    ):
+        raise ArtifactMismatchError("manifest stage upstream identities differ from its inputs")
+    inputs = [p for path in paths.values() for p in (path, sidecar_path(path))]
+    seal = sidecar_path(final_path)
     simulation = metadata.location.stage_key == "simulation"
-    with publication_lock(final_path) if simulation else nullcontext(), publication_transaction():
-        if simulation:
-            from farkle.utils.frozen_h2h import same_production
-            from farkle.utils.scientific_reuse import immutable_input_error
-
-            if final_sidecar.exists():
-                previous = load_immutable_manifest_sidecar(final_path)
+    with (
+        _destination_candidate(staged_data, final_path) as local_data,
+        _protected_publication_files([*inputs, *controls.values()]) as check_inputs,
+        publication_lock(final_path),
+    ):
+        _recover_previous_pair(final_path)
+        with _protected_publication_files([local_data, staged_sidecar]) as check_stages:
+            staged_metadata = _parse_immutable_manifest_sidecar(
+                read_json_file_with_retry(staged_sidecar)
+            )
+            if staged_metadata.sidecar_contract_sha256 != metadata.sidecar_contract_sha256:
+                raise ArtifactMismatchError("staged manifest sidecar changed")
+            if sha256_file(local_data) != metadata.manifest_sha256:
+                raise ArtifactMismatchError("staged manifest data changed")
+            _validate_control_inputs(metadata.stage_identity, controls)
+            for source in sources:
                 if (
-                    previous.location != metadata.location
-                    or previous.summary != metadata.summary
-                    or previous.manifest_sha256 != metadata.manifest_sha256
-                    or sha256_file(final_path) != previous.manifest_sha256
-                    or not same_production(previous.stage_identity, metadata.stage_identity)
+                    capture_source_artifact_unbound(
+                        paths[source.logical_role], logical_role=source.logical_role
+                    )
+                    != source
                 ):
-                    raise immutable_input_error(final_path)
+                    raise ArtifactMismatchError(f"manifest source changed: {source.logical_role}")
+            previous = (
+                load_immutable_manifest_sidecar(final_path)
+                if simulation and seal.exists()
+                else None
+            )
+            if previous is not None and (
+                previous.location != metadata.location
+                or previous.summary != metadata.summary
+                or previous.manifest_sha256 != metadata.manifest_sha256
+                or sha256_file(final_path) != previous.manifest_sha256
+                or not same_production(previous.stage_identity, metadata.stage_identity)
+            ):
+                raise immutable_input_error(final_path)
+            check_stages()
+            check_inputs()
+        with publication_transaction():
+            if previous is not None:
                 return previous
-            publish_staged_file_atomic(staged_data, final_path)
-            _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
-        else:
-            final_sidecar.unlink(missing_ok=True)
-            publish_staged_file_atomic(staged_data, final_path)
-            publish_staged_file_atomic(staged_sidecar, final_sidecar)
+            if simulation:
+                publish_staged_file_atomic(local_data, final_path)
+                check_inputs()
+                _publish_staged_file_atomic(staged_sidecar, seal, replace=_install_once)
+            else:
+                _replace_pair(local_data, staged_sidecar, final_path, check_inputs=check_inputs)
     return metadata
 
 
@@ -1774,6 +1848,9 @@ def publish_immutable_manifest_atomic(
     location: CanonicalArtifactLocation,
     stage_identity: StageIdentity,
     entries: Iterable[ManifestEntry],
+    sources: Sequence[SourceArtifactIdentity] = (),
+    source_paths: Mapping[str, Path] | None = None,
+    control_paths: Mapping[str, Path] | None = None,
 ) -> ImmutableManifestSidecar:
     """Stream and atomically publish an immutable canonical manifest and root."""
 
@@ -1786,7 +1863,6 @@ def publish_immutable_manifest_atomic(
     sidecar_fd, staged_sidecar = make_staged_path(
         final_path,
         prefix="._manifest_sidecar_v3_",
-        temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
     try:
@@ -1833,7 +1909,15 @@ def publish_immutable_manifest_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        return _install_manifest(staged_data, staged_sidecar, final_path, metadata)
+        return _install_manifest(
+            staged_data,
+            staged_sidecar,
+            final_path,
+            metadata,
+            sources,
+            source_paths or {},
+            control_paths or {},
+        )
     finally:
         staged_data.unlink(missing_ok=True)
         staged_sidecar.unlink(missing_ok=True)
@@ -1847,6 +1931,9 @@ def publish_immutable_manifest_bytes_atomic(
     stage_identity: StageIdentity,
     entries: Iterable[ManifestEntry],
     write_data: Callable[[Path], None],
+    sources: Sequence[SourceArtifactIdentity] = (),
+    source_paths: Mapping[str, Path] | None = None,
+    control_paths: Mapping[str, Path] | None = None,
 ) -> ImmutableManifestSidecar:
     """Publish an immutable native manifest plus a typed coordinate root.
 
@@ -1864,7 +1951,6 @@ def publish_immutable_manifest_bytes_atomic(
     sidecar_fd, staged_sidecar = make_staged_path(
         final_path,
         prefix="._manifest_sidecar_v3_",
-        temp_dir=cfg.io.temp_dir,
     )
     os.close(sidecar_fd)
     try:
@@ -1892,7 +1978,15 @@ def publish_immutable_manifest_bytes_atomic(
             sidecar_contract_sha256=identity_sha256(payload),
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
-        return _install_manifest(staged_data, staged_sidecar, final_path, metadata)
+        return _install_manifest(
+            staged_data,
+            staged_sidecar,
+            final_path,
+            metadata,
+            sources,
+            source_paths or {},
+            control_paths or {},
+        )
     finally:
         staged_data.unlink(missing_ok=True)
         staged_sidecar.unlink(missing_ok=True)
@@ -1995,6 +2089,185 @@ def _install_once(source: Path | str, destination: Path | str) -> None:
         Path(source).unlink()
 
 
+@contextmanager
+def _protected_publication_files(paths: Iterable[Path]) -> Iterator[Callable[[], None]]:
+    """Hold OS-backed protection for direct inputs until their dependent commit."""
+    from farkle.utils.scientific_files import MeasuredFiles
+
+    unique = set(paths)
+    if not unique:
+        yield lambda: None
+        return
+    with closing(MeasuredFiles()) as files:
+        for path in sorted(unique):
+            files.protect(path)
+        # A Linux lease pins the inode. Rename-over can rebind the pathname
+        # without opening the leased inode for write.
+        bindings = {p: p.stat() for p in unique} if os.name != "nt" else {}
+
+        def check() -> None:
+            files.boundary()
+            for path, before in bindings.items():
+                if not os.path.samestat(before, path.stat()):
+                    raise ArtifactMismatchError(f"Protected publication input was replaced: {path}")
+
+        check()
+        yield check
+
+
+def _validate_control_inputs(stage: StageIdentity, paths: Mapping[str, Path]) -> None:
+    expected = {
+        k: v for k, v in stage.immutable_design_identities.items() if k.startswith("control:")
+    }
+    if set(paths) != set(expected):
+        raise ArtifactMismatchError("all declared control roles require exact paths")
+    for role, path in paths.items():
+        if sha256_file(path) != expected[role]:
+            raise ArtifactMismatchError(f"control identity changed: {role}")
+
+
+@contextmanager
+def _verified_publication_inputs(
+    metadata: AuthenticatedSidecar,
+    source_paths: Mapping[str, Path],
+    manifest_paths: Mapping[str, tuple[Path, Path]],
+    source_configs: Mapping[str, AppConfig] | None,
+    manifest_configs: Mapping[str, AppConfig] | None,
+    controls: Mapping[str, Path],
+) -> Iterator[Callable[[], None]]:
+    """Authenticate every declared role under the same protection as the commit."""
+    sources = metadata.source_artifacts
+    manifests = metadata.manifest_roots
+    if set(source_paths) != {source.logical_role for source in sources} or (
+        source_configs is not None and set(source_configs) != set(source_paths)
+    ):
+        raise ArtifactMismatchError("all declared source artifact roles require exact paths")
+    if set(manifest_paths) != {manifest.logical_role for manifest in manifests} or (
+        manifest_configs is not None and set(manifest_configs) != set(manifest_paths)
+    ):
+        raise ArtifactMismatchError("all declared immutable manifest roles require exact paths")
+    paths = [p for path in source_paths.values() for p in (path, sidecar_path(path))]
+    paths.extend(p for pair in manifest_paths.values() for p in pair)
+    with _protected_publication_files([*paths, *controls.values()]) as check:
+        if source_configs is not None:
+            for source in sources:
+                role = source.logical_role
+                source.artifact.location.require_path(source_configs[role], source_paths[role])
+        if manifest_configs is not None:
+            for manifest in manifests:
+                role = manifest.logical_role
+                manifest.location.require_path(manifest_configs[role], manifest_paths[role][0])
+        _validate_control_inputs(metadata.stage_identity, controls)
+        _validate_unbound_dependencies(metadata, source_paths, manifest_paths)
+        yield check
+
+
+def _previous_data(path: Path) -> Path:
+    return path.parent / "_execution" / ("._previous_" + path.name)
+
+
+def _previous_unpaired_sidecar(path: Path) -> Path:
+    return path.parent / "_execution" / ("._unpaired_" + sidecar_path(path).name)
+
+
+def recover_interrupted_publication(path: Path, *, manifest: bool = False) -> None:
+    """Restore a withdrawn pair before a retry attempts to read scientific inputs."""
+    from farkle.utils.manifest import publication_lock
+
+    if sidecar_path(_previous_data(path)).exists() or _previous_unpaired_sidecar(path).exists():
+        with publication_lock(path if manifest else path.parent / ".v3-artifacts"):
+            _recover_previous_pair(path)
+
+
+def _recover_previous_pair(path: Path) -> None:
+    """Recover a process interruption under the writer lock. The sidecar commits last."""
+    previous = _previous_data(path)
+    seal = sidecar_path(path)
+    previous_seal = sidecar_path(previous)
+    unpaired_seal = _previous_unpaired_sidecar(path)
+    if unpaired_seal.exists():
+        if seal.exists():
+            _discard_committed_backup(unpaired_seal)
+        else:
+            # The previous publication was already missing its data file.
+            # Restore that absence before putting its sidecar back.
+            path.unlink(missing_ok=True)
+            replace_file_atomic(unpaired_seal, seal)
+        return
+    if not previous_seal.exists():
+        return
+    if not seal.exists():
+        # The previous seal was withdrawn before moving its data. Either move
+        # may have been interrupted, including a previous attempt to recover.
+        if previous.exists():
+            replace_file_atomic(previous, path)
+        replace_file_atomic(previous_seal, seal)
+    else:
+        _discard_committed_backup(previous_seal, previous)
+
+
+def _discard_committed_backup(seal: Path, data: Path | None = None) -> None:
+    # Cleanup is repeatable. A sharing violation cannot reject a committed pair.
+    try:
+        if data is not None:
+            data.unlink(missing_ok=True)
+        seal.unlink(missing_ok=True)
+    except OSError:
+        LOGGER.warning("Retained publication backup at %s", seal, exc_info=True)
+
+
+def _install_immutable_pair(
+    staged: Path,
+    staged_seal: Path,
+    path: Path,
+    metadata: AuthenticatedSidecar,
+    check_inputs: Callable[[], None],
+) -> None:
+    from farkle.utils.scientific_reuse import immutable_input_error
+
+    try:
+        _publish_staged_file_atomic(staged, path, replace=_install_once)
+    except FileExistsError:
+        # The current producer must independently reproduce a data-only orphan.
+        if (
+            metadata.method_contract.procedure == "publish_strategy_manifest"
+            or sha256_file(path) != metadata.artifact.content_sha256
+        ):
+            raise immutable_input_error(path) from None
+    check_inputs()
+    _publish_staged_file_atomic(staged_seal, sidecar_path(path), replace=_install_once)
+
+
+def _replace_pair(
+    staged: Path, staged_seal: Path, path: Path, *, check_inputs: Callable[[], None]
+) -> None:
+    """Replace a mutable publication under its lock, retaining the prior generation."""
+    seal = sidecar_path(path)
+    previous = _previous_data(path)
+    previous_seal = sidecar_path(previous)
+    unpaired_seal = _previous_unpaired_sidecar(path)
+    if previous.exists() or previous_seal.exists() or unpaired_seal.exists():
+        raise ArtifactMismatchError(f"Unresolved publication backup for {path}")
+    had_seal = seal.exists()
+    had_data = path.exists()
+    withdrawn = previous_seal if had_data else unpaired_seal
+    try:
+        if had_seal:
+            replace_file_atomic(seal, withdrawn)
+            if had_data:
+                replace_file_atomic(path, previous)
+        publish_staged_file_atomic(staged, path)
+        check_inputs()
+        publish_staged_file_atomic(staged_seal, seal)
+    except BaseException:
+        if withdrawn.exists() or not had_seal:
+            seal.unlink(missing_ok=True)
+        _recover_previous_pair(path)
+        raise
+    if had_seal:
+        _discard_committed_backup(withdrawn, previous if had_data else None)
+
+
 def publish_staged_authenticated_artifact_atomic(
     staged_data: Path | str,
     path: Path | str,
@@ -2010,114 +2283,94 @@ def publish_staged_authenticated_artifact_atomic(
     source_configs: Mapping[str, AppConfig] | None = None,
     manifest_paths: Mapping[str, tuple[Path, Path]] | None = None,
     manifest_configs: Mapping[str, AppConfig] | None = None,
+    control_paths: Mapping[str, Path] | None = None,
     validate_unbound_sources: bool = False,
 ) -> AuthenticatedSidecar:
     """Publish an already staged v3 artifact without permitting sidecar backfill."""
 
-    _ = source_configs, manifest_configs, validate_unbound_sources
+    from farkle.utils.frozen_h2h import reuse_frozen_input
+    from farkle.utils.manifest import publication_lock
+    from farkle.utils.scientific_invocation import publication_transaction
+    from farkle.utils.scientific_reuse import ROOT_INPUT_OPERATIONS
+
+    # Retained for callers of the prior API. Dependency verification is unconditional.
+    _ = validate_unbound_sources
     staged_path = Path(staged_data)
     final_path = location.require_path(cfg, path)
+    recover_interrupted_publication(final_path)
+    final_sidecar = sidecar_path(final_path)
+    if staged_path.resolve() in {final_path.resolve(), final_sidecar.resolve()}:
+        raise ArtifactMismatchError("publication requires separately staged data")
     if not staged_path.is_file() or staged_path.stat().st_size <= 0:
         raise ArtifactMismatchError(f"artifact writer did not create {staged_path}")
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    sidecar_fd, staged_sidecar = make_staged_path(
-        final_path,
-        prefix="._sidecar_v3_",
-        temp_dir=cfg.io.temp_dir,
-    )
+    # Stage the small commit record on the destination volume. Its rename is
+    # the last fallible installation, even when the data use external scratch.
+    sidecar_fd, staged_sidecar = make_staged_path(final_path, prefix="._sidecar_v3_")
     os.close(sidecar_fd)
-    final_sidecar = sidecar_path(final_path)
     try:
-        artifact = _current_artifact_identity(
-            staged_path,
-            location=location,
-            schema_version=stage_identity.versions.schema_version,
-            logical_operation=method_contract.procedure,
-            format_identity=format_identity,
-        )
-        metadata = make_authenticated_sidecar(
-            artifact=artifact,
-            stage_identity=stage_identity,
-            method_contract=method_contract,
-            sources=sources,
-            manifest_roots=manifest_roots,
-        )
-        from farkle.utils.frozen_h2h import reuse_frozen_input
-        from farkle.utils.scientific_reuse import ROOT_INPUT_OPERATIONS, immutable_input_error
-
-        frozen = reuse_frozen_input(cfg, metadata)
-        if frozen is not None:
-            # A no-op must authenticate its direct inputs just like a write.
-            validate_authenticated_artifact_unbound(
-                final_path,
-                expected_location=location,
-                source_paths=source_paths,
-                manifest_paths=manifest_paths,
+        with (
+            _destination_candidate(staged_path, final_path) as local_data,
+            ExitStack() as staged_guards,
+        ):
+            check_data = staged_guards.enter_context(_protected_publication_files([local_data]))
+            artifact = _current_artifact_identity(
+                local_data,
+                location=location,
+                schema_version=stage_identity.versions.schema_version,
+                logical_operation=method_contract.procedure,
+                format_identity=format_identity,
             )
-            return frozen
-        staged_sidecar.write_bytes(metadata.canonical_bytes())
-        from farkle.utils.scientific_invocation import publication_transaction
-
-        with publication_transaction():
-            if method_contract.procedure in ROOT_INPUT_OPERATIONS:
-                try:
-                    _publish_staged_file_atomic(staged_path, final_path, replace=_install_once)
-                except FileExistsError:
-                    # A worker or interrupted publication already installed data.
-                    # The current producer must independently stage the exact bytes.
-                    if (
-                        method_contract.procedure == "publish_strategy_manifest"
-                        or sha256_file(final_path) != artifact.content_sha256
-                    ):
-                        raise immutable_input_error(final_path) from None
-                _publish_staged_file_atomic(staged_sidecar, final_sidecar, replace=_install_once)
-            else:
-                final_sidecar.unlink(missing_ok=True)
-                publish_staged_file_atomic(staged_path, final_path)
-                publish_staged_file_atomic(staged_sidecar, final_sidecar)
-        if sources:
-            resolved_source_paths = source_paths or {}
-            if set(resolved_source_paths) != {source.logical_role for source in sources}:
-                raise ArtifactMismatchError(
-                    "all declared source artifact roles require exact paths"
-                )
-            for source in sources:
-                source_path = resolved_source_paths[source.logical_role]
-                current = capture_source_artifact_unbound(
-                    source_path,
-                    logical_role=source.logical_role,
-                )
-                if current != source:
-                    raise ArtifactMismatchError(
-                        f"source artifact identity changed: {source.logical_role}"
+            metadata = make_authenticated_sidecar(
+                artifact=artifact,
+                stage_identity=stage_identity,
+                method_contract=method_contract,
+                sources=sources,
+                manifest_roots=manifest_roots,
+            )
+            staged_sidecar.write_bytes(metadata.canonical_bytes())
+            check_seal = staged_guards.enter_context(_protected_publication_files([staged_sidecar]))
+            staged_metadata = _parse_sidecar(read_json_file_with_retry(staged_sidecar))
+            if staged_metadata.sidecar_contract_sha256 != metadata.sidecar_contract_sha256:
+                raise ArtifactMismatchError("staged artifact sidecar changed")
+            resolved_sources = dict(source_paths or {})
+            resolved_manifests = dict(manifest_paths or {})
+            # Share a directory lock so simulation shards do not each require a lock file.
+            with (
+                _verified_publication_inputs(
+                    metadata,
+                    resolved_sources,
+                    resolved_manifests,
+                    source_configs,
+                    manifest_configs,
+                    control_paths or {},
+                ) as check_inputs,
+                publication_lock(final_path.parent / ".v3-artifacts"),
+            ):
+                _recover_previous_pair(final_path)
+                frozen = reuse_frozen_input(cfg, metadata)
+                if frozen is not None:
+                    validate_authenticated_artifact_unbound(
+                        final_path,
+                        expected_location=location,
+                        source_paths=resolved_sources,
+                        manifest_paths=resolved_manifests,
                     )
-        if manifest_roots:
-            resolved_manifest_paths = manifest_paths or {}
-            if set(resolved_manifest_paths) != {
-                manifest.logical_role for manifest in manifest_roots
-            }:
-                raise ArtifactMismatchError(
-                    "all declared immutable manifest roles require exact paths"
-                )
-            for manifest in manifest_roots:
-                manifest_path, manifest_sidecar_path = resolved_manifest_paths[
-                    manifest.logical_role
-                ]
-                loaded = load_immutable_manifest_sidecar(manifest_path)
-                if (
-                    manifest_sidecar_path.resolve() != sidecar_path(manifest_path).resolve()
-                    or sha256_file(manifest_path) != manifest.manifest_sha256
-                    or sha256_file(manifest_sidecar_path) != manifest.sidecar_sha256
-                    or loaded.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
-                    or loaded.summary != manifest.summary
-                ):
-                    raise ArtifactMismatchError(
-                        f"immutable manifest identity changed: {manifest.logical_role}"
-                    )
-        # The exact bytes and schema were authenticated from the staged file
-        # immediately before its same-filesystem atomic rename.  Rehashing the
-        # canonical name here only repeats the complete data scan and is
-        # especially costly under filesystem providers such as OneDrive.
+                check_inputs()
+                check_data()
+                check_seal()
+                with publication_transaction():
+                    staged_guards.close()  # Release only the private stages for renaming.
+                    if frozen is not None:
+                        return frozen
+                    if method_contract.procedure in ROOT_INPUT_OPERATIONS:
+                        _install_immutable_pair(
+                            local_data, staged_sidecar, final_path, metadata, check_inputs
+                        )
+                    else:
+                        _replace_pair(
+                            local_data, staged_sidecar, final_path, check_inputs=check_inputs
+                        )
         return metadata
     finally:
         staged_sidecar.unlink(missing_ok=True)

@@ -66,6 +66,7 @@ from farkle.utils.authenticated_contract import (
     producer_code_identity,
     publish_immutable_manifest_bytes_atomic,
     publish_staged_authenticated_artifact_atomic,
+    recover_interrupted_publication,
     resolve_code_identity,
     validate_authenticated_artifact_metadata,
     validate_authenticated_artifact_unbound,
@@ -384,6 +385,7 @@ def _capture_inputs(
     dict[str, Path],
     dict[str, tuple[Path, Path]],
     dict[str, str],
+    dict[str, Path],
 ]:
     captured = metadata._captured_v3_inputs
     if captured is not None:
@@ -440,6 +442,7 @@ def _capture_inputs(
             captured_source_paths,
             captured_manifest_paths,
             captured.designs,
+            {role: Path(path) for role, path, _ in captured.controls},
         )
 
     sources: list[SourceArtifactIdentity] = []
@@ -447,6 +450,7 @@ def _capture_inputs(
     source_paths: dict[str, Path] = {}
     manifest_paths: dict[str, tuple[Path, Path]] = {}
     designs: dict[str, str] = {}
+    control_paths: dict[str, Path] = {}
     if metadata._cfg is None:
         raise ArtifactContractError("authenticated source capture requires its owning config")
     for raw_path in metadata.source_artifacts:
@@ -519,7 +523,9 @@ def _capture_inputs(
         if path.name.endswith(_CONTROL_SUFFIXES):
             if not path.is_file():
                 raise ArtifactContractError(f"required control identity is missing: {path}")
-            designs[f"control:{path.name}:{len(designs):04d}"] = sha256_file(path)
+            role = f"control:{path.name}:{len(designs):04d}"
+            designs[role] = sha256_file(path)
+            control_paths[role] = path
             continue
         raise ArtifactContractError(
             f"v3 source artifact is missing an authenticated sidecar: {path}"
@@ -534,6 +540,7 @@ def _capture_inputs(
         source_paths,
         manifest_paths,
         designs,
+        control_paths,
     )
 
 
@@ -545,19 +552,7 @@ def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
         if not isinstance(captured, CapturedV3Inputs):
             raise ArtifactContractError("invalid captured v3 input snapshot")
         return captured
-    sources, manifests, source_paths, manifest_paths, designs = _capture_inputs(metadata)
-    control_paths: list[tuple[str, str, str]] = []
-    control_index = 0
-    for raw_path in metadata.source_artifacts:
-        path = Path(raw_path)
-        if sidecar_path(path).exists() or not path.name.endswith(_CONTROL_SUFFIXES):
-            continue
-        role = f"control:{path.name}:{control_index:04d}"
-        digest = designs.get(role)
-        if digest is None:
-            raise ArtifactContractError(f"captured control identity is missing: {path}")
-        control_paths.append((role, str(path), digest))
-        control_index += 1
+    sources, manifests, source_paths, manifest_paths, designs, controls = _capture_inputs(metadata)
     return CapturedV3Inputs(
         sources=sources,
         manifests=manifests,
@@ -565,7 +560,7 @@ def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
         manifest_paths=tuple(
             (role, str(paths[0]), str(paths[1])) for role, paths in manifest_paths.items()
         ),
-        controls=tuple(control_paths),
+        controls=tuple((role, str(path), designs[role]) for role, path in controls.items()),
     )
 
 
@@ -833,7 +828,8 @@ def publish_staged_v3_from_metadata(
             )
     versions, method_version = _versions(cfg, stage_key=stage_key, metadata=metadata)
     method = _typed_method(cfg, metadata, method_version=method_version)
-    sources, manifests, source_paths, manifest_paths, designs = _capture_inputs(metadata)
+    recover_interrupted_publication(final_path)
+    sources, manifests, source_paths, manifest_paths, designs, controls = _capture_inputs(metadata)
     if cfg._run_lineage_sha256 is not None:
         designs["run_lineage_sha256"] = cfg._run_lineage_sha256
     if cfg._game_profile_sha256 is not None:
@@ -904,6 +900,7 @@ def publish_staged_v3_from_metadata(
         manifest_roots=manifests,
         source_paths=source_paths,
         manifest_paths=manifest_paths,
+        control_paths=controls,
         validate_unbound_sources=True,
     )
     return _compatibility_view(final_path, metadata=metadata, authenticated=authenticated)
@@ -979,6 +976,8 @@ def publish_native_manifest_v3(
     member_dependencies: Mapping[str, str] | None = None,
 ) -> None:
     """Publish native manifest bytes with a coordinate-sorted immutable root."""
+    location = derive_canonical_location(cfg, path, stage_key=stage_key)
+    recover_interrupted_publication(path, manifest=True)
     synthetic, versions, method = native_manifest_contract(
         path,
         cfg=cfg,
@@ -987,7 +986,7 @@ def publish_native_manifest_v3(
         operation=operation,
         player_counts=player_counts,
     )
-    sources, manifests, captured_source_paths, _, designs = _capture_inputs(synthetic)
+    sources, manifests, captured_source_paths, _, designs, controls = _capture_inputs(synthetic)
     if cfg._run_lineage_sha256 is not None:
         designs["run_lineage_sha256"] = cfg._run_lineage_sha256
     if cfg._game_profile_sha256 is not None:
@@ -1054,10 +1053,13 @@ def publish_native_manifest_v3(
     publish_immutable_manifest_bytes_atomic(
         path,
         cfg=cfg,
-        location=derive_canonical_location(cfg, path, stage_key=stage_key),
+        location=location,
         stage_identity=stage_identity,
         entries=entries,
         write_data=_write_native,
+        sources=sources,
+        source_paths=captured_source_paths,
+        control_paths=controls,
     )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import pickle
 import shutil
 from dataclasses import replace
@@ -65,6 +67,7 @@ def _publish(
     sources: list[Path] | None = None,
     method_contract: dict[str, object] | None = None,
     operation: str | None = None,
+    wins: tuple[int, int] = (2, 1),
 ) -> Path:
     path = cfg.scope_path("metrics", ArtifactScope.BY_K, name, k=2)
     operation = operation or f"publish_{Path(name).stem}"
@@ -93,7 +96,7 @@ def _publish(
         ),
     )
     write_parquet_artifact_atomic(
-        pa.table({"strategy": pa.array([1, 2], type=pa.int32()), "wins": [2, 1]}),
+        pa.table({"strategy": pa.array([1, 2], type=pa.int32()), "wins": wins}),
         path,
         sidecar=metadata,
     )
@@ -129,6 +132,168 @@ def test_drift_during_staging_preserves_authenticated_pair(v3_cfg, monkeypatch):
         _publish(v3_cfg, "unit.parquet")
     assert (path.read_bytes(), sidecar_path(path).read_bytes()) == saved
     validate_authenticated_artifact_unbound(path)
+
+
+def _pair_bytes(path: Path) -> tuple[bytes, bytes]:
+    return path.read_bytes(), sidecar_path(path).read_bytes()
+
+
+@pytest.mark.parametrize("fault", ["source", "source_sidecar", "control", "last_read"])
+def test_rejected_replacement_preserves_prior_completion(v3_cfg, monkeypatch, fault):
+    source = _publish(v3_cfg, "source.parquet")
+    control = source.with_suffix(".yaml")
+    control.write_bytes(b"alpha")
+    output = _publish(v3_cfg, "derived.parquet")
+    saved = _pair_bytes(output)
+    done = stage_done_path(v3_cfg.stage_dir("metrics"), "metrics")
+    write_stage_done(done, inputs=[], outputs=[output], cfg=v3_cfg, stage="metrics")
+    original_stamp = done.read_bytes()
+    encode = authenticated_contract.AuthenticatedSidecar.canonical_bytes
+    capture = authenticated_contract.capture_source_artifact_unbound
+    injected = False
+
+    def after_staging(metadata):
+        nonlocal injected
+        result = encode(metadata)
+        if fault == "source":
+            # Another valid Parquet of identical byte length and schema.
+            before = source.read_bytes()
+            pq.write_table(
+                pa.table({"strategy": pa.array([1, 2], type=pa.int32()), "wins": [1, 2]}), source
+            )
+            assert len(source.read_bytes()) == len(before) and source.read_bytes() != before
+        elif fault == "source_sidecar":
+            adjacent = sidecar_path(source)
+            adjacent.write_bytes(adjacent.read_bytes()[:-1] + b" ")
+        elif fault == "control":
+            control.write_bytes(b"omega")
+        injected = True
+        return result
+
+    def fail_final_read(path, *, logical_role):
+        if fault == "last_read" and injected:
+            raise OSError("injected final source read")
+        return capture(path, logical_role=logical_role)
+
+    monkeypatch.setattr(
+        authenticated_contract.AuthenticatedSidecar, "canonical_bytes", after_staging
+    )
+    monkeypatch.setattr(authenticated_contract, "capture_source_artifact_unbound", fail_final_read)
+    with pytest.raises((ArtifactMismatchError, OSError)):
+        _publish(v3_cfg, output.name, sources=[source, control], wins=(1, 2))
+    assert injected and _pair_bytes(output) == saved
+    assert done.read_bytes() == original_stamp
+    assert (
+        resolve_stage_state(done, [], [output], cfg=v3_cfg, stage="metrics")
+        is CompletionState.COMPLETE_VALID
+    )
+
+
+@pytest.mark.parametrize("first", [True, False], ids=["first-publication", "replacement"])
+def test_unsealed_generation_cannot_complete(v3_cfg, monkeypatch, first):
+    path = v3_cfg.scope_path("metrics", ArtifactScope.BY_K, "pending.parquet", k=2)
+    old = None if first else _pair_bytes(_publish(v3_cfg, path.name))
+    done = stage_done_path(v3_cfg.stage_dir("metrics"), "metrics")
+    install = authenticated_contract.publish_staged_file_atomic
+
+    def interrupt(source, destination):
+        if destination == sidecar_path(path):
+            assert pq.read_table(path)["wins"].to_pylist() == [1, 2]
+            with pytest.raises(authenticated_contract.MissingSidecarError):
+                validate_authenticated_artifact_unbound(path)
+            with pytest.raises(ArtifactContractError, match="valid sidecar"):
+                write_stage_done(done, inputs=[], outputs=[path], cfg=v3_cfg, stage="metrics")
+            raise InterruptedError("before sidecar commit")
+        install(source, destination)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(authenticated_contract, "publish_staged_file_atomic", interrupt)
+        with pytest.raises(InterruptedError, match="before sidecar commit"):
+            _publish(v3_cfg, path.name, wins=(1, 2))
+    assert not done.exists()
+    if old is not None:
+        assert _pair_bytes(path) == old
+        validate_authenticated_artifact_unbound(path)
+    else:
+        assert not sidecar_path(path).exists()
+    _publish(v3_cfg, path.name, wins=(1, 2))
+    validate_authenticated_artifact_unbound(path)
+
+
+def _exit_before_commit(cfg, name):
+    path = cfg.scope_path("metrics", ArtifactScope.BY_K, name, k=2)
+    install = authenticated_contract.publish_staged_file_atomic
+
+    def crash(source, destination):
+        if destination == sidecar_path(path):
+            os._exit(87)
+        install(source, destination)
+
+    authenticated_contract.publish_staged_file_atomic = crash
+    _publish(cfg, name, wins=(1, 2))
+
+
+def test_process_exit_retains_recoverable_generation(v3_cfg, monkeypatch):
+    path = _publish(v3_cfg, "crash.parquet")
+    old = _pair_bytes(path)
+    worker = multiprocessing.get_context("spawn").Process(
+        target=_exit_before_commit, args=(v3_cfg, path.name)
+    )
+    worker.start()
+    try:
+        worker.join(60)
+        assert worker.exitcode == 87
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        worker.close()
+    with pytest.raises(authenticated_contract.MissingSidecarError):
+        validate_authenticated_artifact_unbound(path)
+    assert not stage_done_path(v3_cfg.stage_dir("metrics"), "metrics").exists()
+
+    # Reject the next invocation after recovery, so the recovered bytes can be
+    # authenticated independently of either replacement's proposed contents.
+    from farkle.utils import scientific_invocation
+
+    def reject():
+        raise RuntimeError("rejected retry")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(scientific_invocation, "publication_boundary", reject)
+        with pytest.raises(RuntimeError, match="rejected retry"):
+            _publish(v3_cfg, path.name, wins=(1, 2))
+    assert _pair_bytes(path) == old
+    validate_authenticated_artifact_unbound(path)
+    _publish(v3_cfg, path.name, wins=(1, 2))
+    assert pq.read_table(path)["wins"].to_pylist() == [1, 2]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows share-deny handles")
+def test_source_path_and_sidecar_protected_between_installs(v3_cfg, monkeypatch):
+    source = _publish(v3_cfg, "upstream.parquet")
+    path = _publish(v3_cfg, "derived.parquet")
+    install = authenticated_contract.publish_staged_file_atomic
+    checked = False
+
+    def try_mutations(staged, destination):
+        nonlocal checked
+        if destination == sidecar_path(path):
+            for protected in (source, sidecar_path(source)):
+                with pytest.raises(PermissionError), protected.open("r+b"):
+                    pytest.fail("source admitted a write handle")
+                with pytest.raises(PermissionError):
+                    protected.replace(protected.with_suffix(".moved"))
+            checked = True
+        install(staged, destination)
+
+    monkeypatch.setattr(authenticated_contract, "publish_staged_file_atomic", try_mutations)
+    _publish(v3_cfg, path.name, sources=[source], wins=(1, 2))
+    assert checked
+    loaded = authenticated_contract.load_authenticated_sidecar(path)
+    validate_authenticated_artifact_unbound(
+        path, source_paths={loaded.source_artifacts[0].logical_role: source}
+    )
 
 
 def test_immutable_publication_resumes_between_data_and_sidecar(v3_cfg, monkeypatch):

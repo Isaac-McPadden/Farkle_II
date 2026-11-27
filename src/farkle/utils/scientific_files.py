@@ -196,11 +196,10 @@ class MeasuredFiles:
                     self.failure = f"Scientific read-only filesystem changed: {volume}"
                     raise ScientificDrift(self.failure)
 
-    def digest(self, path: Path) -> str:
+    def protect(self, path: Path) -> None:
+        """Pin file contents and ancestry before a caller opens the verified path."""
         if self.failure:
             raise ScientificDrift(self.failure)
-        if path in self.digests:
-            return self.digests[path]
         # An alias with a replaceable link is not covered by a handle on its target.
         path = path.absolute()
         resolved = path.resolve(strict=True)
@@ -211,6 +210,16 @@ class MeasuredFiles:
                 self._protect(parent, directory=True)
                 self.directories.add(parent)
         self._protect(path, directory=False)
+        if path != path.resolve(strict=True):
+            raise ScientificDrift(f"Dependency path changed while acquiring protection: {path}")
+
+    def digest(self, path: Path) -> str:
+        path = path.absolute()
+        if self.failure:
+            raise ScientificDrift(self.failure)
+        if path in self.digests:
+            return self.digests[path]
+        self.protect(path)
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         self.digests[path] = digest

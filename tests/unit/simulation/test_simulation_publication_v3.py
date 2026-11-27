@@ -634,7 +634,7 @@ def test_periodic_checkpoint_contains_its_independently_reduced_coverage(
     assert "complete_aggregate" in pickle.loads(checkpoint.read_bytes())["meta"]
 
 
-def test_interrupted_final_checkpoint_publication_requires_replay(
+def test_interrupted_final_checkpoint_restores_prior_sealed_checkpoint(
     aggregate_run: tuple[AppConfig, list[ThresholdStrategy]],
     monkeypatch: pytest.MonkeyPatch,
     recovery_recorder,
@@ -643,8 +643,11 @@ def test_interrupted_final_checkpoint_publication_requires_replay(
     tournament = runner.tournament_mod
     checkpoint = cfg.n_dir(2) / "2p_checkpoint.pkl"
     replace_file = authenticated_contract.replace_file_atomic
+    prior = {}
 
     def interrupt(source: Path | str, destination: Path | str) -> None:
+        if Path(source) == sidecar_path(checkpoint):
+            prior.update({p: p.read_bytes() for p in (checkpoint, sidecar_path(checkpoint))})
         if (
             Path(destination) == sidecar_path(checkpoint)
             and b"complete_aggregate" in checkpoint.read_bytes()
@@ -656,21 +659,21 @@ def test_interrupted_final_checkpoint_publication_requires_replay(
         patch.setattr(authenticated_contract, "replace_file_atomic", interrupt)
         with pytest.raises(InterruptedError, match="before sealing final checkpoint"):
             runner.run_single_n(cfg, 2, strategies=strategies)
-    assert checkpoint.is_file() and not sidecar_path(checkpoint).exists()
+    assert prior == {p: p.read_bytes() for p in (checkpoint, sidecar_path(checkpoint))}
+    assert "partial_aggregate" in pickle.loads(checkpoint.read_bytes())["meta"]
     assert not runner.simulation_done_path(cfg, 2).exists()
 
     def unexpected(*_args: Any, **_kwargs: Any) -> Any:
-        pytest.fail("unsealed checkpoint was restored or a durable game was simulated again")
+        pytest.fail("a durable game was simulated again")
 
-    monkeypatch.setattr(tournament, "_restore_complete_aggregate", unexpected)
     monkeypatch.setattr(tournament, "_play_one_shuffle", unexpected)
     with recovery_recorder() as recorder:
         runner.run_single_n(cfg, 2, strategies=strategies)
     summary = recorder.summary()["completed_progress"]["simulation:simulation:k=2"]
     assert summary["reused_attempted_games"] == 2
     assert summary["newly_simulated_games"] == 0
-    assert summary["recovery_phases"]["simulation_recovery_reconstruction"]["rows_replayed"] == 2
-    assert "complete_aggregate" not in pickle.loads(checkpoint.read_bytes())["meta"]
+    assert summary["recovery_phases"]["simulation_recovery_reconstruction"]["rows_replayed"] == 0
+    assert "complete_aggregate" in pickle.loads(checkpoint.read_bytes())["meta"]
 
 
 @pytest.mark.parametrize(

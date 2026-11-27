@@ -30,6 +30,7 @@ from farkle.utils.scientific_reuse import (
     ROOT_INPUT_OPERATIONS,
     compatible_producer,
     immutable_input_error,
+    launch_matches,
     sealed_root_input,
 )
 from farkle.utils.stage_completion import stage_done_path
@@ -436,7 +437,15 @@ def reuse_frozen_input(
         )
         if old != new
     ]
-    if same_publication(original, proposed):
+    lineage_changed = previous.immutable_design_identities.get(
+        "run_lineage_sha256"
+    ) != stage.immutable_design_identities.get("run_lineage_sha256")
+    if same_publication(original, proposed) and (
+        not lineage_changed
+        or original.source_artifacts
+        or original.manifest_roots
+        or launch_matches(previous)
+    ):
         return original
     raise ArtifactMismatchError(
         f"Frozen H2H input {path} differs in {', '.join(differences) or 'sidecar identity'} "

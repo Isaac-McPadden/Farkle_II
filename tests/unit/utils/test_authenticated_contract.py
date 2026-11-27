@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.config import AppConfig
+from farkle.utils import authenticated_contract
 from farkle.utils.artifact_contract import sha256_file, sidecar_path
 from farkle.utils.authenticated_contract import (
     ARTIFACT_CONTRACT_VERSION,
@@ -30,6 +31,7 @@ from farkle.utils.authenticated_contract import (
     MethodContract,
     MissingSidecarError,
     SourceArtifactIdentity,
+    StageIdentity,
     VersionIdentity,
     arrow_schema_identity,
     capture_manifest_root,
@@ -103,7 +105,7 @@ def _stage(
     method: MethodContract | None = None,
     versions: VersionIdentity | None = None,
     upstream: tuple[str, ...] = (),
-) -> tuple[MethodContract, VersionIdentity, object]:
+) -> tuple[MethodContract, VersionIdentity, StageIdentity]:
     resolved_method = method or _method()
     resolved_versions = versions or _versions()
     config_identity = stage_config_identity(
@@ -434,6 +436,134 @@ def test_git_code_identity_warns_for_dirty_release_and_fingerprints_development(
     source.write_text("VALUE = 3\n", encoding="utf-8")
     changed = resolve_code_identity(repo, policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY)
     assert changed.dirty_fingerprint_sha256 != dirty.dirty_fingerprint_sha256
+
+
+@pytest.mark.parametrize(
+    "fault", ["wrong_role", "wrong_owner", "wrong_manifest_sidecar", "manifest_mutation"]
+)
+def test_input_binding_faults_leave_existing_pair(cfg, tmp_path, monkeypatch, fault):
+    path, _ = _publish(cfg)
+    old = path.read_bytes(), sidecar_path(path).read_bytes()
+    location = _location("manifest.jsonl", scope="diagnostics")
+    manifest_path = location.path(cfg)
+    _, _, stage = _stage(cfg)
+    publish_immutable_manifest_atomic(
+        manifest_path,
+        cfg=cfg,
+        location=location,
+        stage_identity=stage,
+        entries=[ManifestEntry((0,), "member.parquet", _HASH_A, _HASH_B, "c" * 64)],
+    )
+    root = capture_manifest_root(
+        logical_role="manifest", manifest_path=manifest_path, cfg=cfg, expected_location=location
+    )
+    role = "other" if fault == "wrong_role" else "manifest"
+    owner = AppConfig() if fault == "wrong_owner" else cfg
+    if fault == "wrong_owner":
+        owner.io.results_dir_prefix = tmp_path / "different_owner"
+    adjacent = sidecar_path(manifest_path)
+    if fault == "wrong_manifest_sidecar":
+        alias = tmp_path / "copy.sidecar.json"
+        alias.write_bytes(adjacent.read_bytes())
+        adjacent = alias
+    if fault == "manifest_mutation":
+        encode = authenticated_contract.AuthenticatedSidecar.canonical_bytes
+
+        def change_manifest(metadata):
+            result = encode(metadata)
+            manifest_path.write_bytes(manifest_path.read_bytes()[:-1] + b" ")
+            return result
+
+        monkeypatch.setattr(
+            authenticated_contract.AuthenticatedSidecar, "canonical_bytes", change_manifest
+        )
+    with pytest.raises(ArtifactMismatchError):
+        _publish(
+            cfg,
+            manifest_roots=(root,),
+            manifest_paths={role: (manifest_path, adjacent)},
+            manifest_configs={role: owner},
+        )
+    assert (path.read_bytes(), sidecar_path(path).read_bytes()) == old
+    validate_authenticated_artifact(path, cfg=cfg, expected_location=_location())
+
+
+def test_manifest_pair_rolls_back_on_commit_failure(cfg, monkeypatch):
+    location = _location("manifest.jsonl", scope="diagnostics")
+    path = location.path(cfg)
+    _, _, stage = _stage(cfg)
+
+    def publish(coordinate):
+        publish_immutable_manifest_atomic(
+            path,
+            cfg=cfg,
+            location=location,
+            stage_identity=stage,
+            entries=[ManifestEntry((coordinate,), "member.parquet", _HASH_A, _HASH_B, "c" * 64)],
+        )
+
+    publish(1)
+    old = path.read_bytes(), sidecar_path(path).read_bytes()
+    install = authenticated_contract.publish_staged_file_atomic
+
+    def interrupt(staged, target):
+        if target == sidecar_path(path):
+            assert path.read_bytes() != old[0]
+            with pytest.raises(MissingSidecarError):
+                capture_manifest_root(
+                    logical_role="manifest", manifest_path=path, cfg=cfg, expected_location=location
+                )
+            raise InterruptedError("manifest sidecar installation")
+        install(staged, target)
+
+    monkeypatch.setattr(authenticated_contract, "publish_staged_file_atomic", interrupt)
+    with pytest.raises(InterruptedError, match="manifest sidecar installation"):
+        publish(2)
+    assert (path.read_bytes(), sidecar_path(path).read_bytes()) == old
+    capture_manifest_root(
+        logical_role="manifest", manifest_path=path, cfg=cfg, expected_location=location
+    )
+
+
+def test_metadata_reader_detects_same_length_generation_change(cfg, monkeypatch):
+    path, first = _publish(cfg)
+    read = authenticated_contract.load_authenticated_sidecar
+
+    def replace_after_read(artifact):
+        observed = read(artifact)
+        _, second = _publish(
+            cfg, table=pa.table({"strategy_id": pa.array([1, 2], type=pa.int32()), "wins": [4, 3]})
+        )
+        assert second.artifact.byte_length == first.artifact.byte_length
+        assert second.artifact.content_sha256 != first.artifact.content_sha256
+        return observed
+
+    monkeypatch.setattr(authenticated_contract, "load_authenticated_sidecar", replace_after_read)
+    with pytest.raises(ArtifactMismatchError, match="file changed"):
+        authenticated_contract.validate_authenticated_artifact_metadata(path, cfg=cfg)
+
+
+def test_failed_repair_of_missing_data_cannot_reseal_candidate_bytes(cfg, monkeypatch):
+    path, _ = _publish(cfg)
+    old_seal = sidecar_path(path).read_bytes()
+    path.unlink()
+    install = authenticated_contract.publish_staged_file_atomic
+
+    def interrupt(staged, destination):
+        if destination == sidecar_path(path):
+            raise InterruptedError("repair sidecar")
+        install(staged, destination)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(authenticated_contract, "publish_staged_file_atomic", interrupt)
+        with pytest.raises(InterruptedError, match="repair sidecar"):
+            _publish(cfg)
+    assert sidecar_path(path).read_bytes() == old_seal
+    assert not path.exists()
+    with pytest.raises(ArtifactMismatchError):
+        validate_authenticated_artifact(path, cfg=cfg, expected_location=_location())
+    _publish(cfg)
+    validate_authenticated_artifact(path, cfg=cfg, expected_location=_location())
 
 
 def test_stage_config_identity_is_scoped_to_explicit_public_fields(cfg: AppConfig) -> None:
