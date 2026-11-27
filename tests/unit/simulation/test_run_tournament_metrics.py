@@ -443,7 +443,9 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     metrics_dir = tmp_path / "metrics"
     row_dir = tmp_path / "rows"
 
-    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    config = rt.TournamentConfig(
+        n_players=2, num_shuffles=3, desired_sec_per_chunk=1, ckpt_every_sec=9999
+    )
 
     rt.run_tournament(
         config=config,
@@ -453,7 +455,6 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
         collect_metrics=True,
         row_output_directory=row_dir,
         metric_chunk_directory=metrics_dir,
-        num_shuffles=3,
     )
 
     chunk_files = sorted(metrics_dir.glob("metrics_*.parquet"))

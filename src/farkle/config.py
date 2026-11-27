@@ -1659,9 +1659,13 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         "select cross-k work with canonical scope settings"
                     )
                 try:
+                    if isinstance(entry, float) and not entry.is_integer():
+                        raise ValueError("fractional player count")
                     players = int(entry)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        f"Invalid sim.n_players_list entry {entry!r}. Use whole-number player counts."
+                    ) from exc
                 if players < 2:
                     raise ValueError(
                         "sim.n_players_list requires concrete player counts >= 2; "

@@ -417,6 +417,11 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None
         compute_rng_diagnostics = getattr(args, "rng_diagnostics", None)
         if compute_rng_diagnostics is not None:
             cfg.analysis.disable_rng_diagnostics = not compute_rng_diagnostics
+        if args.command == "run":
+            try:
+                runner.validate_workload(cfg)
+            except ValueError as exc:
+                parser.error(str(exc))
         cfg.validate_statistical_contract(require_two_roots=args.command == "two-seed-pipeline")
         assign_config_sha(cfg)
 

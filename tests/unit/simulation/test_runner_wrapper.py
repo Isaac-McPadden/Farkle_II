@@ -181,18 +181,14 @@ def test_resolve_row_output_dir_formats_and_prefixes(tmp_path):
     assert cfg.simulation_row_dir(3) == formatted
 
 
-def test_filter_player_counts_reports_invalid(monkeypatch):
-    cfg = AppConfig(
-        IOConfig(results_dir_prefix=Path("ignored")),
-        SimConfig(n_players_list=[3]),
-    )
-    monkeypatch.setattr(runner, "experiment_size", lambda **_: 4)
+def test_validate_workload_uses_the_resolved_roster(monkeypatch):
+    cfg = AppConfig()
+    strategies = [ThresholdStrategy(score_threshold=100 * i) for i in range(1, 5)]
+    monkeypatch.setattr(runner, "generate_strategy_grid", lambda **_: (strategies, None))
 
-    valid, invalid, grid_size, source = runner._filter_player_counts(cfg, [2, 3])
-    assert valid == [2]
-    assert invalid == [3]
-    assert grid_size == 4
-    assert source == "experiment_size"
+    runner.validate_workload(cfg, player_counts=[2, 4])
+    with pytest.raises(ValueError, match="4 strategies"):
+        runner.validate_workload(cfg, player_counts=[2, 3])
 
 
 def test_workload_plan_ignores_retired_shuffle_overrides():

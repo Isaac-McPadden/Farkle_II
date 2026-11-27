@@ -17,7 +17,7 @@ import shutil
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from itertools import islice
 from os import getpid
@@ -1816,7 +1816,7 @@ def run_tournament(
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
     metric_chunk_directory: Path | None = None,
-    num_shuffles: int = NUM_SHUFFLES,
+    num_shuffles: int | None = None,
     strategies: Sequence[ThresholdStrategy] | None = None,
     resume: bool = True,
     checkpoint_metadata: Mapping[str, Any] | None = None,
@@ -1863,6 +1863,9 @@ def run_tournament(
     metric_chunk_directory : pathlib.Path | None, default None
         Persist per-chunk metric aggregates to this directory instead of
         keeping them all in memory.
+    num_shuffles : int | None, default None
+        Explicit shuffle count. When omitted, use the supplied configuration's
+        count or the default TournamentConfig count.
     resume : bool, default True
         When ``True`` (default), resume from existing checkpoints and manifests
         to avoid recomputing completed work.
@@ -1875,9 +1878,7 @@ def run_tournament(
 
     Notes
     -----
-    *Old keyword arguments such as ``num_shuffles`` and ``ckpt_every_sec`` are
-    now fields of :class:`TournamentConfig`. Provide a custom config if you need
-    to override them.*
+    Workload settings are resolved into a separate TournamentConfig for each call.
 
     Side Effects
     ------------
@@ -1892,12 +1893,14 @@ def run_tournament(
         strategies, _ = generate_strategy_grid()  # 7_140 strategies
     strategies = _prepare_public_helper_strategies(strategies)
 
-    cfg = config or TournamentConfig()
-    if num_shuffles != cfg.num_shuffles:
-        cfg.num_shuffles = num_shuffles
+    supplied = config if config is not None else TournamentConfig()
+    cfg = replace(
+        supplied,
+        num_shuffles=supplied.num_shuffles if num_shuffles is None else num_shuffles,
+        n_strategies=len(strategies),
+    )
     if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
-    cfg.n_strategies = len(strategies)
     if cfg.n_strategies % cfg.n_players != 0:
         raise ValueError(f"n_players must divide {cfg.n_strategies:,}")
     if cfg.deterministic_batch_size < 1:
@@ -2035,6 +2038,16 @@ def run_tournament(
         ):
             raise ValueError(
                 "Checkpoint RNG scheme is stale or unsupported; restart from a v2 output root"
+            )
+        if (
+            isinstance(persisted_meta, Mapping)
+            and "num_shuffles" in persisted_meta
+            and persisted_meta["num_shuffles"] != cfg.num_shuffles
+        ):
+            raise ValueError(
+                f"Checkpoint shuffle count differs at {ckpt_path}. It records "
+                f"{persisted_meta['num_shuffles']!r} shuffles and the resolved workload "
+                f"requires {cfg.num_shuffles}. Resume with the original count or use a new output path."
             )
         raw_counts = payload.get("win_totals", payload)
         outcome_counts = payload.get("outcome_counts")

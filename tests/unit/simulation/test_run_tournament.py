@@ -12,8 +12,9 @@ import logging
 import pickle
 import types  # noqa: F401
 from collections import Counter
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
@@ -71,9 +72,95 @@ def fast_helpers(monkeypatch):
 def test_run_tournament_invalid_player_counts(n_players: int, pattern: str) -> None:
     cfg = rt.TournamentConfig(n_players=n_players)
     cfg.num_shuffles = 1
+    before = rt.TournamentConfig(n_players=n_players, num_shuffles=1)
 
     with pytest.raises(ValueError, match=pattern):
         rt.run_tournament(config=cfg)
+    assert cfg == before
+
+
+@pytest.mark.parametrize("override, expected", [(None, 1), (3, 3)])
+def test_shuffle_override_precedence_and_caller_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: int | None, expected: int
+) -> None:
+    cfg = rt.TournamentConfig(n_players=2, num_shuffles=1, deterministic_batch_size=1)
+    before = rt.TournamentConfig(n_players=2, num_shuffles=1, deterministic_batch_size=1)
+    submitted: list[int] = []
+
+    def play(task: rt.ShuffleTask) -> Counter[str]:
+        submitted.append(task.shuffle_index)
+        return Counter({"winner": 1})
+
+    monkeypatch.setattr(rt, "_play_shuffle", play)
+    checkpoint = tmp_path / "checkpoint.pkl"
+    run = partial(
+        rt.run_tournament,
+        config=cfg,
+        checkpoint_path=checkpoint,
+        n_jobs=1,
+        strategies=_mini_strats(2),
+    )
+    if override is None:
+        run()
+    else:
+        run(num_shuffles=override)
+    assert submitted == list(range(expected))
+    assert pickle.loads(checkpoint.read_bytes())["meta"]["num_shuffles"] == expected
+    assert cfg == before
+
+
+def test_failed_execution_preserves_supplied_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = rt.TournamentConfig(n_players=2, num_shuffles=1)
+    before = rt.TournamentConfig(n_players=2, num_shuffles=1)
+
+    def fail(task: rt.ShuffleTask) -> Counter[str]:
+        assert task.shuffle_index == 0
+        raise RuntimeError("injected tournament failure")
+
+    monkeypatch.setattr(rt, "_play_shuffle", fail)
+    with pytest.raises(RuntimeError, match="injected tournament failure"):
+        rt.run_tournament(
+            config=cfg,
+            num_shuffles=2,
+            checkpoint_path=tmp_path / "checkpoint.pkl",
+            n_jobs=1,
+            strategies=_mini_strats(2),
+        )
+    assert cfg == before
+
+
+def test_omitted_configuration_uses_default_shuffle_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def observe_workload(**options: Any) -> None:
+        assert options["num_shuffles"] == rt.TournamentConfig().num_shuffles
+        raise InterruptedError("observed the default workload")
+
+    monkeypatch.setattr(rt, "_iter_pending_chunk_items", observe_workload)
+    with pytest.raises(InterruptedError, match="observed the default workload"):
+        rt.run_tournament(strategies=_mini_strats(5), checkpoint_path=tmp_path / "checkpoint.pkl")
+
+
+def test_resume_rejects_a_checkpoint_for_a_different_shuffle_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = rt.TournamentConfig(n_players=2, num_shuffles=1)
+    checkpoint = tmp_path / "checkpoint.pkl"
+    run = partial(rt.run_tournament, config=cfg, checkpoint_path=checkpoint, n_jobs=1)
+    run(num_shuffles=3)
+    original = checkpoint.read_bytes()
+    monkeypatch.setattr(
+        rt.parallel,
+        "process_map",
+        lambda *args, **kwargs: pytest.fail("scheduled a mismatched resume"),
+    )
+
+    with pytest.raises(ValueError, match="records 3 shuffles.*requires 1"):
+        run()
+    assert checkpoint.read_bytes() == original
+    assert cfg.num_shuffles == 1
 
 
 def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:
@@ -103,7 +190,12 @@ def test_successive_tournaments_reset_worker_observations_in_shared_root_scope(
     def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
         assert recorder.emit_if_due(force=True)
         progress = recorder._active[scope.scope].progress  # noqa: SLF001
-        observed.append((progress["worker_completed_games"], progress["worker_completed_shuffles"]))
+        observed.append(
+            (
+                cast(int, progress["worker_completed_games"]),
+                cast(int, progress["worker_completed_shuffles"]),
+            )
+        )
         if initializer is not None:
             initializer(*initargs)
         for item in iterable:

@@ -75,18 +75,12 @@ def _workload_meta(cfg: AppConfig, manifest: pd.DataFrame | None = None) -> dict
     return runner._workload_checkpoint_metadata(plan)
 
 
-def test_filter_player_counts_invalid_vs_grid(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_validate_workload_reports_every_invalid_count(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr(runner, "experiment_size", lambda **_: 6)
 
-    valid, invalid, grid_size, source = runner._filter_player_counts(cfg, [0, -1, 2, 4, 6])
-
-    assert valid == [2, 6]
-    assert invalid == [0, -1, 4]
-    assert grid_size == 6
-    assert source == "experiment_size"
+    with pytest.raises(ValueError, match=r"\[0, -1, 1, 4\].*6 strategies"):
+        runner.validate_workload(cfg, player_counts=[0, -1, 1, 2, 4, 6], grid_size=6)
+    runner.validate_workload(cfg, player_counts=[2, 6], grid_size=6)
 
 
 def test_workload_plan_replaces_legacy_shuffle_sizing(tmp_path: Path) -> None:
@@ -507,31 +501,30 @@ def test_run_single_n_resume_invalid_raises(
         runner.run_single_n(cfg, 2, force=False)
 
 
-def test_run_multi_invalid_counts_warns_and_returns_empty(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("counts", [[5, 7], [2, 5], []])
+def test_run_multi_rejects_all_invalid_support_before_starting_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, counts: list[int]
 ) -> None:
-    cfg = _cfg(tmp_path, n_players_list=[5, 7])
-
+    cfg = _cfg(tmp_path, n_players_list=counts)
     monkeypatch.setattr(
         runner,
         "generate_strategy_grid",
         lambda **_: ([ThresholdStrategy(300, 3) for _ in range(4)], None),
     )
+    monkeypatch.setattr(
+        runner, "run_single_n", lambda *args, **kwargs: pytest.fail("started an invalid workload")
+    )
 
-    with caplog.at_level("WARNING", logger=runner.LOGGER.name):
-        out = runner.run_multi(cfg)
-
-    assert out == {}
-    assert any("No valid player counts remain" in rec.getMessage() for rec in caplog.records)
+    with pytest.raises(ValueError, match="sim.n_players_list"):
+        runner.run_multi(cfg)
+    assert not cfg.results_root.exists()
 
 
-def test_run_multi_filters_counts_and_calls_worker_once_per_valid(
+def test_run_multi_calls_worker_once_per_count_in_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = _cfg(tmp_path, n_players_list=[1, 2, 3, 4, 6])
+    cfg = _cfg(tmp_path, n_players_list=[3, 2, 6])
 
     monkeypatch.setattr(
         runner,
@@ -562,28 +555,19 @@ def test_run_multi_filters_counts_and_calls_worker_once_per_valid(
     monkeypatch.setattr(runner, "run_single_n", fake_run_single_n)
     out = runner.run_multi(cfg, force=True)
 
-    assert out == {1: 10, 2: 20, 3: 30, 6: 60}
+    assert out == {3: 30, 2: 20, 6: 60}
     assert worker_calls == [
-        (1, True, 12),
-        (2, True, 12),
         (3, True, 12),
+        (2, True, 12),
         (6, True, 12),
     ]
     assert not active_counts
 
 
-def test_filter_player_counts_zero_grid_allows_positive_counts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_validate_workload_rejects_zero_strategy_grid(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, smart_five_opts=[False], smart_one_opts=[True])
-    monkeypatch.setattr(runner, "experiment_size", lambda **_: 0)
-
-    valid, invalid, grid_size, source = runner._filter_player_counts(cfg, [0, -2, 1, 2, 3])
-
-    assert valid == [1, 2, 3]
-    assert invalid == [0, -2]
-    assert grid_size == 0
-    assert source == "experiment_size"
+    with pytest.raises(ValueError, match=r"\[2\].*0 strategies"):
+        runner.validate_workload(cfg)
 
 
 def test_workload_plan_rejects_incompatible_strategy_count(tmp_path: Path) -> None:
@@ -994,20 +978,14 @@ def test_run_tournament_dispatch_error_and_multi_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg_empty = _cfg(tmp_path, n_players_list=[])
-    with pytest.raises(ValueError, match="must contain at least one"):
+    with pytest.raises(ValueError, match="sim.n_players_list is empty"):
         runner.run_tournament(cfg_empty)
 
-    cfg_invalid = _cfg(tmp_path, n_players_list=[7, 9])
-    monkeypatch.setattr(
-        runner, "_filter_player_counts", lambda *_: ([], [7, 9], 6, "experiment_size")
-    )
-    with pytest.raises(ValueError, match="No valid player counts remain"):
+    cfg_invalid = _cfg(tmp_path, n_players_list=[2, 7, 11])
+    with pytest.raises(ValueError, match=r"\[7, 11\].*5,160 strategies"):
         runner.run_tournament(cfg_invalid)
 
     cfg_multi = _cfg(tmp_path, n_players_list=[2, 4])
-    monkeypatch.setattr(
-        runner, "_filter_player_counts", lambda *_: ([2, 4], [], 8, "experiment_size")
-    )
     monkeypatch.setattr(runner, "run_multi", lambda cfg, player_counts, force=False: {2: 4, 4: 8})
     assert runner.run_tournament(cfg_multi, force=True) == 12
 

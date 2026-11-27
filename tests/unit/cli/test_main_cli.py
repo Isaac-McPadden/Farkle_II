@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -254,6 +256,100 @@ def _write_cfg(tmp_path: Path) -> Path:
     path = tmp_path / "cfg.yml"
     path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     return path
+
+
+def _run_workload_cli(
+    tmp_path: Path, player_counts: list[int | float], *run_options: str
+) -> subprocess.CompletedProcess[str]:
+    config = tmp_path / "workload.yml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "io": {"results_dir_prefix": str(tmp_path / "out")},
+                "sim": {
+                    "seed": 7,
+                    "n_players_list": player_counts,
+                    "n_jobs": 1,
+                    "score_thresholds": [250, 300, 350, 400, 450, 500],
+                    "dice_thresholds": [2],
+                    "smart_five_opts": [False],
+                    "smart_one_opts": [False],
+                    "consider_score_opts": [True],
+                    "consider_dice_opts": [False],
+                    "auto_hot_dice_opts": [False],
+                    "run_up_score_opts": [False],
+                    "row_dir": "rows",
+                },
+                "screening": {
+                    "practical_delta_by_k": dict.fromkeys(player_counts, 0.03),
+                    "delta_across_k": 0.03,
+                    "resolution_delta": 0.9,
+                },
+                "batching": {"target_batches": 2, "min_shuffles_per_batch": 30},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "farkle",
+            "--config",
+            str(config),
+            "--resource-limiters",
+            "disabled",
+            "run",
+            *run_options,
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=300,
+    )
+
+
+@pytest.mark.parametrize(
+    "counts, diagnostic, options",
+    [
+        ([4, 5], "[4, 5]", ()),
+        ([2, 4, 5], "[4, 5]", ("--force",)),
+        ([], "Specify at least one player count", ()),
+        ([2, 3.5], "Use whole-number player counts", ()),
+    ],
+)
+def test_public_run_rejects_invalid_workload_before_publication(
+    tmp_path: Path, counts: list[int | float], diagnostic: str, options: tuple[str, ...]
+) -> None:
+    result = _run_workload_cli(tmp_path, counts, *options)
+    assert result.returncode != 0
+    assert "sim.n_players_list" in result.stderr
+    assert diagnostic in result.stderr
+    if 4 in counts:
+        assert "divide the positive roster size" in result.stderr
+    assert "Run command completed" not in result.stdout + result.stderr
+    assert not list(tmp_path.glob("out*"))
+
+
+def test_public_run_completes_and_reuses_the_full_workload(tmp_path: Path) -> None:
+    first = _run_workload_cli(tmp_path, [2, 3])
+    assert first.returncode == 0, first.stdout + first.stderr
+    root = tmp_path / "out_seed_7"
+    for count in (2, 3):
+        assert (root / f"{count}_players" / "simulation.done.json").is_file()
+    scientific = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for count in (2, 3)
+        for path in (root / f"{count}_players").rglob("*")
+        if path.is_file() and "_execution" not in path.parts
+    }
+    again = _run_workload_cli(tmp_path, [2, 3])
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert (again.stdout + again.stderr).count("Simulation already complete") == 2
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in scientific} == scientific
 
 
 def test_analyze_variance_command_is_removed(tmp_path: Path, preserve_root_logger):

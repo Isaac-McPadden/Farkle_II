@@ -34,7 +34,6 @@ from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import (
     _prepare_public_helper_strategies,
-    experiment_size,
     generate_strategy_grid,
 )
 from farkle.simulation.strategies import (
@@ -156,75 +155,30 @@ def _resolve_strategies(
     return strategies, grid_size, used_custom
 
 
-def _smart_option_pairs_from_config(cfg: AppConfig) -> list[tuple[bool, bool]] | None:
-    """Return allowed (smart_five, smart_one) combinations from the config."""
-    smart_five_opts = cfg.sim.smart_five_opts
-    smart_one_opts = cfg.sim.smart_one_opts
-
-    if smart_five_opts is None and smart_one_opts is None:
-        return None
-
-    smart_five_values = list(smart_five_opts) if smart_five_opts is not None else [True, False]
-    smart_one_values = list(smart_one_opts) if smart_one_opts is not None else [True, False]
-
-    pairs = [
-        (bool(sf), bool(so))
-        for sf in smart_five_values
-        for so in smart_one_values
-        if bool(sf) or not bool(so)
+def validate_workload(
+    cfg: AppConfig, *, player_counts: Sequence[int] | None = None, grid_size: int | None = None
+) -> None:
+    """Reject the entire requested support before starting any simulation cell."""
+    counts = cfg.sim.n_players_list if player_counts is None else player_counts
+    if isinstance(counts, str) or not isinstance(counts, Sequence):
+        raise ValueError("sim.n_players_list must be a list of player counts.")
+    if not counts:
+        raise ValueError("sim.n_players_list is empty. Specify at least one player count.")
+    if grid_size is None:
+        _, grid_size, _ = _resolve_strategies(cfg, None)
+    invalid = [
+        n
+        for n in counts
+        if isinstance(n, bool) or not isinstance(n, int) or n < 2 or n > grid_size or grid_size % n
     ]
-    return pairs
-
-
-def _grid_size_for_validation(
-    cfg: AppConfig,
-    strategies: Sequence[ThresholdStrategy] | None,
-) -> tuple[int, str]:
-    """Return the strategy count and its source label for validation logs."""
-    if strategies is not None:
-        return len(strategies), "len(strategies)"
-
-    smart_pairs = _smart_option_pairs_from_config(cfg)
-    size = experiment_size(
-        score_thresholds=cfg.sim.score_thresholds,
-        dice_thresholds=cfg.sim.dice_thresholds,
-        smart_five_and_one_options=smart_pairs,
-        consider_score_opts=cfg.sim.consider_score_opts,
-        consider_dice_opts=cfg.sim.consider_dice_opts,
-        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
-        run_up_score_opts=cfg.sim.run_up_score_opts,
-    )
-    return size, "experiment_size"
-
-
-def _filter_player_counts(
-    cfg: AppConfig,
-    player_counts: Sequence[int],
-    strategies: Sequence[ThresholdStrategy] | None = None,
-) -> tuple[list[int], list[int], int, str]:
-    """Partition player counts into valid/invalid buckets and log the result."""
-    grid_size, source = _grid_size_for_validation(cfg, strategies)
-    valid: list[int] = []
-    invalid: list[int] = []
-
-    for n in player_counts:
-        if n <= 0 or (grid_size % n) != 0:
-            invalid.append(n)
-        else:
-            valid.append(n)
-
-    log_extra = {
-        "stage": "simulation",
-        "grid_size": grid_size,
-        "grid_source": source,
-        "valid_player_counts": valid,
-        "invalid_player_counts": invalid,
-    }
-    LOGGER.info("Validated player counts against %s=%d", source, grid_size, extra=log_extra)
     if invalid:
-        LOGGER.warning("Dropping incompatible player counts: %s", invalid, extra=log_extra)
-
-    return valid, invalid, grid_size, source
+        raise ValueError(
+            f"Invalid sim.n_players_list entries {invalid!r} for the configured roster of "
+            f"{grid_size:,} strategies. Choose integer player counts of at least 2 that "
+            "divide the positive roster size, or adjust the strategy grid."
+        )
+    if len(set(counts)) != len(counts):
+        raise ValueError("sim.n_players_list contains duplicates. List each player count once.")
 
 
 def _plan_workload_from_config(
@@ -1564,18 +1518,8 @@ def _bind_game_profile(cfg: AppConfig, oracle_game_profile: GameProfile | None) 
 def _dispatch_tournament(
     cfg: AppConfig, *, force: bool, oracle_game_profile: GameProfile | None
 ) -> int:
-    configured_n_vals = list(cfg.sim.n_players_list)
-    if not configured_n_vals:
-        raise ValueError("sim.n_players_list must contain at least one player count")
-
-    n_vals, invalid_n_vals, grid_size_est, grid_source = _filter_player_counts(
-        cfg, configured_n_vals
-    )
-    if not n_vals:
-        raise ValueError(
-            f"No valid player counts remain after validating against {grid_source}={grid_size_est}. "
-            f"Invalid values: {invalid_n_vals}"
-        )
+    validate_workload(cfg)
+    n_vals = list(cfg.sim.n_players_list)
 
     if len(n_vals) == 1:
         n = n_vals[0]
@@ -2179,42 +2123,15 @@ def _run_multi(
     player_counts = (
         list(player_counts) if player_counts is not None else list(cfg.sim.n_players_list)
     )
-    strategies, _ = generate_strategy_grid(
-        score_thresholds=cfg.sim.score_thresholds,
-        dice_thresholds=cfg.sim.dice_thresholds,
-        smart_five_opts=cfg.sim.smart_five_opts,
-        smart_one_opts=cfg.sim.smart_one_opts,
-        consider_score_opts=cfg.sim.consider_score_opts,
-        consider_dice_opts=cfg.sim.consider_dice_opts,
-        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
-        run_up_score_opts=cfg.sim.run_up_score_opts,
-        include_stop_at=cfg.sim.include_stop_at,
-        include_stop_at_heuristic=cfg.sim.include_stop_at_heuristic,
-    )
-    # If you want the grid log here too, resolve + log once:
-    strategies, grid_size, used_custom = _resolve_strategies(cfg, strategies)
-
-    valid_counts, invalid_counts, _, _ = _filter_player_counts(
-        cfg, player_counts, strategies=strategies
-    )
-    if not valid_counts:
-        LOGGER.warning(
-            "No valid player counts remain after validating against len(strategies)=%d",
-            grid_size,
-            extra={
-                "stage": "simulation",
-                "grid_size": grid_size,
-                "grid_source": "len(strategies)",
-                "invalid_player_counts": invalid_counts,
-                "valid_player_counts": valid_counts,
-            },
-        )
-        return results
+    if not player_counts:
+        validate_workload(cfg, player_counts=player_counts)
+    strategies, grid_size, _used_custom = _resolve_strategies(cfg, None)
+    validate_workload(cfg, player_counts=player_counts, grid_size=grid_size)
 
     if force:
         row_owners: dict[Path, int] = {}
         metric_owners: dict[Path, int] = {}
-        for n in valid_counts:
+        for n in player_counts:
             rows, metrics = _force_output_directories(cfg, n)
             for directory, owners in ((rows, row_owners), (metrics, metric_owners)):
                 if directory is not None and owners.setdefault(directory.absolute(), n) != n:
@@ -2229,7 +2146,7 @@ def _run_multi(
                 if not plan.cap_exceeded:
                     _validate_force_inventory(cfg, plan, rows, metrics)
 
-    for n in valid_counts:
+    for n in player_counts:
         if oracle_game_profile is None:
             games = run_single_n(cfg, n, strategies=strategies, force=force)
         else:
@@ -2248,6 +2165,7 @@ __all__ = [
     "run_tournament",
     "run_single_n",
     "run_multi",
+    "validate_workload",
     "simulation_done_path",
     "simulation_is_complete",
     "write_simulation_done",
