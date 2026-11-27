@@ -258,9 +258,7 @@ def _write_cfg(tmp_path: Path) -> Path:
     return path
 
 
-def _run_workload_cli(
-    tmp_path: Path, player_counts: list[int | float], *run_options: str
-) -> subprocess.CompletedProcess[str]:
+def _write_workload_config(tmp_path: Path, player_counts: list[int | float]) -> Path:
     config = tmp_path / "workload.yml"
     config.write_text(
         yaml.safe_dump(
@@ -290,6 +288,13 @@ def _run_workload_cli(
         ),
         encoding="utf-8",
     )
+    return config
+
+
+def _run_workload_cli(
+    tmp_path: Path, player_counts: list[int | float], *run_options: str
+) -> subprocess.CompletedProcess[str]:
+    config = _write_workload_config(tmp_path, player_counts)
     return subprocess.run(
         [
             sys.executable,
@@ -350,6 +355,53 @@ def test_public_run_completes_and_reuses_the_full_workload(tmp_path: Path) -> No
     assert again.returncode == 0, again.stdout + again.stderr
     assert (again.stdout + again.stderr).count("Simulation already complete") == 2
     assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in scientific} == scientific
+
+
+def test_public_cli_recovers_partial_checkpoint(tmp_path: Path) -> None:
+    import pickle
+
+    config = _write_workload_config(tmp_path, [2])
+    settings = yaml.safe_load(config.read_text(encoding="utf-8"))
+    settings["sim"].update(row_dir=None, ckpt_every_sec=0)
+    config.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    arguments = ["--config", str(config), "--resource-limiters", "disabled", "run"]
+    crash = """
+import os
+import sys
+from farkle.cli.main import main
+from farkle.utils import authenticated_contract as contract
+
+install = contract.publish_staged_file_atomic
+def interrupt(staged, destination):
+    if destination.name == "2p_checkpoint.pkl.sidecar.json":
+        prior = destination.parent / "_execution" / ("._previous_" + destination.name)
+        if prior.is_file():
+            os._exit(87)
+    install(staged, destination)
+contract.publish_staged_file_atomic = interrupt
+main(sys.argv[1:])
+"""
+    stopped = subprocess.run(
+        [sys.executable, "-c", crash, *arguments], cwd=tmp_path, capture_output=True, timeout=300
+    )
+    assert stopped.returncode == 87, stopped.stderr
+    cell = tmp_path / "out_seed_7" / "2_players"
+    old = cell / "_execution" / "._previous_2p_checkpoint.pkl"
+    checkpoint = cell / "2p_checkpoint.pkl"
+    assert pickle.loads(old.read_bytes())["meta"]["completed_shuffle_indices"] == list(range(30))
+    assert pickle.loads(checkpoint.read_bytes())["meta"]["completed_shuffle_indices"] == list(
+        range(60)
+    )
+    assert not (cell / "simulation.done.json").exists()
+
+    restarted = subprocess.run(
+        [sys.executable, "-m", "farkle", *arguments], cwd=tmp_path, capture_output=True, timeout=300
+    )
+    assert restarted.returncode == 0, restarted.stderr
+    assert (cell / "simulation.done.json").is_file() and not old.exists()
+    assert pickle.loads(checkpoint.read_bytes())["meta"]["completed_shuffle_indices"] == list(
+        range(60)
+    )
 
 
 def test_analyze_variance_command_is_removed(tmp_path: Path, preserve_root_logger):

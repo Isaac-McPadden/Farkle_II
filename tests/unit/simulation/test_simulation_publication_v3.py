@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
+import os
 import pickle
 from contextlib import contextmanager
 from dataclasses import replace
@@ -1019,3 +1021,173 @@ def test_partial_recovery_rejects_invalid_durable_evidence(
     with pytest.raises(ValueError, match=message):
         runner.run_single_n(cfg, 2, strategies=strategies)
     assert not runner.simulation_done_path(cfg, 2).exists()
+
+
+def _interrupt_checkpoint_publication(cfg: AppConfig, mode: str) -> None:
+    checkpoint = cfg.checkpoint_path(2)
+    if mode == "summary":
+        # Stop the first run immediately before its completion stamp. Its next
+        # run will publish a replacement summary from the completed checkpoint.
+        from unittest.mock import patch
+
+        with (
+            patch.object(runner, "write_simulation_done", side_effect=InterruptedError),
+            pytest.raises(InterruptedError),
+        ):
+            runner.run_tournament(cfg)
+        checkpoint = cfg.n_dir(2) / "2p_checkpoint.parquet"
+    install = authenticated_contract.publish_staged_file_atomic
+    seals = 0
+
+    def crash(staged: Path, destination: Path) -> None:
+        nonlocal seals
+        if destination == sidecar_path(checkpoint):
+            seals += 1
+            if seals == (1 if mode in {"first", "summary"} else 3):
+                os._exit(87)
+        install(staged, destination)
+
+    authenticated_contract.publish_staged_file_atomic = crash
+    runner.run_tournament(cfg)
+
+
+@pytest.mark.parametrize("mode", ["resume", "force", "first", "summary"])
+def test_public_restart_after_checkpoint_process_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from farkle.orchestration import two_seed_pipeline
+    from farkle.orchestration.resume_preview import preview_pipeline
+
+    cfg = make_authenticated_v3_config(tmp_path)
+    cfg.sim.seed_list = [cfg.sim.seed, cfg.sim.seed + 1]
+    cfg.screening.practical_delta_by_k = {2: 0.03}
+    cfg.sim.score_thresholds = [300, 500]
+    cfg.sim.dice_thresholds = [2]
+    cfg.sim.smart_five_opts = cfg.sim.smart_one_opts = [False]
+    cfg.sim.consider_score_opts = [True]
+    cfg.sim.consider_dice_opts = cfg.sim.auto_hot_dice_opts = cfg.sim.run_up_score_opts = [False]
+    cfg.sim.row_dir = cfg.sim.metric_chunk_dir = None
+    cfg.sim.expanded_metrics = False
+    cfg.sim.n_jobs = 1
+    cfg.sim.ckpt_every_sec = 0
+    cfg.screening.resolution_delta = 0.9
+    cfg.batching.target_batches = 2
+    cfg.batching.min_shuffles_per_batch = 30
+    assign_config_sha(cfg)
+
+    base = cfg
+    pair = (cfg.sim.seed, cfg.sim.seed + 1)
+    monkeypatch.setattr(
+        two_seed_pipeline, "resolve_code_identity", lambda *a, **kw: base._code_identity
+    )
+    contexts, _, _ = two_seed_pipeline._prepare_pipeline(base, pair)
+    cfg = contexts.root_contexts[0].config
+
+    worker = multiprocessing.get_context("spawn").Process(
+        target=_interrupt_checkpoint_publication, args=(cfg, mode)
+    )
+    worker.start()
+    try:
+        worker.join(120)
+        assert worker.exitcode == 87
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        worker.close()
+
+    path = cfg.n_dir(2) / "2p_checkpoint.parquet" if mode == "summary" else cfg.checkpoint_path(2)
+    seal = sidecar_path(path)
+    done = runner.simulation_done_path(cfg, 2)
+    assert path.is_file() and not seal.exists() and not done.exists()
+    if mode == "first":
+        with pytest.raises(
+            authenticated_contract.ArtifactMismatchError, match="owning configuration"
+        ):
+            runner.tournament_mod.run_tournament(checkpoint_path=path)
+        for force in (False, True):
+            with pytest.raises(ValueError, match="ownership|without authenticated sidecars"):
+                runner.run_tournament(cfg, force=force)
+        assert not seal.exists() and not done.exists()
+        return
+
+    prior = path.parent / "_execution" / ("._previous_" + path.name)
+    old = prior.read_bytes(), sidecar_path(prior).read_bytes()
+
+    def snapshot():
+        return {
+            p: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in cfg.results_root.rglob("*")
+            if p.is_file()
+        }
+
+    assert cfg._code_identity is not None
+    before = snapshot()
+    preview = preview_pipeline(base, seed_pair=pair, force=mode == "force")
+    assert any(
+        d.action == "verification_required" and "publication recovery" in d.reason
+        for d in preview.decisions
+    )
+    assert snapshot() == before
+    if mode == "resume":
+        # Neither a corrupted backup nor unrelated bytes in the destination
+        # may be replaced using the name of a rollback slot alone.
+        for resume in (True, False):
+            with pytest.raises(
+                authenticated_contract.ArtifactMismatchError, match="owning configuration"
+            ):
+                runner.tournament_mod.run_tournament(checkpoint_path=path, resume=resume)
+        unpaired = prior.parent / ("._unpaired_" + seal.name)
+        unpaired.write_bytes(b"ambiguous")
+        with pytest.raises(authenticated_contract.ArtifactMismatchError, match="Ambiguous"):
+            runner.run_tournament(cfg, force=True)
+        assert unpaired.read_bytes() == b"ambiguous" and not done.exists()
+        unpaired.unlink()
+        for target in (prior, sidecar_path(prior), path):
+            saved = target.read_bytes()
+            target.write_bytes(b"x" * len(saved))
+            with pytest.raises(authenticated_contract.AuthenticatedContractError):
+                runner.run_tournament(cfg)
+            assert target.read_bytes() == b"x" * len(saved)
+            assert not seal.exists() and not done.exists()
+            target.write_bytes(saved)
+        with monkeypatch.context() as patch:
+            patch.setattr(cfg.sim, "score_thresholds", [350, 550])
+            with pytest.raises(authenticated_contract.ArtifactMismatchError, match="Incompatible"):
+                runner.run_tournament(cfg)
+        assert (prior.read_bytes(), sidecar_path(prior).read_bytes()) == old
+        replace_file = authenticated_contract.replace_file_atomic
+
+        def interrupt(source, destination):
+            if destination == seal:
+                raise InterruptedError("rollback seal")
+            replace_file(source, destination)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(authenticated_contract, "replace_file_atomic", interrupt)
+            with pytest.raises(InterruptedError, match="rollback seal"):
+                runner.run_tournament(cfg)
+        assert (path.read_bytes(), sidecar_path(prior).read_bytes()) == old
+        assert not done.exists() and not seal.exists()
+
+    read = runner.tournament_mod._read_checkpoint
+    observed = []
+
+    def authenticate(checkpoint, **kwargs):
+        if not observed:
+            assert (path.read_bytes(), seal.read_bytes()) == old
+        result = read(checkpoint, **kwargs)
+        observed.append(True)
+        return result
+
+    monkeypatch.setattr(runner.tournament_mod, "_read_checkpoint", authenticate)
+    monkeypatch.setattr(
+        runner.tournament_mod,
+        "_play_one_shuffle",
+        lambda *a, **kw: pytest.fail("replayed durable work"),
+    )
+    if mode == "force":
+        assert runner.run_multi(cfg, force=True) == {2: 60}
+    else:
+        assert runner.run_tournament(cfg) == 60
+    assert observed and runner.simulation_is_complete(cfg, 2)

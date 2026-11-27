@@ -1462,6 +1462,11 @@ def _require_unbound_canonical_suffix(
 
 def _verify_artifact_bytes(path: Path, metadata: AuthenticatedSidecar) -> None:
     _require_unbound_canonical_suffix(path, metadata.artifact.location)
+    _verify_artifact_content(path, metadata)
+
+
+def _verify_artifact_content(path: Path, metadata: AuthenticatedSidecar) -> None:
+    """Check bytes and schema, including a prior generation in its rollback slot."""
     current = _current_artifact_identity(
         path,
         location=metadata.artifact.location,
@@ -2168,6 +2173,87 @@ def _previous_data(path: Path) -> Path:
 
 def _previous_unpaired_sidecar(path: Path) -> Path:
     return path.parent / "_execution" / ("._unpaired_" + sidecar_path(path).name)
+
+
+def pending_publication_recovery(path: Path) -> bool:
+    """Read-only probe of the A1 writer's reserved rollback slots."""
+    prior = _previous_data(path)
+    return any(
+        os.path.lexists(p) for p in (prior, sidecar_path(prior), _previous_unpaired_sidecar(path))
+    )
+
+
+def restore_verified_publication(
+    path: Path,
+    *,
+    check_path: Callable[[Path], object],
+    check_owner: Callable[[AuthenticatedSidecar], None],
+    sources: Sequence[Path],
+) -> None:
+    """Authenticate a withdrawn pair under the A1 writer lock before rollback."""
+    from farkle.utils.manifest import publication_lock
+    from farkle.utils.scientific_invocation import publication_transaction
+
+    prior = _previous_data(path)
+    prior_seal = sidecar_path(prior)
+    seal = sidecar_path(path)
+    unpaired = _previous_unpaired_sidecar(path)
+    check_path(prior.parent / "._publication_.v3-artifacts.lock")
+    with publication_lock(path.parent / ".v3-artifacts"):
+        if not pending_publication_recovery(path):
+            return
+        inputs = [p for source in sources for p in (source, sidecar_path(source))]
+        for member in (prior, prior_seal, seal, path, unpaired, *inputs):
+            check_path(member)
+        if unpaired.exists() or not prior_seal.is_file():
+            raise ArtifactMismatchError(f"Ambiguous publication backup for {path}")
+        with _protected_publication_files(inputs) as check_inputs:
+            members = [p for p in (prior, prior_seal, path, seal) if p.exists()]
+            with _protected_publication_files(members) as check_files:
+                previous = load_authenticated_sidecar(prior)
+                check_owner(previous)
+                old_data = prior if prior.exists() else path
+                _verify_artifact_content(old_data, previous)
+                expected = previous
+                committed = seal.exists()
+                if committed:
+                    current = validate_authenticated_artifact_unbound(
+                        path, validate_provenance=False
+                    )
+                    check_owner(current)
+                    expected = current
+                elif (
+                    prior.exists()
+                    and path.exists()
+                    and (digest := sha256_file(path)) != previous.artifact.content_sha256
+                ):
+                    # A1 leaves the prevalidated candidate seal beside the destination
+                    # when the writer exits between renames. It can identify the
+                    # displaced bytes, but must never be installed to complete them.
+                    for stage in path.parent.glob("._sidecar_v3_*"):
+                        check_path(stage)
+                        try:
+                            candidate = _parse_sidecar(read_json_file_with_retry(stage))
+                        except (ValueError, TypeError, KeyError, AuthenticatedContractError):
+                            continue
+                        if (
+                            candidate.artifact.content_sha256 == digest
+                            and candidate.artifact.location == previous.artifact.location
+                        ):
+                            check_owner(candidate)
+                            _verify_artifact_content(path, candidate)
+                            break
+                    else:
+                        raise ArtifactMismatchError(
+                            f"Unrecognized interrupted publication data at {path}"
+                        )
+                check_inputs()
+                check_files()
+            with publication_transaction():
+                _recover_previous_pair(path)
+            restored = validate_authenticated_artifact_unbound(path, validate_provenance=False)
+            if restored != expected:
+                raise ArtifactMismatchError(f"Recovered publication identity differs at {path}")
 
 
 def recover_interrupted_publication(path: Path, *, manifest: bool = False) -> None:

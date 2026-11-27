@@ -59,6 +59,7 @@ from farkle.utils.authenticated_contract import (
     ArtifactMismatchError,
     canonical_json_bytes,
     capture_source_artifact_unbound,
+    pending_publication_recovery,
     producer_code_identity,
     validate_authenticated_artifact_metadata,
 )
@@ -1887,6 +1888,20 @@ def run_tournament(
     ``metric_chunk_directory`` is set, per-chunk metric aggregates are also
     written there.
     """
+    ckpt_path = Path(checkpoint_path)
+    unsealed_run_checkpoint = (
+        checkpoint_sidecar is None
+        and ckpt_path.name.endswith("p_checkpoint.pkl")
+        and ckpt_path.is_file()
+        and not sidecar_path(ckpt_path).exists()
+        and sidecar_path(ckpt_path.with_name("simulation_workload_plan.json")).is_file()
+    )
+    if pending_publication_recovery(ckpt_path) or unsealed_run_checkpoint:
+        # The standalone API cannot establish run ownership from a checkpoint path.
+        raise ArtifactMismatchError(
+            f"Interrupted authenticated checkpoint at {checkpoint_path}. "
+            "Restart with the run command and the owning configuration."
+        )
     if max_in_flight_per_worker < 1:
         raise ValueError("max_in_flight_per_worker must be positive")
     if strategies is None:
@@ -2018,7 +2033,6 @@ def run_tournament(
     metric_sums: Dict[str, Dict[int | str, float]] | None
     metric_sq_sums: Dict[str, Dict[int | str, float]] | None
 
-    ckpt_path = Path(checkpoint_path)
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     last_ckpt = time.perf_counter()
     payload: dict[str, Any] | None = None

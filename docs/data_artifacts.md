@@ -65,6 +65,15 @@ a missing sidecar and the next publication attempt restores the prior pair
 under the writer lock. An interrupted first publication has no prior generation.
 Its unsealed data cannot establish completion.
 
+Simulation restart checks the checkpoint and both summary files under the cell
+lock before deciding on completion, forced cleanup or resume. It authenticates
+the withdrawn generation against the current cell and its exact roster and
+workload sources. If different bytes occupy the canonical path, the interrupted
+writer's staged sidecar must identify them before rollback. Execution then
+authenticates the restored pair. Resume preview reports pending verification.
+Standalone tournament calls with pending rollback evidence require restart
+through the owning run configuration.
+
 Streamed ingest rows, row-preserving curated files, rare-event shards and
 counter checkpoints, and auxiliary per-k TrueSkill exports receive the same
 adjacent hash-bound sidecars as final summaries. A no-force resume may publish

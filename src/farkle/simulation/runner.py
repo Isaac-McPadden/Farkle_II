@@ -65,6 +65,7 @@ from farkle.utils.authenticated_contract import (
     compute_manifest_root,
     derive_canonical_location,
     load_immutable_manifest_sidecar,
+    pending_publication_recovery,
     producer_code_identity,
     validate_authenticated_artifact_metadata,
     validate_authenticated_artifact_unbound,
@@ -82,6 +83,7 @@ from farkle.utils.release_identity import (
     exact_direct_sources,
     is_v3_config,
     publish_native_manifest_v3,
+    recover_simulation_output,
     scientific_artifact_binding,
 )
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
@@ -242,6 +244,8 @@ def simulation_is_complete(
 ) -> bool:
     """Return whether the per-N completion authenticates current work exactly."""
 
+    if _pending_simulation_publications(cfg, n_players):
+        return False
     done_path = simulation_done_path(cfg, n_players)
     scope = current_supervisor_scope() if report_recovery else None
     if scope is not None:
@@ -1611,6 +1615,29 @@ def simulation_roster_manifest(
     return manifest, ordered_roster
 
 
+def _pending_simulation_publications(cfg: AppConfig, n: int) -> dict[Path, str]:
+    targets = {
+        cfg.checkpoint_path(n): "publish_simulation_checkpoint",
+        cfg.n_dir(n) / f"{n}p_checkpoint.parquet": "publish_simulation_checkpoint_summary",
+        cfg.metrics_path(n): "publish_simulation_metrics_summary",
+    }
+    return {
+        path: operation for path, operation in targets.items() if pending_publication_recovery(path)
+    }
+
+
+def _recover_simulation_publications(cfg: AppConfig, n: int) -> None:
+    for path, operation in _pending_simulation_publications(cfg, n).items():
+        template = _simulation_output_sidecar(
+            cfg,
+            path,
+            n_players=n,
+            operation=operation,
+            sources=[cfg.strategy_manifest_root_path(), cfg.simulation_workload_plan_path(n)],
+        )
+        recover_simulation_output(cfg, path, template, check_path=_safe_cleanup_path)
+
+
 def run_single_n(
     cfg: AppConfig,
     n: int,
@@ -1624,6 +1651,8 @@ def run_single_n(
 
     if force:
         _force_output_directories(cfg, n)
+    if _pending_simulation_publications(cfg, n):
+        _safe_cleanup_path(cfg.n_dir(n) / "_execution" / "._publication_simulation.lock")
     with publication_lock(cfg.n_dir(n) / "simulation"):
         return _run_single_n(
             cfg, n, strategies, force=force, oracle_game_profile=oracle_game_profile
@@ -1640,6 +1669,7 @@ def _run_single_n(
     oracle_game_profile: GameProfile | None = None,
 ) -> int:
     """Run a Farkle tournament for a single tournament with player count *n*."""
+    _recover_simulation_publications(cfg, n)
     # --- Grid & tests ---
     strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
     LOGGER.info(f"{grid_size} total strategies, used custom state: {_used_custom}")
@@ -2138,6 +2168,11 @@ def _run_multi(
                     raise ValueError(
                         f"Simulation player counts share a shard inventory: {directory}"
                     )
+            if _pending_simulation_publications(cfg, n):
+                from farkle.utils.manifest import publication_lock
+
+                with publication_lock(cfg.n_dir(n) / "simulation"):
+                    _recover_simulation_publications(cfg, n)
             if any(
                 os.path.lexists(p) or os.path.lexists(sidecar_path(p))
                 for p in _simulation_cell_files(cfg, n, rows, metrics)

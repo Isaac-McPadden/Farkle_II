@@ -398,6 +398,14 @@ class _Inspection:
 
     def simulation(self, cfg: AppConfig, scope: str, k: int) -> None:
         stamp = runner.simulation_done_path(cfg, k)
+        if runner._pending_simulation_publications(cfg, k):
+            self.add(
+                scope,
+                stamp,
+                "verification_required",
+                "Execution must authenticate pending simulation publication recovery.",
+            )
+            return
         workload_path = stamp.parent / "simulation_workload_plan.json"
         checkpoint = cfg.checkpoint_path(k)
         rows = runner._resolve_row_output_dir(cfg, k)

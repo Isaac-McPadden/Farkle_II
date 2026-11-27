@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -39,6 +39,7 @@ from farkle.utils.artifact_contract import (
 from farkle.utils.authenticated_contract import (
     LIFECYCLE_CONTRACT_VERSION,
     ArtifactFormatIdentity,
+    ArtifactMismatchError,
     AuthenticatedCompletion,
     AuthenticatedSidecar,
     CanonicalArtifactLocation,
@@ -68,6 +69,7 @@ from farkle.utils.authenticated_contract import (
     publish_staged_authenticated_artifact_atomic,
     recover_interrupted_publication,
     resolve_code_identity,
+    restore_verified_publication,
     validate_authenticated_artifact_metadata,
     validate_authenticated_artifact_unbound,
     write_authenticated_completion_atomic,
@@ -561,6 +563,43 @@ def capture_v3_inputs(metadata: ArtifactSidecar) -> CapturedV3Inputs:
             (role, str(paths[0]), str(paths[1])) for role, paths in manifest_paths.items()
         ),
         controls=tuple((role, str(path), designs[role]) for role, path in controls.items()),
+    )
+
+
+def recover_simulation_output(
+    cfg: AppConfig, path: Path, template: ArtifactSidecar, *, check_path: Callable[[Path], object]
+) -> None:
+    """Bind recovery to the same cell, method and exact inputs as publication."""
+    from farkle.utils.scientific_reuse import compatible_producer
+
+    location = derive_canonical_location(cfg, path, stage_key="simulation")
+    versions, version = _versions(cfg, stage_key="simulation", metadata=template)
+    method = _typed_method(cfg, template, method_version=version)
+    inputs = [Path(p) for p in template.source_artifacts]
+
+    def check_owner(metadata: AuthenticatedSidecar) -> None:
+        stage = metadata.stage_identity
+        if (
+            metadata.artifact.location != location
+            or metadata.artifact.logical_operation != method.procedure
+            or metadata.artifact.format_identity != _format_identity(path, path)
+            or metadata.method_contract.sha256 != method.sha256
+            or metadata.versions != versions
+            or stage.stage_key != "simulation"
+            or stage.stage_cache_key_version != cfg.stage_cache_key_version("simulation")
+            or stage.stage_config.sha256 != producer_config_identity(cfg, "simulation").sha256
+            or stage.immutable_design_identities.get("stage_dependencies_v1")
+            != cfg.stage_config_sha("simulation")
+            or stage.immutable_design_identities.get("game_profile_sha256")
+            != cfg._game_profile_sha256
+            or not compatible_producer(stage, producer_code_identity(cfg))
+            or metadata.manifest_roots
+            or metadata.source_artifacts != capture_v3_inputs(template).sources
+        ):
+            raise ArtifactMismatchError(f"Incompatible simulation publication backup for {path}")
+
+    restore_verified_publication(
+        path, check_path=check_path, check_owner=check_owner, sources=inputs
     )
 
 
