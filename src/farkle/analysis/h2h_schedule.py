@@ -2123,12 +2123,13 @@ def _execute_blocks(
                 for block, plan in zip(active_chunks, chunk_plans, strict=True)
             )
             executor_started = time.perf_counter()
+            active_workers = min(worker_count, len(active_chunks))
 
             try:
                 for previous, raw_result in process_map(
                     _simulate_cached_block,
                     tasks,
-                    n_jobs=min(worker_count, len(active_chunks)),
+                    n_jobs=active_workers,
                     initializer=_initialize_h2h_worker,
                     initargs=(
                         manifest_path,
@@ -2138,7 +2139,7 @@ def _execute_blocks(
                         cfg,
                         plan["frozen_design"]["execution_dependencies_sha256"],
                     ),
-                    window=worker_count * cfg.resources.max_in_flight_per_worker,
+                    window=active_workers * cfg.resources.max_in_flight_per_worker,
                     mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
                     memory_guard=memory_guard,
                     progress_callback=scheduler_progress,

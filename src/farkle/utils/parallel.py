@@ -1087,7 +1087,7 @@ def process_map(
     memory_guard: ProcessTreeMemoryGuard | None = None,
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ):
-    """Map ``fn`` across ``items`` with optional multiprocessing support."""
+    """Map work with a bounded count of submitted futures awaiting collection."""
     progress_enabled = progress_callback is not None
 
     def report(event: str, **values: object) -> None:
@@ -1112,6 +1112,10 @@ def process_map(
 
         fn = partial(checked_worker_result, fn)
     resolved_jobs = normalize_n_jobs(n_jobs, default=1)
+    if resolved_jobs == 1:
+        window = 1
+    elif window <= 0:
+        window = resolved_jobs * 4
     submitted = 0
     completed = 0
     requested_jobs = n_jobs
@@ -1121,7 +1125,7 @@ def process_map(
         requested_workers=requested_jobs,
         resolved_workers=resolved_jobs,
         worker_count=resolved_jobs,
-        window=max(1, int(window)),
+        window=window,
         executor_mode="intentional_serial" if resolved_jobs == 1 else "process_pool",
         nested_process_pool_suppressed=is_process_pool_worker() and resolved_jobs == 1,
         executor_parent_pid=os.getpid(),
@@ -1181,9 +1185,6 @@ def process_map(
             executor_mode="intentional_serial",
         )
         return
-    if window <= 0:
-        window = resolved_jobs * 4
-
     executor_construction_started = time.perf_counter()
     try:
         executor = ProcessPoolExecutor(
@@ -1220,36 +1221,39 @@ def process_map(
     peak_live_workers = 0
     try:
         it = iter(items)
+
+        def submit_next() -> None:
+            nonlocal submitted
+            item = next(it)
+            if memory_guard is not None:
+                report(
+                    "schedule_check", submitted=submitted, completed=completed, pending=len(futs)
+                )
+                memory_guard.check_before_schedule()
+            futs.append(executor.submit(fn, item))
+            submitted += 1
+            report("submitted", submitted=submitted, completed=completed, pending=len(futs))
+
         # prefill the window
         for _ in range(window):
             try:
-                if memory_guard is not None:
-                    report(
-                        "schedule_check",
-                        submitted=submitted,
-                        completed=completed,
-                        pending=len(futs),
-                    )
-                    memory_guard.check_before_schedule()
-                futs.append(executor.submit(fn, next(it)))
-                submitted += 1
-                report(
-                    "submitted",
-                    submitted=submitted,
-                    completed=completed,
-                    pending=len(futs),
-                )
+                submit_next()
             except StopIteration:
                 break
         created_pids, live_pids = _executor_process_snapshot(executor)
         created_worker_pids.update(created_pids)
         peak_live_workers = max(peak_live_workers, len(live_pids))
-        expected_workers = min(resolved_jobs, submitted)
+        topology_observable = hasattr(executor, "_processes")
+        unfinished = sum(not future.done() for future in futs)
+        # Before reaching capacity, a spawn submission either starts a
+        # worker or consumes an idle credit from a previously finished
+        # future. Each finished future can account for at most one reuse.
+        minimum_workers = min(resolved_jobs, unfinished)
         report(
-            "executor_ready" if expected_workers else "executor_no_work",
+            "executor_ready" if submitted else "executor_no_work",
             requested_workers=requested_jobs,
             resolved_workers=resolved_jobs,
-            effective_workers=expected_workers,
+            effective_workers=len(live_pids),
             created_workers=len(created_pids),
             live_workers=len(live_pids),
             peak_live_workers=peak_live_workers,
@@ -1257,19 +1261,17 @@ def process_map(
             submitted=submitted,
             completed=completed,
             pending=len(futs),
+            unfinished_futures=unfinished,
             executor_construction_seconds=time.perf_counter() - executor_construction_started,
-            executor_mode="process_pool" if expected_workers else "no_pending_work",
+            executor_mode="process_pool" if submitted else "no_pending_work",
         )
-        topology_observable = hasattr(executor, "_processes")
-        if (
-            topology_observable
-            and expected_workers
-            and (len(created_pids) != expected_workers or len(live_pids) != expected_workers)
-        ):
+        # Broken workers and initializer failures are surfaced by future.result().
+        # The fork start method can launch its full capacity for one unit.
+        if topology_observable and not minimum_workers <= len(created_pids) <= resolved_jobs:
             raise ProcessPoolTopologyError(
                 "process-pool topology mismatch before first result: "
                 f"requested={requested_jobs!r}, resolved={resolved_jobs}, "
-                f"expected={expected_workers}, created={len(created_pids)}, "
+                f"minimum={minimum_workers}, unfinished={unfinished}, created={len(created_pids)}, "
                 f"live={len(live_pids)}, parent_pid={os.getpid()}, "
                 f"thread={threading.current_thread().name!r}"
             )
@@ -1325,22 +1327,7 @@ def process_map(
                     ) from exc
                 raise
             with contextlib.suppress(StopIteration):
-                if memory_guard is not None:
-                    report(
-                        "schedule_check",
-                        submitted=submitted,
-                        completed=completed,
-                        pending=len(futs),
-                    )
-                    memory_guard.check_before_schedule()
-                futs.append(executor.submit(fn, next(it)))
-                submitted += 1
-                report(
-                    "submitted",
-                    submitted=submitted,
-                    completed=completed,
-                    pending=len(futs),
-                )
+                submit_next()
         clean_shutdown = True
     except BaseException as exc:
         classification = classify_resource_exception(exc, memory_guard=memory_guard)

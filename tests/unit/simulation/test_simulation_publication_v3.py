@@ -421,13 +421,38 @@ def test_native_manifest_records_are_canonical_identity_records(tmp_path: Path) 
     assert canonical_json_bytes(records[0]) + b"\n" in manifest.read_bytes()
 
 
-def test_real_two_worker_tournament_uses_producer_owned_publication(tmp_path: Path) -> None:
-    def _run(name: str, workers: int) -> AppConfig:
+def test_real_two_worker_tournament_uses_producer_owned_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process_map = runner.tournament_mod.parallel.process_map
+    observed: list[tuple[int, int, int]] = []
+
+    def measure(fn, items, **kwargs):
+        events: list[Any] = []
+        callback = kwargs["progress_callback"]
+
+        def progress(event):
+            events.append(event)
+            callback(event)
+
+        yield from process_map(fn, items, **{**kwargs, "progress_callback": progress})
+        observed.append(
+            (
+                kwargs["n_jobs"],
+                kwargs["window"],
+                max(event["pending"] for event in events if event["event"] == "submitted"),
+            )
+        )
+
+    monkeypatch.setattr(runner.tournament_mod.parallel, "process_map", measure)
+
+    def _run(name: str, workers: int, multiplier: int) -> AppConfig:
         cfg = make_authenticated_v3_config(tmp_path, name=name, root_seed=42)
         cfg.sim.row_dir = Path("rows")
         cfg.sim.metric_chunk_dir = Path("metric_chunks")
         cfg.sim.expanded_metrics = True
         cfg.sim.n_jobs = workers
+        cfg.resources.max_in_flight_per_worker = multiplier
         # The preflight subprocess runs this probe with two fully attested workers.
         cfg.resources.process_tree_warning_threshold_mb = 1536
         cfg.screening.resolution_delta = 0.9
@@ -446,8 +471,9 @@ def test_real_two_worker_tournament_uses_producer_owned_publication(tmp_path: Pa
         assert runner.simulation_is_complete(cfg, 2)
         return cfg
 
-    sequential = _run("real_workers_1", 1)
-    parallel = _run("real_workers_2", 2)
+    sequential = _run("real_workers_1", 1, 3)
+    parallel = _run("real_workers_2", 2, 1)
+    assert observed == [(1, 3, 1), (2, 2, 2)]
 
     def _published_bytes(cfg: AppConfig) -> dict[str, bytes]:
         return {

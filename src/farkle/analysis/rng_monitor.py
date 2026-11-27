@@ -318,7 +318,7 @@ def run(
             tasks,
             n_jobs=jobs,
             mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
-            window=jobs,
+            window=jobs * cfg.resources.max_in_flight_per_worker,
         ):
             pass
     tables = [pq.read_table(path) for path in unit_paths]  # <=16*12 rows per required k

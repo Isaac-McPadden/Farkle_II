@@ -1812,6 +1812,7 @@ def run_tournament(
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
+    max_in_flight_per_worker: int = 4,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
     metric_chunk_directory: Path | None = None,
@@ -1850,6 +1851,9 @@ def run_tournament(
         Worker processes to spawn after normalization via
         :func:`farkle.utils.parallel.normalize_n_jobs`: ``None`` uses ``1``,
         ``0`` uses ``os.cpu_count()``, and positive values are used directly.
+    max_in_flight_per_worker : int, default 4
+        Maximum outstanding futures per resolved process worker. AppConfig-driven
+        runs supply the configured resource multiplier.
     collect_metrics : bool, default False
         If ``True``, per-strategy means/variances for several game metrics are
         accumulated in addition to raw win counts.
@@ -1882,6 +1886,8 @@ def run_tournament(
     ``metric_chunk_directory`` is set, per-chunk metric aggregates are also
     written there.
     """
+    if max_in_flight_per_worker < 1:
+        raise ValueError("max_in_flight_per_worker must be positive")
     if strategies is None:
         strategies, _ = generate_strategy_grid()  # 7_140 strategies
     strategies = _prepare_public_helper_strategies(strategies)
@@ -2522,7 +2528,7 @@ def run_tournament(
             n_jobs=resolved_n_jobs,
             initializer=_init_worker,
             initargs=(strategies, cfg, oracle_game_profile, progress_endpoint),
-            window=4 * resolved_n_jobs,
+            window=max_in_flight_per_worker * resolved_n_jobs,
             mp_context=mp_context,
             memory_guard=memory_guard,
             progress_callback=scheduler_progress,

@@ -2,9 +2,10 @@ import csv
 import multiprocessing as mp
 import os
 import threading
+from concurrent.futures import Future, ProcessPoolExecutor
 from multiprocessing.context import BaseContext
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 import pytest
 from pytest import MonkeyPatch
@@ -16,6 +17,36 @@ from farkle.config import ResourcesConfig
 
 def _times_two(value: int) -> int:
     return value * 2
+
+
+def _worker_pid(_value: int) -> int:
+    return os.getpid()
+
+
+_start_work: threading.Event
+_overlap_barrier: threading.Barrier
+
+
+def _initialize_overlapping_work(start, overlap):  # noqa: ANN001
+    global _start_work, _overlap_barrier
+    _start_work, _overlap_barrier = start, overlap
+
+
+def _overlapping_worker(value: int) -> int:
+    if value < 0:
+        return os.getpid()
+    if not _start_work.wait(timeout=30):
+        raise TimeoutError("parent did not release initial work")
+    _overlap_barrier.wait(timeout=20)
+    return os.getpid()
+
+
+def _wait_for_idle(executor: ProcessPoolExecutor) -> None:
+    # Wait for CPython to finish the first future and record the idle
+    # worker. Return its credit so the next submission can reuse it.
+    idle = executor._idle_worker_semaphore
+    assert idle.acquire(timeout=30)
+    idle.release()
 
 
 def _raise_or_wait(value: int) -> int:
@@ -205,6 +236,9 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
         def result(self):
             return self._value
 
+        def done(self) -> bool:
+            return True
+
     class DummyExecutor:
         def __init__(self, **kwargs):  # noqa: ANN003
             self.kwargs = kwargs
@@ -262,6 +296,169 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
     assert shutdown_seconds >= 0.0
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows spawn idle-worker regression")
+def test_spawn_pool_reuses_worker_when_producer_is_slow(monkeypatch: MonkeyPatch) -> None:
+    def capture_executor(**kwargs):
+        executor = ProcessPoolExecutor(**kwargs)
+        executors.append(executor)
+        return executor
+
+    executors: list[ProcessPoolExecutor] = []
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", capture_executor)
+
+    def slow_items():
+        yield 0
+        _wait_for_idle(executors[0])
+        yield 1
+
+    events: list[Mapping[str, object]] = []
+    pids = list(
+        parallel.process_map(
+            _worker_pid,
+            slow_items(),
+            n_jobs=2,
+            window=2,
+            mp_context=mp.get_context("spawn"),
+            progress_callback=events.append,
+        )
+    )
+    assert len(pids) == 2 and pids[0] == pids[1]
+    ready = next(event for event in events if event["event"] == "executor_ready")
+    assert ready["resolved_workers"] == 2
+    assert ready["pending"] == 2
+    assert cast(int, ready["unfinished_futures"]) <= 1
+    assert ready["created_workers"] == ready["effective_workers"] == 1
+
+
+@pytest.mark.parametrize("actual_capacity", [2, 1])
+@pytest.mark.parametrize("first_finishes", [False, True])
+def test_spawn_pool_qualifies_overlapping_startup(
+    monkeypatch: MonkeyPatch, actual_capacity: int, first_finishes: bool
+) -> None:
+    executors: list[ProcessPoolExecutor] = []
+
+    def executor_with_capacity(**kwargs):
+        executor = ProcessPoolExecutor(**{**kwargs, "max_workers": actual_capacity})
+        executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", executor_with_capacity)
+    context = mp.get_context("spawn")
+    start, overlap = context.Event(), context.Barrier(2)
+    events: list[Mapping[str, object]] = []
+
+    def progress(event: Mapping[str, object]) -> None:
+        events.append(event)
+        if event["event"] == "executor_ready" and actual_capacity == 2:
+            start.set()
+
+    def items():
+        if first_finishes:
+            yield -1
+            _wait_for_idle(executors[0])
+        yield from (0, 1)
+
+    results = parallel.process_map(
+        _overlapping_worker,
+        items(),
+        n_jobs=2,
+        window=2 + int(first_finishes),
+        initializer=_initialize_overlapping_work,
+        initargs=(start, overlap),
+        mp_context=context,
+        progress_callback=progress,
+    )
+    if actual_capacity == 2:
+        assert len(set(results)) == 2
+    else:
+        with pytest.raises(parallel.ProcessPoolTopologyError, match="minimum=2.*created=1"):
+            list(results)
+        assert events[-1]["event"] == "cancelled"
+    ready = next(event for event in events if event["event"] == "executor_ready")
+    assert ready["unfinished_futures"] == 2
+    assert ready["created_workers"] == actual_capacity
+
+
+@pytest.mark.parametrize("window", [15, 30])
+def test_admission_bounds_pending_futures(monkeypatch: MonkeyPatch, window: int) -> None:
+    class ImmediateExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def submit(self, function, item):  # noqa: ANN001
+            future: Future[int] = Future()
+            future.set_result(function(item))
+            return future
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", ImmediateExecutor)
+    events: list[Mapping[str, object]] = []
+    results = parallel.process_map(
+        _times_two,
+        range(65),
+        n_jobs=15,
+        window=window,
+        progress_callback=events.append,
+    )
+    assert sorted(results) == list(range(0, 130, 2))
+    assert events[0]["window"] == window
+    assert (
+        max(cast(int, event["pending"]) for event in events if event["event"] == "submitted")
+        == window
+    )
+
+
+def test_process_map_rechecks_memory_after_producer_yields(monkeypatch: MonkeyPatch) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(
+        aggregate_hard_limit_mb=2304, rss_warning_mb=768, sample_interval_seconds=0.0
+    )
+    guard._monitor_started = True
+    rss = 700 * 1024 * 1024
+    submitted: list[int] = []
+
+    class ImmediateExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def submit(self, function, item):  # noqa: ANN001
+            submitted.append(item)
+            future: Future[int] = Future()
+            future.set_result(function(item))
+            return future
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    def items():
+        nonlocal rss
+        yield 1
+        rss = 900 * 1024 * 1024
+        yield 2
+
+    sleep = parallel.time.sleep
+    test_thread = threading.current_thread()
+
+    def sleep_until_memory_recedes(seconds: float) -> None:
+        nonlocal rss
+        if threading.current_thread() is not test_thread:
+            sleep(seconds)
+            return
+        assert submitted == [1]
+        assert guard.snapshot()["scheduler_backpressure_active"] is True
+        rss = 700 * 1024 * 1024
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", ImmediateExecutor)
+    monkeypatch.setattr(parallel, "process_tree_rss_bytes", lambda _pid=None: rss)
+    monkeypatch.setattr(parallel.time, "sleep", sleep_until_memory_recedes)
+    result = list(parallel.process_map(_times_two, items(), n_jobs=2, window=2, memory_guard=guard))
+    assert sorted(result) == [2, 4]
+    assert submitted == [1, 2]
+    assert guard.warning_crossings == 1
+    assert guard.snapshot()["scheduler_backpressure_active"] is False
+
+
 def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPatch) -> None:
     cancelled: list[int] = []
     shutdown: list[tuple[bool, bool]] = []
@@ -275,6 +472,9 @@ def test_resource_failure_cancels_pending_process_futures(monkeypatch: MonkeyPat
             if self.item == 1:
                 raise MemoryError("synthetic worker allocation")
             return self.item
+
+        def done(self) -> bool:
+            return True
 
         def cancel(self) -> bool:
             cancelled.append(self.item)

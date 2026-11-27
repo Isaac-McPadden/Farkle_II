@@ -995,14 +995,15 @@ def build_screening_diagnostics(
     max_batch_bytes = cfg.resources.stage_batch_bytes["trueskill"]
     tasks = [(cfg, cell, force, max_batch_bytes) for cell in eligible]
     context = resolve_mp_context(cfg.analysis.mp_start_method or cfg.sim.mp_start_method)
+    workers = min(policy.process_workers, len(tasks))
     built = list(
         process_map(
             _build_diagnostic_cell_task,
             tasks,
-            n_jobs=min(policy.process_workers, len(tasks)),
+            n_jobs=workers,
             initializer=_initialize_diagnostic_worker,
             initargs=(policy,),
-            window=cfg.resources.max_in_flight_per_worker * max(1, policy.process_workers),
+            window=workers * cfg.resources.max_in_flight_per_worker,
             mp_context=context,
             memory_guard=memory_guard,
         )

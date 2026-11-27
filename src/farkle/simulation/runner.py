@@ -1948,6 +1948,7 @@ def _run_single_n(
         restored_checkpoint = tournament_mod.run_tournament(
             global_seed=cfg.sim.seed,
             n_jobs=resource_policy.process_workers,
+            max_in_flight_per_worker=cfg.resources.max_in_flight_per_worker,
             checkpoint_path=ckpt_path,
             collect_metrics=cfg.sim.expanded_metrics,
             row_output_directory=row_dir,
