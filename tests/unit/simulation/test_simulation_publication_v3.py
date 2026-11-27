@@ -301,11 +301,11 @@ def test_interruption_boundaries_never_create_false_completion(tmp_path: Path) -
     assert runner.simulation_is_complete(cfg, 2)
 
 
-def test_interrupted_atomic_staging_files_are_removed_and_never_published(
+def test_interrupted_atomic_staging_names_are_excluded_without_deletion(
     tmp_path: Path,
 ) -> None:
     cfg = make_authenticated_v3_config(tmp_path, name="atomic_resume", root_seed=42)
-    strategy, _workload, row_dir = _prepare(cfg, 1)
+    _strategy, _workload, row_dir = _prepare(cfg, 1)
     staging = [
         row_dir / "._tmp_worker",
         row_dir / "._artifact_v3_checkpoint",
@@ -323,15 +323,41 @@ def test_interrupted_atomic_staging_files_are_removed_and_never_published(
     assert not any(path in expanded for path in staging)
     assert unrelated_hidden in expanded
 
-    removed = runner._cleanup_interrupted_simulation_staging_files(
-        n_dir=cfg.n_dir(2),
-        row_dir=row_dir,
-        metric_chunk_dir=None,
-        strategy_manifest_path=strategy,
-    )
-    assert removed == sorted(staging, key=lambda path: path.as_posix())
-    assert not any(path.exists() for path in staging)
+    assert all(path.read_bytes() == b"incomplete" for path in staging)
     assert unrelated_hidden.read_bytes() == b"preserve"
+
+
+def test_force_preserves_sealed_shards_and_neighbor_files(tmp_path: Path) -> None:
+    cfg, shards, manifest, done = _publish_many(tmp_path, name="sealed_force", count=2)
+    sentinel = manifest.parent / "keep.txt"
+    sentinel.write_bytes(b"keep")
+    fake = manifest.parent / "metrics_backup.parquet"
+    fake.write_bytes(b"unrelated")
+    saved = {
+        p: p.read_bytes()
+        for p in [*shards, *map(sidecar_path, shards), manifest, done, sentinel, fake]
+    }
+    strategies = [
+        ThresholdStrategy(300, 3, strategy_id=1),
+        ThresholdStrategy(500, 2, strategy_id=2),
+    ]
+    assert runner.run_single_n(cfg, 2, strategies, force=True) > 0
+    assert {p: p.read_bytes() for p in saved} == saved
+
+
+def test_force_inventory_authenticates_incomplete_sealed_cell(tmp_path: Path) -> None:
+    cfg = make_authenticated_v3_config(tmp_path, name="incomplete_force", root_seed=42)
+    strategy, workload, row_dir = _prepare(cfg, 2)
+    shard = _write_shard(cfg, strategy=strategy, workload=workload, row_dir=row_dir, index=0)
+    sentinel = row_dir / "keep.txt"
+    sentinel.write_bytes(b"keep")
+    assert runner._validate_force_inventory(cfg, _plan(cfg, 2), row_dir, row_dir) == (True, {})
+    with shard.open("ab") as file:
+        file.write(b"corrupt")
+    prior = {path: path.read_bytes() for path in (shard, sidecar_path(shard), workload, sentinel)}
+    with pytest.raises(authenticated_contract.ArtifactMismatchError):
+        runner._validate_force_inventory(cfg, _plan(cfg, 2), row_dir, row_dir)
+    assert {path: path.read_bytes() for path in prior} == prior
 
 
 @pytest.mark.parametrize("mutation", ["data", "missing_sidecar", "sidecar", "manifest"])

@@ -202,6 +202,10 @@ def test_root_force_preserves_authenticated_mapping_before_and_after_external_pa
     plan = json.loads(pair.h2h_power_plan_path().read_bytes())
     consent_bytes = pair.h2h_cap_authorization_path().read_bytes()
     require_refusal()
+    with pytest.raises(ValueError, match="Cannot establish simulation cleanup ownership"):
+        runner.run_single_n(root, 2, old, force=True)
+    assert checkpoint.read_bytes() == b"existing checkpoint"
+    checkpoint.unlink()
 
     def stop_before_games(**_):
         raise InterruptedError("fixture stops before games")

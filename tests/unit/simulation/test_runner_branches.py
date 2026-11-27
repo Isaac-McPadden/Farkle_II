@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -164,75 +166,154 @@ def test_manifest_digest_and_validate_mismatch(tmp_path: Path) -> None:
         runner._validate_manifest_matches(manifest, manifest_path, label="Strategy")
 
 
-def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
-    n_players = 2
-    n_dir = cfg.results_root / "2_players"
-    n_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = n_dir / "2p_checkpoint.pkl"
-    row_dir = n_dir / "2p_rows"
-    metric_dir = n_dir / "2p_metrics"
-    row_dir.mkdir(parents=True)
-    metric_dir.mkdir(parents=True)
+def _write_blocked_plan(cfg: AppConfig) -> Path:
+    cfg.screening.max_shuffles_per_root_k = 1
+    plan = runner._plan_workload_from_config(cfg, n_strategies=2, n_players=2)
+    cfg.screening.max_shuffles_per_root_k = None
+    assert plan.cap_exceeded
+    path = cfg.simulation_workload_plan_path(2)
+    runner.write_workload_plan(path, plan)
+    return path
 
-    (n_dir / "2p_checkpoint.parquet").write_text("x")
-    (n_dir / "2p_metrics.parquet").write_text("x")
-    (row_dir / "rows_0.parquet").write_text("x")
-    (metric_dir / "metrics_0.parquet").write_text("x")
-    ckpt_payload = {
-        "meta": {
-            "n_players": 2,
-            "num_shuffles": 2,
-            "global_seed": cfg.sim.seed,
-            "n_strategies": len(_manifest_df()),
-            "strategy_manifest_sha": runner._strategy_manifest_digest(_manifest_df()),
-            "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
-            "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
-            "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
-            "rng_bit_generator": "PCG64DXSM",
-            **_workload_meta(cfg),
-        }
+
+def test_force_cleans_exact_prior_control_with_coincident_directories(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, row_dir=Path("shared"), metric_chunk_dir=Path("shared"))
+    prior = _write_blocked_plan(cfg)
+    rows, metrics = runner._force_output_directories(cfg, 2)
+    assert rows is not None and rows == metrics
+    rows.mkdir()
+    unrelated = {
+        rows / "keep.txt": b"private",
+        rows / "rows_notes.parquet": b"notes",
+        rows / "metrics_backup.parquet": b"backup",
+        rows / "._tmp_notes": b"never issued by this run",
     }
-    ckpt_path.write_bytes(pickle.dumps(ckpt_payload))
-    runner.write_parquet_atomic(
-        runner.pa.Table.from_pandas(_manifest_df(), preserve_index=False),
-        cfg.strategy_manifest_root_path(),
-    )
+    for path, data in unrelated.items():
+        path.write_bytes(data)
+    plan = runner._plan_workload_from_config(cfg, n_strategies=2, n_players=2)
+    sealed, cleanup = runner._validate_force_inventory(cfg, plan, rows, metrics)
+    assert not sealed
+    assert list(cleanup) == [prior]
+    runner._purge_simulation_outputs(cleanup)
+    assert not prior.exists()
+    assert {path: path.read_bytes() for path in unrelated} == unrelated
 
-    assert runner._has_existing_outputs(
-        n_dir=n_dir,
-        n_players=n_players,
-        ckpt_path=ckpt_path,
-        row_dir=row_dir,
-        metric_chunk_dir=metric_dir,
-    )
 
-    runner._validate_resume_outputs(
-        cfg=cfg,
-        n_players=2,
-        n_shuffles=2,
-        strategies_manifest=_manifest_df(),
-        ckpt_path=ckpt_path,
-        row_dir=row_dir,
-        metric_chunk_dir=metric_dir,
-    )
+def test_force_rechecks_exact_bytes_before_removing_plan(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    prior = _write_blocked_plan(cfg)
+    plan = runner._plan_workload_from_config(cfg, n_strategies=2, n_players=2)
+    _, cleanup = runner._validate_force_inventory(cfg, plan, None, None)
+    original = prior.stat()
+    changed = prior.read_bytes().replace(b"blocked_by_cap", b"unrelated_data")
+    assert len(changed) == original.st_size
+    prior.write_bytes(changed)
+    os.utime(prior, ns=(original.st_atime_ns, original.st_mtime_ns))
+    with pytest.raises(ValueError, match="target changed"):
+        runner._purge_simulation_outputs(cleanup)
+    assert prior.read_bytes() == changed
 
-    runner._purge_simulation_outputs(
-        n_dir=n_dir,
-        n_players=n_players,
-        ckpt_path=ckpt_path,
-        row_dir=row_dir,
-        metric_chunk_dir=metric_dir,
-    )
-    assert cfg.strategy_manifest_root_path().is_file()
 
-    assert not runner._has_existing_outputs(
-        n_dir=n_dir,
-        n_players=n_players,
-        ckpt_path=ckpt_path,
-        row_dir=row_dir,
-        metric_chunk_dir=metric_dir,
+@pytest.mark.parametrize("target", ["row", "metric", "checkpoint", "manifest", "plan"])
+def test_ambiguous_occupant_preserves_entire_inventory(tmp_path: Path, target: str) -> None:
+    cfg = _cfg(tmp_path, row_dir=Path("shared"), metric_chunk_dir=Path("shared"))
+    prior = _write_blocked_plan(cfg)
+    rows = cfg.simulation_row_dir(2)
+    assert rows is not None
+    rows.mkdir()
+    path = {
+        "row": rows / f"rows_{cfg.sim.seed}_2p_000000000000.parquet",
+        "metric": rows / "metrics_000000.parquet",
+        "checkpoint": cfg.checkpoint_path(2),
+        "manifest": rows / "manifest.jsonl",
+        "plan": prior,
+    }[target]
+    path.write_bytes(b"unrelated")
+    before = prior.read_bytes()
+    with pytest.raises(ValueError, match="Cannot establish simulation cleanup ownership"):
+        runner.run_single_n(
+            cfg, 2, strategies=[ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)], force=True
+        )
+    assert prior.read_bytes() == before
+    assert path.read_bytes() == b"unrelated"
+
+
+@pytest.mark.parametrize(
+    "kind", ["external", "parent-alias", "symlink", "junction", "file-link", "file-symlink"]
+)
+def test_force_rejects_unsafe_paths_before_removing_anything(tmp_path: Path, kind: str) -> None:
+    cfg = _cfg(tmp_path)
+    prior = _write_blocked_plan(cfg)
+    original = prior.read_bytes()
+    target = tmp_path / "2p_private"
+    target.mkdir()
+    sentinel = target / "keep.txt"
+    sentinel.write_bytes(b"keep")
+    alias = cfg.n_dir(2) / "2p_alias"
+    if kind == "external":
+        cfg.sim.metric_chunk_dir = target
+    elif kind == "parent-alias":
+        cfg.sim.row_dir = cfg.n_dir(2) / "unused" / ".." / "2p_alias"
+    elif kind == "symlink":
+        try:
+            alias.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable: {exc}")
+        cfg.sim.row_dir = alias
+    elif kind == "junction":
+        if os.name != "nt":
+            pytest.skip("Windows junction")
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(target)],
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        cfg.sim.metric_chunk_dir = alias
+    elif kind == "file-link":
+        os.link(sentinel, cfg.checkpoint_path(2))
+    else:
+        try:
+            cfg.checkpoint_path(2).symlink_to(sentinel)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable: {exc}")
+    try:
+        with pytest.raises(
+            ValueError, match="Unsafe simulation cleanup|outside the canonical run root"
+        ):
+            runner.run_single_n(
+                cfg,
+                2,
+                strategies=[ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)],
+                force=True,
+            )
+        assert sentinel.read_bytes() == b"keep"
+        assert prior.read_bytes() == original
+    finally:
+        if kind == "junction":
+            alias.rmdir()
+
+
+def test_force_checks_later_cells_before_cleanup(tmp_path: Path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, n_players_list=[2, 4])
+    first = cfg.simulation_workload_plan_path(2)
+    cfg.screening.max_shuffles_per_root_k = 1
+    plan = runner._plan_workload_from_config(cfg, n_strategies=5160, n_players=2)
+    cfg.screening.max_shuffles_per_root_k = None
+    runner.write_workload_plan(first, plan)
+    saved = first.read_bytes()
+    later = cfg.checkpoint_path(4)
+    later.parent.mkdir()
+    later.write_bytes(b"unrelated checkpoint name")
+    monkeypatch.setattr(
+        runner,
+        "run_single_n",
+        lambda *args, **kwargs: pytest.fail("started a cell before preflight"),
     )
+    with pytest.raises(ValueError, match="Cannot establish simulation cleanup ownership"):
+        runner.run_multi(cfg, force=True)
+    assert first.read_bytes() == saved
+    assert later.read_bytes() == b"unrelated checkpoint name"
 
 
 def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: bool = False) -> None:
@@ -274,14 +355,14 @@ def test_run_single_n_force_overwrite_and_resume_paths(
 
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
-    stale = n_dir / "2p_checkpoint.parquet"
-    stale.write_text("stale")
+    stale = _write_blocked_plan(cfg)
 
-    assert runner.run_single_n(cfg, 2, force=True) > 0
-    assert stale.exists()
+    strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
+    assert runner.run_single_n(cfg, 2, strategies, force=True) > 0
+    assert json.loads(stale.read_bytes())["status"] == "not_started"
     assert runner.simulation_is_complete(cfg, 2)
 
-    assert runner.run_single_n(cfg, 2, force=False) > 0
+    assert runner.run_single_n(cfg, 2, strategies, force=False) > 0
 
 
 @pytest.mark.parametrize(
@@ -314,10 +395,6 @@ def test_run_single_n_branch_table(
     n_players = 2
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
-    stale_done = runner.simulation_done_path(cfg, n_players)
-    stale_done.parent.mkdir(parents=True, exist_ok=True)
-    stale_done.write_text('{"stale": true}')
-
     strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
     monkeypatch.setattr(
         runner, "_resolve_strategies", lambda cfg, strategies: (strategies or [], 2, True)
@@ -377,7 +454,7 @@ def test_run_single_n_branch_table(
     assert validate_mock.call_count == (1 if (not force and existing_outputs) else 0), case
 
 
-def test_run_single_n_cleanup_purges_done_file(
+def test_run_single_n_force_preserves_unrecognized_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _cfg(tmp_path, row_dir=Path("rows"), metric_chunk_dir=Path("metrics"), num_shuffles=1)
@@ -389,10 +466,9 @@ def test_run_single_n_cleanup_purges_done_file(
     stale_done = n_dir / "simulation.done.json"
     stale_done.write_text('{"stale": true}')
 
-    assert runner.run_single_n(cfg, n_players, force=True) > 0
-    payload = json.loads(stale_done.read_text())
-    assert payload["state"] == "complete_valid"
-    assert runner.simulation_is_complete(cfg, n_players)
+    with pytest.raises(ValueError, match="completion failed validation"):
+        runner.run_single_n(cfg, n_players, force=True)
+    assert stale_done.read_text() == '{"stale": true}'
 
 
 def test_run_single_n_cap_blocks_before_force_cleanup(tmp_path: Path) -> None:
@@ -543,81 +619,6 @@ def test_resolve_per_n_output_dir_edge_cases(tmp_path: Path) -> None:
 
     abs_template = tmp_path / "{n_players}p_rows"
     assert runner._resolve_per_n_output_dir(cfg, abs_template, 3) == tmp_path / "3p_rows"
-
-
-def test_handle_remove_error_chmod_retry_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    removed: list[str] = []
-
-    def fake_remover(path: str) -> None:
-        removed.append(path)
-
-    chmod_calls: list[str] = []
-    monkeypatch.setattr(runner.os, "chmod", lambda path, mode: chmod_calls.append(path))
-    err = PermissionError("original")
-    try:
-        raise err
-    except PermissionError as exc:
-        tb = exc.__traceback__
-        assert tb is not None
-        runner._handle_remove_error(fake_remover, "x.txt", (PermissionError, err, tb))
-
-    assert chmod_calls == ["x.txt"]
-    assert removed == ["x.txt"]
-
-    def fail_chmod(_path: str, _mode: int) -> None:
-        raise OSError("chmod failed")
-
-    monkeypatch.setattr(runner.os, "chmod", fail_chmod)
-    original = PermissionError("keep me")
-    with pytest.raises(PermissionError, match="keep me"):
-        try:
-            raise original
-        except PermissionError as exc:
-            tb = exc.__traceback__
-            assert tb is not None
-            runner._handle_remove_error(fake_remover, "y.txt", (PermissionError, original, tb))
-
-
-def test_remove_paths_missing_directory_and_permission_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    missing = tmp_path / "missing.txt"
-    dir_path = tmp_path / "adir"
-    dir_path.mkdir()
-    file_path = tmp_path / "needs_retry.txt"
-    file_path.write_text("x")
-
-    rmtree_calls: list[Path] = []
-    monkeypatch.setattr(
-        runner.shutil,
-        "rmtree",
-        lambda path, onerror: rmtree_calls.append(Path(path)),
-    )
-
-    orig_unlink = Path.unlink
-    unlink_calls = {"count": 0}
-
-    def fake_unlink(path: Path, *, missing_ok: bool = False) -> None:
-        if path == file_path and unlink_calls["count"] == 0:
-            unlink_calls["count"] += 1
-            raise PermissionError("deny")
-        unlink_calls["count"] += 1
-        return orig_unlink(path, missing_ok=missing_ok)
-
-    chmod_calls: list[Path] = []
-    monkeypatch.setattr(Path, "unlink", fake_unlink)
-    monkeypatch.setattr(
-        runner.os,
-        "chmod",
-        lambda p, mode: chmod_calls.append(Path(p)),
-    )
-
-    runner._remove_paths([missing, dir_path, file_path])
-
-    assert rmtree_calls == [dir_path]
-    assert chmod_calls == [file_path]
-    assert unlink_calls["count"] >= 2
-    assert not file_path.exists()
 
 
 @pytest.mark.parametrize(

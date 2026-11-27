@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
-import shutil
 import struct
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack
@@ -1207,6 +1206,7 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
     )
     code_hash = resolved_code_identity_sha256(cfg)
     plan: dict[str, Any] | None = None
+    repartition = False
     if plan_path.exists():
         try:
             validate_artifact_sidecar(plan_path)
@@ -1215,9 +1215,10 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
                 candidate["design_hash"] == design_hash
                 and candidate["code_hash"] == code_hash
                 and candidate["method_version"] == OUTCOME_METHOD_VERSION
-                and not (force and budget < candidate["minimum_budget"])
             ):
-                plan = candidate
+                repartition = force and budget < candidate["minimum_budget"]
+                if not repartition:
+                    plan = candidate
         except (OSError, RuntimeError, ValueError, KeyError):
             pass
     if plan is None:
@@ -1227,14 +1228,10 @@ def build_outcome_distributions(cfg: AppConfig, k: int, *, force: bool = False) 
             cfg.results_root.resolve()
         ):
             raise ValueError("outcome checkpoint path escaped its configured owner")
-        # A changed source/method/code cannot reuse old checkpoints. Remove only
-        # this producer's generated state so stale graph members cannot survive.
-        if checkpoint_root.exists() and any(checkpoint_root.iterdir()):
-            if not force:
-                raise ValueError(
-                    f"Incompatible partition evidence at {checkpoint_root}; preserve it and use a new output root"
-                )
-            shutil.rmtree(checkpoint_root)
+        if checkpoint_root.exists() and any(checkpoint_root.iterdir()) and not repartition:
+            raise ValueError(
+                f"Incompatible partition evidence at {checkpoint_root}; preserve it and use a new output root"
+            )
         rows_per_unit = max(1, budget // (16 * _RUN_DTYPE.itemsize * (12 * k + 2)))
         plan = {
             "method_version": OUTCOME_METHOD_VERSION,

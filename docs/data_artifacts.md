@@ -116,6 +116,13 @@ canonical publication. The adjacent sidecar is then published; a crash may
 leave data without a sidecar, but such bytes are pending work and can never be
 consumed, completed, or sidecarred in place. Resume recomputes that coordinate.
 
+Forced simulation cleanup checks the requested cells before deleting any file.
+An exactly matching, unsealed workload plan from a prior cap stop can be
+removed before retry. Sealed outputs use checked resume. Unrecognized occupants
+of reserved output paths require a new output root. Shared output directories
+and neighboring files remain in place. Authenticated shard output directories
+must be inside the run root and reachable without links or junctions.
+
 The append-time row and metric records carry the producer-captured content
 hash, byte length, sidecar hash, and Arrow-schema fingerprint. Finalization
 sorts these records by semantic coordinate, removes execution-only timestamp

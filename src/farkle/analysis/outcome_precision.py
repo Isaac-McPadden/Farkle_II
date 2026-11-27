@@ -9,7 +9,6 @@ are neither simultaneous intervals nor tests, and do not certify rare tails.
 from __future__ import annotations
 
 import json
-import shutil
 import struct
 import tempfile
 from collections.abc import Callable, Iterator
@@ -806,16 +805,15 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
     )
     code_hash = resolved_code_identity_sha256(cfg)
     plan: dict[str, Any] | None = None
+    repartition = False
     if plan_path.exists():
         try:
             validate_artifact_sidecar(plan_path)
             old = json.loads(plan_path.read_text(encoding="utf-8"))
-            if (
-                old["design_hash"] == design_hash
-                and old["code_hash"] == code_hash
-                and not (force and budget < old["minimum_budget"])
-            ):
-                plan = old
+            if old["design_hash"] == design_hash and old["code_hash"] == code_hash:
+                repartition = force and budget < old["minimum_budget"]
+                if not repartition:
+                    plan = old
         except (OSError, RuntimeError, ValueError, KeyError):
             pass
     if plan is None:
@@ -826,8 +824,10 @@ def build_outcome_precision(cfg: AppConfig, k: int, *, force: bool = False) -> t
             cfg.results_root.resolve()
         ):
             raise ValueError("precision checkpoint path escaped configured owner")
-        if root.exists():
-            shutil.rmtree(resolved)
+        if resolved.exists() and any(resolved.iterdir()) and not repartition:
+            raise ValueError(
+                f"Incompatible partition evidence at {resolved}; preserve it and use a new output root"
+            )
         plan = {
             "contract_id": CONTRACT_ID,
             "method_version": OUTCOME_PRECISION_METHOD_VERSION,

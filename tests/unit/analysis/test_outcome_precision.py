@@ -356,7 +356,10 @@ def test_interruption_reuses_vectors_and_repartition_preserves_logical_results(
     precision.build_outcome_precision(cfg, 2)
     assert vector.stat().st_mtime_ns == preserved
     # Forced repartition changes physical tiles, never the statistical batches.
+    sentinel = vector.parent / "keep.txt"
+    sentinel.write_bytes(b"local notes")
     precision.build_outcome_precision(cfg, 2, force=True)
+    assert sentinel.read_bytes() == b"local notes"
     assert (
         json.loads((cfg.outcome_precision_ranges_dir(2) / "plan.json").read_text())["tile_size"]
         == 1

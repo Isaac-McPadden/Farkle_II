@@ -5,7 +5,6 @@ from __future__ import annotations
 import heapq
 import json
 import math
-import shutil
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -687,16 +686,15 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
             basis="one game or strategy tile",
         )
     plan = None
+    repartition = False
     if plan_path.exists():
         try:
             validate_artifact_sidecar(plan_path)
             old = json.loads(plan_path.read_text(encoding="utf-8"))
-            if (
-                old["design_hash"] == design_hash
-                and old["code_hash"] == code_hash
-                and not (force and budget < old["minimum_budget"])
-            ):
-                plan = old
+            if old["design_hash"] == design_hash and old["code_hash"] == code_hash:
+                repartition = force and budget < old["minimum_budget"]
+                if not repartition:
+                    plan = old
         except (OSError, RuntimeError, ValueError, KeyError):
             pass
     if plan is None:
@@ -707,12 +705,10 @@ def build_seat_behavior(cfg: AppConfig, k: int, *, force: bool = False) -> tuple
             cfg.results_root.resolve()
         ):
             raise ValueError("behavior checkpoint path escaped owner")
-        if resolved.exists() and any(resolved.iterdir()):
-            if not force:
-                raise ValueError(
-                    f"Incompatible partition evidence at {resolved}; preserve it and use a new output root"
-                )
-            shutil.rmtree(resolved)
+        if resolved.exists() and any(resolved.iterdir()) and not repartition:
+            raise ValueError(
+                f"Incompatible partition evidence at {resolved}; preserve it and use a new output root"
+            )
         plan = {
             "method_version": METHOD_VERSION,
             "design_hash": design_hash,

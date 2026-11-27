@@ -17,12 +17,11 @@ import json
 import logging
 import os
 import pickle
-import shutil
+import re
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
-from types import TracebackType
-from typing import Any, Mapping, Sequence, TypeAlias
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -65,9 +64,11 @@ from farkle.utils.authenticated_contract import (
     ManifestEntry,
     canonical_json_bytes,
     compute_manifest_root,
+    derive_canonical_location,
     load_immutable_manifest_sidecar,
     producer_code_identity,
     validate_authenticated_artifact_metadata,
+    validate_authenticated_artifact_unbound,
 )
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
@@ -79,6 +80,7 @@ from farkle.utils.parallel import (
 )
 from farkle.utils.release_identity import (
     capture_v3_inputs,
+    exact_direct_sources,
     is_v3_config,
     publish_native_manifest_v3,
     scientific_artifact_binding,
@@ -104,10 +106,6 @@ from farkle.utils.telemetry import (
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
-
-
-RemovePathCallable: TypeAlias = Callable[..., Any]
-RemoveErrorInfo: TypeAlias = tuple[type[BaseException], BaseException, TracebackType]
 
 
 def _resolve_strategies(
@@ -437,7 +435,6 @@ def _write_workload_plan_simulation_output(
 
     expected = json.dumps(plan.to_dict(), indent=2, sort_keys=True).encode("utf-8") + b"\n"
     if path.exists():
-        from farkle.utils.release_identity import exact_direct_sources
         from farkle.utils.scientific_reuse import compatible_producer
 
         metadata = validate_authenticated_artifact_metadata(path, cfg=cfg)
@@ -523,63 +520,6 @@ def _is_atomic_staging_file(path: Path) -> bool:
     """Return whether *path* is a non-durable atomic-write staging file."""
 
     return path.name.startswith(_ATOMIC_STAGING_PREFIXES)
-
-
-def _cleanup_interrupted_simulation_staging_files(
-    *,
-    n_dir: Path,
-    row_dir: Path | None,
-    metric_chunk_dir: Path | None,
-    strategy_manifest_path: Path,
-) -> list[Path]:
-    """Remove only recognized staging files left by an interrupted run.
-
-    Atomic writers deliberately publish by replacement, so these names can
-    never be durable artifacts or valid resume units.  A hard worker shutdown
-    can prevent the writer context manager from unlinking them; removing them
-    before resume prevents incomplete bytes from entering final publication.
-    """
-
-    roots = {n_dir.resolve()}
-    if row_dir is not None:
-        roots.add(row_dir.resolve())
-    if metric_chunk_dir is not None:
-        roots.add(metric_chunk_dir.resolve())
-
-    candidates: set[Path] = set()
-    for root in roots:
-        if root.is_dir():
-            candidates.update(
-                path for path in root.rglob("*") if path.is_file() and _is_atomic_staging_file(path)
-            )
-    manifest_parent = strategy_manifest_path.parent
-    if manifest_parent.is_dir():
-        candidates.update(
-            path
-            for path in manifest_parent.iterdir()
-            if path.is_file() and _is_atomic_staging_file(path)
-        )
-
-    removed: list[Path] = []
-    for path in sorted(candidates, key=lambda item: item.as_posix()):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except PermissionError:
-            os.chmod(path, stat.S_IWRITE)
-            path.unlink()
-        removed.append(path)
-    if removed:
-        LOGGER.info(
-            "Removed %s incomplete atomic staging files before simulation resume",
-            len(removed),
-            extra={
-                "stage": "simulation",
-                "staging_files_removed": len(removed),
-            },
-        )
-    return removed
 
 
 def _publish_simulation_manifest_v3(
@@ -910,88 +850,204 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         raise ValueError(f"{label} manifest mismatch at {path}; use a new output root.")
 
 
-def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
-    """Retry a failed path removal after making the target writable.
+def _safe_cleanup_path(path: Path, *, directory: bool = False) -> os.stat_result | None:
+    """Check the lexical path before resolution can hide a filesystem alias."""
+    path = path.absolute()
+    if ".." in path.parts or path.is_reserved() or path.resolve() != path:
+        raise ValueError(f"Unsafe simulation cleanup path: {path}")
+    for component in (*reversed(path.parents), path):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            return None
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            raise ValueError(f"Unsafe simulation cleanup link or reparse point: {component}")
+        if component != path or directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError(f"Unsafe simulation cleanup directory: {component}")
+        elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"Unsafe simulation cleanup file: {component}")
+    return info
 
-    Args:
-        func: Original removal function provided by ``shutil``.
-        path: Path that failed to delete.
-        exc_info: Exception tuple reported by the removal callback.
-    """
-    LOGGER.debug("Retrying removal after chmod for path=%s", path)
-    try:
-        os.chmod(path, stat.S_IWRITE)
-    except OSError as chmod_err:
-        LOGGER.exception("Failed to chmod path during removal retry: %s", path)
-        raise exc_info[1] from chmod_err
-    LOGGER.debug("Calling original remove function for path=%s", path)
-    func(path)
+
+def _force_output_directories(cfg: AppConfig, n_players: int) -> tuple[Path | None, Path | None]:
+    row_dir = _resolve_row_output_dir(cfg, n_players)
+    metric_dir = _resolve_metric_chunk_dir(cfg, n_players)
+    root = cfg.results_root.absolute()
+    n_dir = cfg.n_dir(n_players)
+    _safe_cleanup_path(n_dir / "_execution" / "._publication_simulation.lock")
+    for directory in (row_dir, metric_dir):
+        if directory is not None:
+            _safe_cleanup_path(directory, directory=True)
+            if not directory.absolute().is_relative_to(root):
+                # Authenticated simulation publications require this same boundary.
+                raise ValueError(
+                    f"Simulation output directory is outside the canonical run root: {directory}"
+                )
+    return row_dir, metric_dir
 
 
-def _remove_paths(paths: Sequence[Path]) -> None:
-    """Remove files or directories, retrying read-only paths when needed.
-
-    Args:
-        paths: Paths to delete if they exist.
-    """
-    for path in paths:
-        if not path.exists():
+def _simulation_cell_files(
+    cfg: AppConfig, n_players: int, row_dir: Path | None, metric_dir: Path | None
+) -> set[Path]:
+    n_dir = cfg.n_dir(n_players)
+    candidates = {
+        cfg.checkpoint_path(n_players),
+        n_dir / f"{n_players}p_checkpoint.parquet",
+        cfg.metrics_path(n_players),
+        cfg.simulation_workload_plan_path(n_players),
+        simulation_done_path(cfg, n_players),
+    }
+    for directory, manifest, pattern in (
+        (row_dir, "manifest.jsonl", rf"rows_{cfg.sim.seed}_{n_players}p_[0-9]{{12,}}[.]parquet"),
+        (metric_dir, "metrics_manifest.jsonl", r"metrics_[0-9]{6,}[.]parquet"),
+    ):
+        if directory is None:
             continue
-        if path.is_dir():
-            shutil.rmtree(path, onerror=_handle_remove_error)
-        else:
+        candidates.add(directory / manifest)
+        if directory.is_dir():
+            for child in directory.iterdir():
+                name = child.name.lower() if os.name == "nt" else child.name
+                name = name.removesuffix(".sidecar.json")
+                if re.fullmatch(pattern, name):
+                    candidates.add(directory / name)
+    return candidates
+
+
+def _validate_force_inventory(
+    cfg: AppConfig, plan: TournamentWorkloadPlan, row_dir: Path | None, metric_dir: Path | None
+) -> tuple[bool, dict[Path, tuple[os.stat_result, str]]]:
+    """Retain sealed evidence and admit only exactly identified unsealed controls."""
+    found: dict[Path, os.stat_result] = {}
+    sidecars: set[Path] = set()
+    files = _simulation_cell_files(cfg, plan.k, row_dir, metric_dir)
+    for path in sorted(files):
+        if (info := _safe_cleanup_path(path)) is not None:
+            found[path] = info
+        if (
+            path.name != "simulation.done.json"
+            and _safe_cleanup_path(sidecar_path(path)) is not None
+        ):
+            sidecars.add(path)
+
+    workload = cfg.simulation_workload_plan_path(plan.k)
+    if simulation_done_path(cfg, plan.k) in found:
+        raise ValueError(
+            "Existing simulation completion failed validation; preserve it and use a new output root"
+        )
+    sealed = bool(sidecars)
+    if sealed:
+        _validate_sealed_force_inventory(cfg, plan.k, found.keys(), sidecars)
+    owned: dict[Path, tuple[os.stat_result, str]] = {}
+    for path, info in sorted(found.items()):
+        if path in sidecars:
+            continue
+        if path == workload and 0 < info.st_size <= 64 * 1024:
             try:
-                path.unlink()
-            except PermissionError:
-                os.chmod(path, stat.S_IWRITE)
-                path.unlink()
+                with path.open("rb") as stream:
+                    contents = stream.read(info.st_size + 1)
+                old = json.loads(contents)
+                old_plan = plan_tournament_workload(
+                    root_seed=plan.root_seed,
+                    k=plan.k,
+                    strategy_count=plan.strategy_count,
+                    resolution_delta=plan.resolution_delta,
+                    confidence=plan.confidence,
+                    batch_count=plan.batch_count,
+                    min_shuffles_per_batch=plan.shuffles_per_batch,
+                    shuffle_cap=old["shuffle_cap"],
+                    projected_games_per_second=old["projected_games_per_second"],
+                )
+                if (
+                    len(contents) == info.st_size
+                    and old_plan.cap_exceeded
+                    and canonical_json_bytes(old) == canonical_json_bytes(old_plan.to_dict())
+                ):
+                    owned[path] = (info, hashlib.sha256(contents).hexdigest())
+                    continue
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
+                pass
+        # The checked resume path authenticates append inventories and recovers
+        # interrupted publications from immutable inputs. A standalone filename
+        # or record without its seal does not authorize a forced deletion.
+        if workload in sidecars and path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
+            continue
+        raise ValueError(
+            f"Cannot establish simulation cleanup ownership for {path}; use a new output root"
+        )
+    return sealed, owned
 
 
-def _purge_simulation_outputs(
-    *,
-    n_dir: Path,
-    n_players: int,
-    ckpt_path: Path,
-    row_dir: Path | None,
-    metric_chunk_dir: Path | None,
+def _validate_sealed_force_inventory(
+    cfg: AppConfig, n_players: int, files: Collection[Path], sidecars: set[Path]
 ) -> None:
-    """Remove simulation outputs that would conflict with a forced rerun.
+    """Verify occupied output names before handing the cell to normal resume."""
+    from farkle.utils.scientific_reuse import compatible_producer
 
-    Args:
-        n_dir: Base directory for the current player-count outputs.
-        n_players: Player count for the output family.
-        ckpt_path: Checkpoint path to remove.
-        row_dir: Optional row-shard directory.
-        metric_chunk_dir: Optional metric-chunk directory.
-    """
-    done_path = n_dir / "simulation.done.json"
-    ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
-    metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
-    ordinary = [
-        ckpt_path,
-        ckpt_parquet,
-        metrics_parquet,
-        n_dir / "simulation_workload_plan.json",
-    ]
-    _remove_paths([*ordinary, *(sidecar_path(path) for path in ordinary), done_path])
-
-    if row_dir is not None and row_dir.exists():
-        if row_dir == n_dir:
-            rows = list(row_dir.glob("rows_*.parquet"))
-            manifest = row_dir / "manifest.jsonl"
-            _remove_paths([*rows, *(sidecar_path(path) for path in rows)])
-            _remove_paths([manifest, sidecar_path(manifest)])
+    n_dir = cfg.n_dir(n_players)
+    workload = cfg.simulation_workload_plan_path(n_players)
+    roster = cfg.strategy_manifest_root_path()
+    for source in (roster, workload):
+        _safe_cleanup_path(source)
+        _safe_cleanup_path(sidecar_path(source))
+    fixed_operations = {
+        cfg.checkpoint_path(n_players): "publish_simulation_checkpoint",
+        n_dir / f"{n_players}p_checkpoint.parquet": "publish_simulation_checkpoint_summary",
+        cfg.metrics_path(n_players): "publish_simulation_metrics_summary",
+        workload: "publish_simulation_workload_plan",
+    }
+    code = producer_code_identity(cfg)
+    dependencies = cfg.stage_config_sha("simulation")
+    for path in sorted(sidecars):
+        if path not in files:
+            raise ValueError(f"Missing data for sealed simulation output: {path}")
+        location = derive_canonical_location(cfg, path, stage_key="simulation")
+        if path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
+            manifest = load_immutable_manifest_sidecar(path)
+            stage = manifest.stage_identity
+            valid = manifest.location == location and sha256_file(path) == manifest.manifest_sha256
         else:
-            _remove_paths([row_dir])
+            artifact = validate_authenticated_artifact_unbound(
+                path, expected_location=location, validate_provenance=False
+            )
+            stage = artifact.stage_identity
+            operation = fixed_operations.get(path) or (
+                "publish_simulation_row_shard"
+                if path.name.lower().startswith("rows_")
+                else "publish_simulation_metric_chunk"
+            )
+            valid = (
+                artifact.method_contract.procedure == operation
+                and artifact.method_contract.player_counts == (n_players,)
+                and exact_direct_sources(path, [roster] if path == workload else [roster, workload])
+            )
+        if (
+            not valid
+            or stage.immutable_design_identities.get("stage_dependencies_v1") != dependencies
+            or not compatible_producer(stage, code)
+        ):
+            raise ValueError(
+                f"Incompatible sealed simulation output: {path}; use a new output root"
+            )
 
-    if metric_chunk_dir is not None and metric_chunk_dir.exists():
-        if metric_chunk_dir == n_dir:
-            chunks = list(metric_chunk_dir.glob("metrics_*.parquet"))
-            manifest = metric_chunk_dir / "metrics_manifest.jsonl"
-            _remove_paths([*chunks, *(sidecar_path(path) for path in chunks)])
-            _remove_paths([manifest, sidecar_path(manifest)])
-        else:
-            _remove_paths([metric_chunk_dir])
+
+def _purge_simulation_outputs(inventory: Mapping[Path, tuple[os.stat_result, str]]) -> None:
+    """Unlink the prevalidated file inventory without changing permissions."""
+    for path, (inspected, digest) in inventory.items():
+        current = _safe_cleanup_path(path)
+        if (
+            current is None
+            or not os.path.samestat(current, inspected)
+            or current.st_size != inspected.st_size
+            or current.st_mtime_ns != inspected.st_mtime_ns
+            or sha256_file(path) != digest
+        ):
+            raise ValueError(f"Simulation cleanup target changed after validation: {path}")
+    for path in inventory:
+        os.unlink(path)
 
 
 def _has_existing_outputs(
@@ -1040,7 +1096,8 @@ def _has_existing_outputs(
 
 def _has_unsealed_simulation_outputs(
     *,
-    n_dir: Path,
+    cfg: AppConfig,
+    n_players: int,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
     strategy_manifest_path: Path,
@@ -1048,29 +1105,15 @@ def _has_unsealed_simulation_outputs(
 ) -> bool:
     """Detect pre-v3 bytes that must never be blessed by a later completion."""
 
-    candidates = [strategy_manifest_path]
-    roots = {n_dir.resolve()}
-    if row_dir is not None:
-        roots.add(row_dir.resolve())
-    if metric_chunk_dir is not None:
-        roots.add(metric_chunk_dir.resolve())
-    for root in roots:
-        if root.is_dir():
-            candidates.extend(
-                path
-                for path in root.rglob("*")
-                if path.is_file()
-                and not path.name.endswith(".sidecar.json")
-                and not path.name.endswith(".done.json")
-                and not path.name.startswith("._")
-            )
+    candidates = _simulation_cell_files(cfg, n_players, row_dir, metric_chunk_dir)
+    candidates.add(strategy_manifest_path)
 
     def _requires_preexisting_seal(path: Path) -> bool:
         if recoverable_checkpoint is not None and path.resolve() == recoverable_checkpoint:
             return False
         if not path.is_file() or sidecar_path(path).is_file():
             return False
-        if path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}:
+        if path.name in {"manifest.jsonl", "metrics_manifest.jsonl", "simulation.done.json"}:
             return False
         return not (
             path.suffix.lower() == ".parquet"
@@ -1635,6 +1678,8 @@ def run_single_n(
     _bind_game_profile(cfg, oracle_game_profile)
     from farkle.utils.manifest import publication_lock
 
+    if force:
+        _force_output_directories(cfg, n)
     with publication_lock(cfg.n_dir(n) / "simulation"):
         return _run_single_n(
             cfg, n, strategies, force=force, oracle_game_profile=oracle_game_profile
@@ -1689,33 +1734,14 @@ def _run_single_n(
     row_dir = _resolve_row_output_dir(cfg, n)
     metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
-    if force and (
-        simulation_done_path(cfg, n).exists()
-        or sidecar_path(workload_plan_path).exists()
-        or any(
-            directory is not None
-            and (
-                sidecar_path(directory / name).exists()
-                or any(directory.glob("*.parquet.sidecar.json"))
-            )
-            for directory, name in (
-                (row_dir, "manifest.jsonl"),
-                (metric_chunk_dir, "metrics_manifest.jsonl"),
-            )
-        )
-    ):
-        # A separately located frozen pair may depend on this cell. Take the
-        # checked resume path even when the caller requested recomputation.
-        force = False
-    if not force:
-        _cleanup_interrupted_simulation_staging_files(
-            n_dir=n_dir,
-            row_dir=row_dir,
-            metric_chunk_dir=metric_chunk_dir,
-            strategy_manifest_path=cfg.strategy_manifest_root_path(),
-        )
+    cleanup: dict[Path, tuple[os.stat_result, str]] = {}
+    if force and not workload_plan.cap_exceeded:
+        row_dir, metric_chunk_dir = _force_output_directories(cfg, n)
+        sealed, cleanup = _validate_force_inventory(cfg, workload_plan, row_dir, metric_chunk_dir)
+        force = not sealed
     had_unsealed_v3_outputs = is_v3_config(cfg) and _has_unsealed_simulation_outputs(
-        n_dir=n_dir,
+        cfg=cfg,
+        n_players=n,
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
         strategy_manifest_path=cfg.strategy_manifest_root_path(),
@@ -1736,7 +1762,10 @@ def _run_single_n(
         extra={"stage": "simulation", **workload_plan.to_dict()},
     )
     if workload_plan.cap_exceeded:
-        if sidecar_path(workload_plan_path).exists():
+        if force:
+            _safe_cleanup_path(workload_plan_path)
+            _safe_cleanup_path(sidecar_path(workload_plan_path))
+        if workload_plan_path.exists() or sidecar_path(workload_plan_path).exists():
             raise WorkloadCapExceeded(workload_plan)
         write_workload_plan(workload_plan_path, workload_plan, temp_dir=cfg.io.temp_dir)
         LOGGER.error(
@@ -1762,16 +1791,10 @@ def _run_single_n(
     if had_unsealed_v3_outputs and not force:
         raise ValueError(
             "artifact contract v3 found pre-existing simulation bytes without "
-            "authenticated sidecars; use --force or a new configured output root"
+            "authenticated sidecars; preserve the evidence and use a new configured output root"
         )
     if force:
-        _purge_simulation_outputs(
-            n_dir=n_dir,
-            n_players=n,
-            ckpt_path=ckpt_path,
-            row_dir=row_dir,
-            metric_chunk_dir=metric_chunk_dir,
-        )
+        _purge_simulation_outputs(cleanup)
     elif resume and _has_existing_outputs(
         n_dir=n_dir,
         n_players=n,
@@ -2096,10 +2119,12 @@ def _run_single_n(
     manifest_path = cfg.strategy_manifest_root_path()
     if manifest_path.exists():
         outputs.append(manifest_path)
-    if row_dir is not None and row_dir.exists():
-        outputs.append(row_dir)
-    if metric_chunk_dir is not None and metric_chunk_dir.exists():
-        outputs.append(metric_chunk_dir)
+    for directory, name in (
+        (row_dir, "manifest.jsonl"),
+        (metric_chunk_dir, "metrics_manifest.jsonl"),
+    ):
+        if directory is not None and (directory / name).exists():
+            outputs.append(directory / name)
     if is_v3_config(cfg):
         write_simulation_done(
             cfg,
@@ -2184,6 +2209,24 @@ def _run_multi(
             },
         )
         return results
+
+    if force:
+        row_owners: dict[Path, int] = {}
+        metric_owners: dict[Path, int] = {}
+        for n in valid_counts:
+            rows, metrics = _force_output_directories(cfg, n)
+            for directory, owners in ((rows, row_owners), (metrics, metric_owners)):
+                if directory is not None and owners.setdefault(directory.absolute(), n) != n:
+                    raise ValueError(
+                        f"Simulation player counts share a shard inventory: {directory}"
+                    )
+            if any(
+                os.path.lexists(p) or os.path.lexists(sidecar_path(p))
+                for p in _simulation_cell_files(cfg, n, rows, metrics)
+            ) and not simulation_is_complete(cfg, n):
+                plan = _plan_workload_from_config(cfg, grid_size, n)
+                if not plan.cap_exceeded:
+                    _validate_force_inventory(cfg, plan, rows, metrics)
 
     for n in valid_counts:
         if oracle_game_profile is None:
