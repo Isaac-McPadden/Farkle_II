@@ -29,6 +29,7 @@ def _run_fixture(folder: Path, invocation: str, producer_state: str) -> None:
     from farkle.simulation import runner
     from farkle.utils.artifact_contract import sha256_file, sidecar_path
     from farkle.utils.authenticated_contract import (
+        ArtifactMismatchError,
         CodeIdentityPolicy,
         load_authenticated_sidecar,
         make_stage_identity,
@@ -147,6 +148,15 @@ def _run_fixture(folder: Path, invocation: str, producer_state: str) -> None:
         if invocation == "changed":
             assert not compatible_producer(original.stage_identity, cfg._code_identity)
             assert not runner.simulation_is_complete(cfg, 2)
+            row_dir = cfg.simulation_row_dir(2)
+            assert row_dir is not None
+            shards = list(row_dir.glob("rows_*.parquet"))
+            assert shards
+            raw_files = [file for shard in shards for file in (shard, sidecar_path(shard))]
+            raw_before = [(sha256_file(p), p.stat().st_mtime_ns) for p in raw_files]
+            with pytest.raises(ArtifactMismatchError, match="belongs to different code"):
+                runner.run_single_n(cfg, 2, roster)
+            assert raw_before == [(sha256_file(p), p.stat().st_mtime_ns) for p in raw_files]
             assert before == [(sha256_file(p), p.stat().st_mtime_ns) for p in evidence]
             # Even a snapshot supplied with successful stage states cannot qualify this graph.
             target = capture_target()

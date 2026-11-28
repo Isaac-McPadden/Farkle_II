@@ -2,11 +2,66 @@ from __future__ import annotations
 
 """Property-based tests for scoring helpers."""
 
+from collections import Counter
+from functools import cache
+from itertools import combinations_with_replacement
+from math import factorial, prod
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from farkle.game.scoring import faces_to_counts_tuple, score_roll_cached
+
+
+@cache
+def _group_points(group: tuple[int, ...]) -> int:
+    """Points for a single scoring combination from the written rules."""
+    counts = sorted(Counter(group).values())
+    if counts in ([1] * 6, [2, 2, 2], [2, 4]):
+        return 1500
+    if counts == [3, 3]:
+        return 2500
+    if len(counts) != 1:
+        return 0
+    face = group[0]
+    return {
+        1: {1: 100, 5: 50}.get(face, 0),
+        3: 300 if face == 1 else 100 * face,
+        4: 1000,
+        5: 2000,
+        6: 3000,
+    }.get(len(group), 0)
+
+
+@cache
+def _best_disjoint_score(roll: tuple[int, ...]) -> tuple[int, int]:
+    """Try every scoring subset and recurse on the dice outside that subset."""
+    best = (0, 0)
+    for mask in range(1, 1 << len(roll)):
+        group = tuple(die for i, die in enumerate(roll) if mask & (1 << i))
+        points = _group_points(group)
+        if points:
+            rest = tuple(die for i, die in enumerate(roll) if not mask & (1 << i))
+            rest_points, rest_used = _best_disjoint_score(rest)
+            best = max(best, (points + rest_points, len(group) + rest_used))
+    return best
+
+
+def test_raw_scores_match_disjoint_combinations_for_every_roll():
+    patterns = 0
+    histogram: Counter[tuple[int, int, int]] = Counter()
+    for n in range(1, 7):
+        for roll in combinations_with_replacement(range(1, 7), n):
+            points, used = _best_disjoint_score(roll)
+            assert score_roll_cached(roll)[:2] == (points, used), roll
+            ways = factorial(n) // prod(factorial(k) for k in Counter(roll).values())
+            histogram[n, points, used] += ways
+            patterns += 1
+    assert patterns == 923
+    assert len(histogram) == 127
+    assert histogram.total() == 55_986
+    assert [histogram[n, 0, 0] for n in range(1, 7)] == [4, 16, 60, 204, 600, 1080]
 
 
 @pytest.mark.unit

@@ -146,13 +146,6 @@ class FarklePlayer:
         next_dice = 6 if (used == len(roll) and reroll == 0) else reroll
         return pts, next_dice, False
 
-    def _apply_hot_dice(self, dice: int) -> bool:
-        """Return True if auto-hot-dice forces another roll."""
-        if self.strategy.auto_hot_dice and dice == 6:
-            self.n_hot_dice += 1
-            return True
-        return False
-
     def _should_continue(
         self,
         *,
@@ -184,25 +177,27 @@ class FarklePlayer:
             bank the turn's points.
         """
         running_total = self.score + turn_score
-        score_needed = max(0, target_score - running_total)
-
-        if final_round and running_total > score_to_beat and not self.strategy.run_up_score:
-            return False
-
-        keep_rolling = self.strategy.decide(
+        # A custom voluntary decide() must also respect entry and challenge rules.
+        required = self.strategy.required_roll_decision(
             turn_score=turn_score,
             dice_left=dice_left,
             has_scored=self.has_scored,
-            score_needed=score_needed,
             final_round=final_round,
             score_to_beat=score_to_beat,
             running_total=running_total,
         )
+        if required is not None:
+            return required
 
-        if final_round and running_total <= score_to_beat:
-            keep_rolling = True
-
-        return keep_rolling
+        return self.strategy.decide(
+            turn_score=turn_score,
+            dice_left=dice_left,
+            has_scored=self.has_scored,
+            score_needed=max(0, target_score - running_total),
+            final_round=final_round,
+            score_to_beat=score_to_beat,
+            running_total=running_total,
+        )
 
     # ------------------------------ turn --------------------------------
     def take_turn(
@@ -250,9 +245,6 @@ class FarklePlayer:
 
             turn_score += pts
 
-            if self._apply_hot_dice(dice):
-                continue
-
             if not self._should_continue(
                 turn_score=turn_score,
                 dice_left=dice,
@@ -261,6 +253,8 @@ class FarklePlayer:
                 target_score=target_score,
             ):
                 break
+            if self.strategy.auto_hot_dice and dice == 6:
+                self.n_hot_dice += 1
 
         # After leaving the loop, check if this is our “entry turn"
         # (we need ≥500 to get on the board)
@@ -452,7 +446,7 @@ class FarkleGame:
         rounds = 0
         while rounds < max_rounds:
             rounds += 1
-            for player in self.players:
+            for seat, player in enumerate(self.players):
                 player.take_turn(
                     self.target_score,  # This is the end of game finish-line
                     final_round=final_round,
@@ -462,7 +456,7 @@ class FarkleGame:
                 if not final_round and player.score >= self.target_score:
                     final_round = True
                     score_to_beat = player.score
-                    final_players = [pl for pl in self.players if pl != player]
+                    final_players = self.players[seat + 1 :] + self.players[:seat]
                     score_to_beat = self._run_final_round(final_players, score_to_beat)
 
                     break

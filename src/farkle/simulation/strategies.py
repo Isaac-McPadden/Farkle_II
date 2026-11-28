@@ -209,6 +209,28 @@ class ThresholdStrategy:
     # Public API
     # ------------------------------------------------------------------
 
+    def required_roll_decision(
+        self,
+        *,
+        turn_score: int,
+        dice_left: int,
+        has_scored: bool,
+        final_round: bool,
+        score_to_beat: int,
+        running_total: int,
+    ) -> bool | None:
+        """Return a compulsory roll/bank decision, or None for a voluntary choice."""
+        if not has_scored and turn_score < 500:
+            return True
+        if final_round:
+            if running_total <= score_to_beat:
+                return True
+            if not self.run_up_score:
+                return False
+        if self.auto_hot_dice and dice_left == 6:
+            return True
+        return None
+
     def decide(
         self,
         *,
@@ -227,9 +249,9 @@ class ThresholdStrategy:
         turn_score : int
             Points accumulated so far during the current turn.
         dice_left : int
-            Number of dice that remain available to roll.
+            Dice available for the next roll, including six after a hot-dice reset.
         has_scored : bool
-            Whether the player has banked any scoring dice this turn.
+            Whether the player has already entered with a bank of at least 500.
         score_needed : int
             Margin required to win; retained for compatibility with richer strategies.
         final_round : bool, default False
@@ -237,7 +259,7 @@ class ThresholdStrategy:
         score_to_beat : int, default 0
             Opponent score threshold to surpass during the final round.
         running_total : int, default 0
-            Player total score before banking the current turn.
+            Previously banked score plus the current unbanked turn score.
 
         Returns
         -------
@@ -245,24 +267,17 @@ class ThresholdStrategy:
             True to continue rolling; False to bank the current turn score.
         """
 
-        # --------------------------------- fast exits ---------------------------------
-        if not has_scored and turn_score < 500:
-            return True  # must cross the 500-pt entry gate
-
-        # final-round catch-up rule
-        if final_round:
-            # Must beat the leader; ties don't win.
-            if running_total <= score_to_beat:
-                return True  # keep rolling until you beat them
-
-            # Already ahead:
-            if not self.run_up_score:
-                return False  # auto-bank if not running up
-
-        # self.run_up_score == True -> fall through to normal thresholds
-
-        # -----------------------------------------------------------------------------
-        keep_rolling = _decide_continue(
+        required = self.required_roll_decision(
+            turn_score=turn_score,
+            dice_left=dice_left,
+            has_scored=has_scored,
+            final_round=final_round,
+            score_to_beat=score_to_beat,
+            running_total=running_total,
+        )
+        if required is not None:
+            return required
+        return _decide_continue(
             turn_score,
             dice_left,
             self.score_threshold,
@@ -271,8 +286,6 @@ class ThresholdStrategy:
             self.consider_dice,
             self.require_both,
         )
-
-        return keep_rolling
 
     # ------------------------------------------------------------------
     # Representation helpers
